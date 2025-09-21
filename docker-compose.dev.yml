@@ -4,12 +4,13 @@ services:
       context: .
       dockerfile: Dockerfile.dev
       target: frontend
-    working_dir: /app/frontend
+    working_dir: /app
     command: pnpm run dev -- --host 0.0.0.0 --port 80
     ports:
       - "1313:80"
     volumes:
-      - ./frontend:/app/frontend
+      - ./frontend:/app
+      - /app/node_modules
     environment:
       - NODE_ENV=development
       - VITE_BACKEND_URL=http://192.168.86.183:1314
@@ -18,11 +19,11 @@ services:
         # Sync frontend source code changes
         - action: sync
           path: ./frontend/src
-          target: /app/frontend/src
+          target: /app/src
         # Sync frontend public assets
         - action: sync
           path: ./frontend/public
-          target: /app/frontend/public
+          target: /app/public
         # Rebuild on package.json changes
         - action: rebuild
           path: ./frontend/package.json

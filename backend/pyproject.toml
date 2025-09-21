@@ -1,7 +1,7 @@
 [project]
-name = "project-template"
+name = "synclet"
 version = "0.0.1"
-description = "Project Template"
+description = "Synclet"
 authors = [{ name = "Jacob Lasky", email = "jacob.s.lasky@gmail.com" }]
 readme = "README.md"
 requires-python = ">=3.11"

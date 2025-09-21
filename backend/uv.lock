@@ -299,7 +299,7 @@ wheels = [
 ]
 
 [[package]]
-name = "project-template"
+name = "synclet"
 version = "0.0.1"
 source = { virtual = "." }
 dependencies = [
