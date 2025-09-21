@@ -1,0 +1,38 @@
+[project]
+name = "project-template"
+version = "0.0.1"
+description = "Project Template"
+authors = [{ name = "Jacob Lasky", email = "jacob.s.lasky@gmail.com" }]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "litestar>=2.17.0",
+    "pydantic>=2.11.9",
+    "uvicorn>=0.36.0",
+]
+
+[tool.ruff]
+lint.select = ["ALL"]
+lint.preview = true
+lint.ignore = [
+    "COM812",  # missing-trailing-comma
+    "CPY001",  # missing copyright notice at top of file
+    "D203",    # blank line required before class docstring
+    "D211",    # no-blank-line-before-class
+    "D213",    # multi-line-summary-second-line
+    "FAST001", # routes should use the response_model parameter
+    "FIX002", # allow TODO
+
+    # temporarily ignore
+    "S608", # need to figure out a better way to sanitize SQL
+
+    "E501", # line too long
+
+    "PLR0912", # need to simplify functions (too many branches)
+    "PLR0913", # need to simplify functions (too many arguments)
+    "PLR0915", # need to simplify functions (too many statements)
+    "PLR0917", # need to simplify functions (too many positional arguments)
+    "C901", # need to simplify functions (too complex)
+    "FBT001", # split functions (boolean-typed positional argument)
+    "FBT002", # split functions (boolean-typed default argument)
+]
