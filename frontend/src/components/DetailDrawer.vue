@@ -2,7 +2,15 @@
 import { computed, onMounted, ref, watch } from "vue"
 import { api } from "../api"
 import type { Episode, TitleDetail } from "../types"
-import { closeDetail, humanSize, pushToast, store, trackJob } from "../store"
+import {
+  closeDetail,
+  humanSize,
+  isScrobbledThisSession,
+  pushToast,
+  recordScrobbled,
+  store,
+  trackJob,
+} from "../store"
 import EpisodeTile from "./EpisodeTile.vue"
 
 // How long after a sync/unsync job kicks off before we re-fetch the title
@@ -22,6 +30,33 @@ const submitting = ref(false)
 
 function key(s: number, e: number): string { return `${s}-${e}` }
 
+// Apply the session scrobble overlay to fresh title-detail data. Plex's
+// scrobble lands instantly but the WatchState daemon polls Plex on a slow
+// schedule (minutes), so api.title() can return watched=false for an episode
+// we successfully scrobbled seconds ago. Without this overlay, the UI would
+// flicker watched -> unwatched as refreshInPlace fires.
+function applyScrobbleOverlay(d: TitleDetail): TitleDetail {
+  if (d.kind === "movie") {
+    if (isScrobbledThisSession(d.lib, d.folder)) d.watched = true
+    return d
+  }
+  for (const s of d.seasons) {
+    let extraWatched = 0
+    for (const e of s.episodes) {
+      if (
+        isScrobbledThisSession(d.lib, d.folder, e.season, e.episode)
+        && e.watch_state !== "watched"
+      ) {
+        e.watch_state = "watched"
+        e.watch_pct = 100
+        extraWatched++
+      }
+    }
+    s.watched_episodes += extraWatched
+  }
+  return d
+}
+
 async function load(lib: string, folder: string): Promise<void> {
   loading.value = true
   error.value = ""
@@ -30,7 +65,7 @@ async function load(lib: string, folder: string): Promise<void> {
   lastClick.value = null
   expandedSeasons.value = new Set()
   try {
-    const d = await api.title(lib, folder)
+    const d = applyScrobbleOverlay(await api.title(lib, folder))
     detail.value = d
     // Expand the first season with unsynced or unwatched eps; otherwise season 1
     if (d.kind !== "movie" && d.seasons.length) {
@@ -53,7 +88,7 @@ async function refreshInPlace(lib: string, folder: string): Promise<void> {
     return
   }
   try {
-    const d = await api.title(lib, folder)
+    const d = applyScrobbleOverlay(await api.title(lib, folder))
     if (!detail.value || detail.value.lib !== lib || detail.value.folder !== folder) {
       return  // user navigated during the fetch
     }
@@ -287,29 +322,22 @@ async function markWatched(
       season,
       episode,
     })
-    // Optimistically reflect successful scrobbles in local state. Plex's
-    // WatchState daemon picks the change up on its next poll; until then,
-    // refreshInPlace would still show the stale watch state.
+    // Record successful scrobbles in the session overlay, then funnel the
+    // optimistic update through the same applyScrobbleOverlay helper that
+    // refreshInPlace uses. One code path = no drift between "fresh-mark
+    // optimistic update" and "post-refresh re-apply."
     if (detail.value.kind === "movie") {
-      if (r.scrobbled > 0) detail.value.watched = true
+      if (r.scrobbled > 0) {
+        recordScrobbled(detail.value.lib, detail.value.folder)
+      }
     } else {
-      const okSet = new Set(
-        r.results
-          .filter(it => it.status === "ok" && it.season !== null && it.episode !== null)
-          .map(it => `${it.season}-${it.episode}`),
-      )
-      for (const s of detail.value.seasons) {
-        let watchedDelta = 0
-        for (const e of s.episodes) {
-          if (okSet.has(`${e.season}-${e.episode}`) && e.watch_state !== "watched") {
-            e.watch_state = "watched"
-            e.watch_pct = 100
-            watchedDelta++
-          }
+      for (const it of r.results) {
+        if (it.status === "ok" && it.season !== null && it.episode !== null) {
+          recordScrobbled(detail.value.lib, detail.value.folder, it.season, it.episode)
         }
-        s.watched_episodes += watchedDelta
       }
     }
+    applyScrobbleOverlay(detail.value)
     if (r.error) {
       pushToast({ kind: "error", text: r.error })
     } else if (r.failed > 0) {

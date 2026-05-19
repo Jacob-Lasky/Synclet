@@ -31,6 +31,32 @@ export interface Toast {
   jobId?: string
 }
 
+// Session-only overlay of items the user explicitly marked watched via the
+// Mark-watched buttons. We need this because Plex's scrobble is asynchronous
+// from Synclet's perspective: the WatchState daemon polls Plex on its own
+// schedule and the local SQLite DB lags by minutes. Without this overlay,
+// any refreshInPlace after a successful scrobble would re-read the stale
+// watchstate and overwrite the optimistic update — the checkmarks would
+// appear, then revert seconds later.
+//
+// Keyed by `${lib}/${folder}/${season}/${episode}` for episodes,
+// `${lib}/${folder}//` for movies. Cleared on page reload (intentional —
+// by then WatchState should have caught up).
+const scrobbledOverlay = new Set<string>()
+
+function overlayKey(lib: string, folder: string, season: number | null = null, episode: number | null = null): string {
+  return `${lib}/${folder}/${season ?? ""}/${episode ?? ""}`
+}
+
+export function recordScrobbled(lib: string, folder: string, season: number | null = null, episode: number | null = null): void {
+  scrobbledOverlay.add(overlayKey(lib, folder, season, episode))
+}
+
+/** True if (lib, folder, season?, episode?) was scrobbled in this session. */
+export function isScrobbledThisSession(lib: string, folder: string, season: number | null = null, episode: number | null = null): boolean {
+  return scrobbledOverlay.has(overlayKey(lib, folder, season, episode))
+}
+
 export const store = reactive<State>({
   titles: [],
   disk: null,
