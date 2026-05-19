@@ -38,7 +38,10 @@ vi.mock("./api", () => ({
         },
       ],
     }),
-    maintResolve: vi.fn(),
+    maintResolve: vi.fn().mockResolvedValue({
+      results: [],
+      cleanup: { removed_files: 0, removed_dirs: 0 },
+    }),
   },
 }))
 

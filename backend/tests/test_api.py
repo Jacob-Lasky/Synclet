@@ -234,6 +234,9 @@ class TestMaintenanceResolveRoute:
         assert r.status_code == 201
         body = r.json()
         assert body["results"][0]["status"] == "rejected"
+        # Cleanup summary is always present so the frontend toast can show it.
+        assert "cleanup" in body
+        assert body["cleanup"].keys() == {"removed_files", "removed_dirs"}
         assert load_snapshot() == set()
 
     def test_confirm_calls_scrobble_and_returns_per_item_status(

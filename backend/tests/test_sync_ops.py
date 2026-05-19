@@ -315,3 +315,33 @@ class TestSyncOpsSnapshotIntegration:
         r = remove_files([str(target)])
         assert r["removed"] == 1
         assert key not in load_snapshot()
+        # cleanup is part of the wire shape; frontend toast surfaces totals.
+        assert "cleanup" in r
+        assert r["cleanup"].keys() == {"removed_files", "removed_dirs"}
+
+    def test_remove_files_sweeps_sibling_sidecars(self, patch_paths):
+        """Removing the .mkv via maintenance should also clear the .srt next
+        to it AND the now-empty Season / show parent dirs."""
+        from synclet.pending import SnapshotKey, save_snapshot
+
+        sync = patch_paths["sync"]
+        season = sync / "tv" / "Sweep Show" / "Season 01"
+        season.mkdir(parents=True)
+        mkv = season / "Sweep Show - S01E01 - Pilot.mkv"
+        srt = season / "Sweep Show - S01E01 - Pilot.en.srt"
+        mkv.write_bytes(b"\0" * 5)
+        srt.write_text("subs")
+        save_snapshot(
+            {SnapshotKey(sync_sub="tv", folder="Sweep Show", season=1, episode=1)}
+        )
+
+        r = remove_files([str(mkv)])
+        assert r["removed"] == 1
+        # cleanup swept the .srt sibling + pruned the empty Season + show dirs.
+        assert r["cleanup"]["removed_files"] == 1
+        assert r["cleanup"]["removed_dirs"] == 2
+        assert not srt.exists()
+        assert not season.exists()
+        assert not season.parent.exists()
+        # sync sub root must remain (it's the mount point).
+        assert (sync / "tv").exists()

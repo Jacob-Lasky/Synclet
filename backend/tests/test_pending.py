@@ -17,6 +17,7 @@ from synclet.pending import (
     SnapshotKey,
     add_keys,
     bootstrap_if_missing,
+    cleanup_after_resolve,
     compute_pending,
     keys_for_paths,
     load_snapshot,
@@ -252,7 +253,7 @@ class TestResolveReject:
 
         k = SnapshotKey(sync_sub="tv", folder="X", season=1, episode=1)
         save_snapshot({k})
-        results = resolve([k], confirm=False)
+        results, _cleanup = resolve([k], confirm=False)
         assert [r.status for r in results] == ["rejected"]
         assert load_snapshot() == set()
 
@@ -280,7 +281,7 @@ class TestResolveConfirm:
         k = SnapshotKey(sync_sub="movies", folder="Movie X")
         save_snapshot({k})
 
-        results = resolve([k], confirm=True)
+        results, _cleanup = resolve([k], confirm=True)
         assert [r.status for r in results] == ["ok"]
         assert called == ["9000"]
         assert load_snapshot() == set()
@@ -300,7 +301,7 @@ class TestResolveConfirm:
         k = SnapshotKey(sync_sub="movies", folder="Movie X")
         save_snapshot({k})
 
-        results = resolve([k], confirm=True)
+        results, _cleanup = resolve([k], confirm=True)
         assert [r.status for r in results] == ["scrobble_failed"]
         assert load_snapshot() == set()
 
@@ -335,7 +336,7 @@ class TestResolveConfirm:
         k = SnapshotKey(sync_sub="tv", folder="Ghost Show", season=1, episode=3)
         save_snapshot({k})
 
-        results = resolve([k], confirm=True)
+        results, _cleanup = resolve([k], confirm=True)
         assert [r.status for r in results] == ["ok"]
         # Must be the EPISODE ratingKey, not the show's. This is the trap the
         # initial design comment got wrong before live-testing surfaced it.
@@ -355,7 +356,7 @@ class TestResolveConfirm:
         k = SnapshotKey(sync_sub="movies", folder="Movie X")
         save_snapshot({k})
 
-        results = resolve([k], confirm=True)
+        results, _cleanup = resolve([k], confirm=True)
         assert [r.status for r in results] == ["no_rating_key"]
         # Snapshot still cleared — the file is gone, leaving it in pending
         # would re-prompt the user every page load.
@@ -403,3 +404,155 @@ class TestGroupedPending:
         assert s_nums == [1, 2]
         assert len(seasons[0]["episodes"]) == 2
         assert len(seasons[1]["episodes"]) == 1
+
+
+# ── cleanup_after_resolve ────────────────────────────────────────────────────
+
+
+class TestCleanupAfterResolveMovie:
+    def test_sweeps_sidecars_and_folder_when_video_is_gone(
+        self, patch_snapshot, patch_paths
+    ):
+        sync = patch_paths["sync"]
+        folder = sync / "movies" / "Ghost Movie (2099)"
+        folder.mkdir(parents=True)
+        # Sidecars only. No video — the user deleted that already.
+        (folder / "Ghost Movie.en.srt").write_text("subs")
+        (folder / "movie.nfo").write_text("nfo")
+        (folder / "poster.jpg").write_bytes(b"\xff")
+
+        counts = cleanup_after_resolve(
+            SnapshotKey(sync_sub="movies", folder="Ghost Movie (2099)")
+        )
+        assert counts == {"removed_files": 3, "removed_dirs": 1}
+        assert not folder.exists()
+
+    def test_no_op_when_video_still_present(self, patch_snapshot, patch_paths):
+        """Safety latch: don't strip sidecars from a movie still on disk."""
+        sync = patch_paths["sync"]
+        folder = sync / "movies" / "Ghost Movie (2099)"
+        folder.mkdir(parents=True)
+        (folder / "Ghost Movie.mkv").write_bytes(b"\0" * 10)
+        (folder / "Ghost Movie.en.srt").write_text("subs")
+
+        counts = cleanup_after_resolve(
+            SnapshotKey(sync_sub="movies", folder="Ghost Movie (2099)")
+        )
+        assert counts == {"removed_files": 0, "removed_dirs": 0}
+        assert (folder / "Ghost Movie.mkv").exists()
+        assert (folder / "Ghost Movie.en.srt").exists()
+
+    def test_no_op_when_folder_missing(self, patch_snapshot, patch_paths):
+        counts = cleanup_after_resolve(
+            SnapshotKey(sync_sub="movies", folder="Nonexistent")
+        )
+        assert counts == {"removed_files": 0, "removed_dirs": 0}
+
+
+class TestCleanupAfterResolveShow:
+    def test_sweeps_episode_sidecars_when_video_gone(
+        self, patch_snapshot, patch_paths
+    ):
+        sync = patch_paths["sync"]
+        season = sync / "tv" / "Ghost Show (2099)" / "Season 01"
+        season.mkdir(parents=True)
+        # Only the S01E01 sidecar remains; user deleted the .mkv.
+        (season / "Ghost Show - S01E01 - X.en.srt").write_text("subs")
+        # S01E02 video is still here — must NOT touch it.
+        (season / "Ghost Show - S01E02 - Y.mkv").write_bytes(b"\0" * 5)
+        (season / "Ghost Show - S01E02 - Y.en.srt").write_text("subs2")
+
+        counts = cleanup_after_resolve(
+            SnapshotKey(
+                sync_sub="tv",
+                folder="Ghost Show (2099)",
+                season=1,
+                episode=1,
+            )
+        )
+        assert counts["removed_files"] == 1
+        # season dir is NOT empty (S01E02 still there), so no dir prune
+        assert counts["removed_dirs"] == 0
+        assert not (season / "Ghost Show - S01E01 - X.en.srt").exists()
+        assert (season / "Ghost Show - S01E02 - Y.mkv").exists()
+        assert (season / "Ghost Show - S01E02 - Y.en.srt").exists()
+
+    def test_prunes_season_dir_when_last_episode_swept(
+        self, patch_snapshot, patch_paths
+    ):
+        sync = patch_paths["sync"]
+        season = sync / "tv" / "Ghost Show (2099)" / "Season 01"
+        season.mkdir(parents=True)
+        (season / "Ghost Show - S01E01 - X.en.srt").write_text("subs")
+
+        counts = cleanup_after_resolve(
+            SnapshotKey(
+                sync_sub="tv",
+                folder="Ghost Show (2099)",
+                season=1,
+                episode=1,
+            )
+        )
+        assert counts["removed_files"] == 1
+        # Season dir empty -> rmdir; show folder also empty -> rmdir (2 dirs)
+        assert counts["removed_dirs"] == 2
+        assert not season.exists()
+        assert not season.parent.exists()
+        # Sub root must NOT be pruned (it's a stable mount point).
+        assert (sync / "tv").exists()
+
+    def test_no_op_when_video_for_episode_present(
+        self, patch_snapshot, patch_paths
+    ):
+        """Safety latch: don't strip sidecars when the video is still there."""
+        sync = patch_paths["sync"]
+        season = sync / "tv" / "Ghost Show (2099)" / "Season 01"
+        season.mkdir(parents=True)
+        (season / "Ghost Show - S01E01 - X.mkv").write_bytes(b"\0" * 5)
+        (season / "Ghost Show - S01E01 - X.en.srt").write_text("subs")
+
+        counts = cleanup_after_resolve(
+            SnapshotKey(
+                sync_sub="tv",
+                folder="Ghost Show (2099)",
+                season=1,
+                episode=1,
+            )
+        )
+        assert counts == {"removed_files": 0, "removed_dirs": 0}
+        assert (season / "Ghost Show - S01E01 - X.mkv").exists()
+
+
+class TestResolveIntegratesCleanup:
+    def test_resolve_returns_aggregated_cleanup_counts(
+        self, patch_snapshot, patch_paths, monkeypatch
+    ):
+        """resolve() runs cleanup_after_resolve for each key in the batch."""
+        sync = patch_paths["sync"]
+        # Two movies' worth of orphan sidecars.
+        m1 = sync / "movies" / "M One"
+        m2 = sync / "movies" / "M Two"
+        m1.mkdir(parents=True)
+        m2.mkdir(parents=True)
+        (m1 / "a.srt").write_text("x")
+        (m2 / "b.srt").write_text("y")
+        (m2 / "c.nfo").write_text("z")
+
+        save_snapshot(
+            {
+                SnapshotKey(sync_sub="movies", folder="M One"),
+                SnapshotKey(sync_sub="movies", folder="M Two"),
+            }
+        )
+        # Reject path keeps the test cheap (no scrobble mock needed).
+        results, cleanup = resolve(
+            [
+                SnapshotKey(sync_sub="movies", folder="M One"),
+                SnapshotKey(sync_sub="movies", folder="M Two"),
+            ],
+            confirm=False,
+        )
+        assert len(results) == 2
+        assert cleanup == {"removed_files": 3, "removed_dirs": 2}
+        assert not m1.exists()
+        assert not m2.exists()

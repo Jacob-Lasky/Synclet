@@ -3,6 +3,7 @@ import type {
   Job,
   PendingGroup,
   PendingItemRef,
+  RemoveResponse,
   ResolveAction,
   ResolveResponse,
   ResolveResult,
@@ -50,7 +51,7 @@ export const api = {
   maintWatched: () => json<{ items: WatchedFiles[] }>(`/api/maintenance/watched`),
   maintHanging: () => json<{ items: HangingFile[] }>(`/api/maintenance/hanging`),
   maintRemove: (paths: string[]) =>
-    json<{ removed: number; bytes_freed: number }>(`/api/maintenance/remove`, {
+    json<RemoveResponse>(`/api/maintenance/remove`, {
       method: "POST",
       body: JSON.stringify({ paths }),
     }),

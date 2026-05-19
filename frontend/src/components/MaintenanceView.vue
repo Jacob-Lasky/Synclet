@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue"
 import { api } from "../api"
 import type {
+  CleanupSummary,
   HangingFile,
   PendingEpisode,
   PendingGroup,
@@ -108,6 +109,14 @@ function summarizeResolve(results: ResolveItemResult[]): string {
   return parts.join(", ") || "no items"
 }
 
+function summarizeCleanup(c: CleanupSummary | undefined): string {
+  if (!c || (c.removed_files === 0 && c.removed_dirs === 0)) return ""
+  const parts: string[] = []
+  if (c.removed_files) parts.push(`${c.removed_files} sidecar${c.removed_files === 1 ? "" : "s"}`)
+  if (c.removed_dirs) parts.push(`${c.removed_dirs} folder${c.removed_dirs === 1 ? "" : "s"}`)
+  return ` (cleaned ${parts.join(", ")})`
+}
+
 async function resolveItems(
   items: PendingItemRef[],
   action: ResolveAction,
@@ -129,7 +138,7 @@ async function resolveItems(
       )
       pushToast({
         kind: anyFailed ? "error" : "success",
-        text: `${verb}: ${summarizeResolve(res.results)}`,
+        text: `${verb}: ${summarizeResolve(res.results)}${summarizeCleanup(res.cleanup)}`,
       })
     }
     await load()
@@ -153,7 +162,7 @@ async function removePaths(paths: string[], label: string): Promise<void> {
     const r = await api.maintRemove(paths)
     pushToast({
       kind: "success",
-      text: `Removed ${r.removed} files (${humanSize(r.bytes_freed)})`,
+      text: `Removed ${r.removed} files (${humanSize(r.bytes_freed)})${summarizeCleanup(r.cleanup)}`,
     })
     await load()
     await loadState(true)

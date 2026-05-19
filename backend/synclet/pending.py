@@ -281,6 +281,109 @@ def compute_pending() -> set[SnapshotKey]:
     return load_snapshot() - scan_on_disk()
 
 
+# ── Post-resolve filesystem cleanup ─────────────────────────────────────────
+
+
+def _prune_empty_ancestors(start: Path, stop: Path) -> int:
+    """Remove empty dirs from `start` walking upward, never crossing `stop`.
+
+    Returns the number of directories removed. Both `start` and `stop` are
+    inclusive at their respective ends: `stop` is the floor (never removed).
+    """
+    removed = 0
+    current = start
+    while current != stop and stop in current.parents:
+        try:
+            current.rmdir()
+        except OSError:
+            break
+        removed += 1
+        current = current.parent
+    return removed
+
+
+def cleanup_after_resolve(key: SnapshotKey) -> dict[str, int]:
+    """Sweep orphan sidecars + prune empty ancestor dirs for a resolved item.
+
+    Only runs when the matching video is genuinely gone. For shows this means
+    no file with the same `SxxEyy` pattern survives in the season dir; for
+    movies it means no video file of any kind remains in the title folder.
+    The presence of a video is the safety latch: it prevents stripping subs
+    off an episode that's still synced (race / hand edit / partial delete).
+
+    Returns counts so the API can surface a "removed N files, M folders" hint.
+    """
+    counts = {"removed_files": 0, "removed_dirs": 0}
+
+    sub_root = SYNC_ROOT / key.sync_sub
+    folder_path = sub_root / key.folder
+    if not folder_path.exists():
+        return counts
+
+    if key.season is None or key.episode is None:
+        # Movie: sweep when no videos remain in the title folder.
+        videos_remaining = any(
+            f.is_file() and f.suffix.lower() in VIDEO_EXTS
+            for f in folder_path.iterdir()
+        )
+        if videos_remaining:
+            return counts
+        for f in list(folder_path.iterdir()):
+            if f.is_file():
+                try:
+                    f.unlink()
+                    counts["removed_files"] += 1
+                except OSError:
+                    continue
+        # rmdir the title folder + walk up to (but not into) sub_root.
+        counts["removed_dirs"] += _prune_empty_ancestors(folder_path, sub_root)
+        return counts
+
+    # Show / youtube: match SxxEyy on filenames inside the season dir(s).
+    # Multiple season dirs with the same number are uncommon but possible
+    # (e.g. "Season 01" vs "Specials 01"); iterate all that parse to the key.
+    from synclet.scan import _season_num  # noqa: PLC0415
+
+    ep_pat = re.compile(
+        rf"[Ss]{key.season:02d}[Ee]{key.episode:02d}(?!\d)|"
+        rf"[Ss]{key.season}[Ee]{key.episode:04d}(?!\d)",
+        re.IGNORECASE,
+    )
+    season_dirs = [
+        d
+        for d in folder_path.iterdir()
+        if d.is_dir() and _season_num(d) == key.season
+    ]
+    for season_dir in season_dirs:
+        matching = [f for f in season_dir.iterdir() if ep_pat.search(f.name)]
+        videos_remaining = any(
+            f.suffix.lower() in VIDEO_EXTS for f in matching
+        )
+        if videos_remaining:
+            continue
+        for f in matching:
+            if f.is_file():
+                try:
+                    f.unlink()
+                    counts["removed_files"] += 1
+                except OSError:
+                    continue
+        # If the season dir is now empty, rmdir it and walk up the show folder.
+        if not any(season_dir.iterdir()):
+            counts["removed_dirs"] += _prune_empty_ancestors(season_dir, sub_root)
+    return counts
+
+
+def aggregate_cleanup(keys: Iterable[SnapshotKey]) -> dict[str, int]:
+    """Run cleanup_after_resolve over a batch and sum the counts."""
+    total = {"removed_files": 0, "removed_dirs": 0}
+    for k in keys:
+        c = cleanup_after_resolve(k)
+        total["removed_files"] += c["removed_files"]
+        total["removed_dirs"] += c["removed_dirs"]
+    return total
+
+
 # ── Grouping for the API response ───────────────────────────────────────────
 
 
@@ -417,8 +520,10 @@ class ResolveResult:
         return d
 
 
-def resolve(keys: Iterable[SnapshotKey], *, confirm: bool) -> list[ResolveResult]:
-    """Resolve a batch of pending keys.
+def resolve(
+    keys: Iterable[SnapshotKey], *, confirm: bool,
+) -> tuple[list[ResolveResult], dict[str, int]]:
+    """Resolve a batch of pending keys, sweep filesystem leftovers.
 
     On reject: every key is dropped from the snapshot, returns status
     "rejected" per key. On confirm: each key is scrobbled to Plex first
@@ -426,6 +531,14 @@ def resolve(keys: Iterable[SnapshotKey], *, confirm: bool) -> list[ResolveResult
     get "scrobble_failed" or "no_rating_key". The snapshot drops every key
     regardless of scrobble outcome — the user already deleted the file, so
     putting it back in pending would be incorrect.
+
+    After the snapshot mutation, runs cleanup_after_resolve for each key to
+    sweep orphan subtitle sidecars and prune empty parent dirs. Cleanup is
+    safe to run for both confirm and reject because the trigger is "this
+    item is gone from disk now," not "the user wants Plex to know."
+
+    Returns (results, cleanup_totals). cleanup_totals has the shape
+    {"removed_files": N, "removed_dirs": M} aggregated across the batch.
     """
     # Local imports keep the module's import graph small.
     from synclet.plex import (  # noqa: PLC0415
@@ -441,7 +554,8 @@ def resolve(keys: Iterable[SnapshotKey], *, confirm: bool) -> list[ResolveResult
     if not confirm:
         results.extend(ResolveResult(key=k, status="rejected") for k in keys)
         remove_keys(keys)
-        return results
+        cleanup = aggregate_cleanup(keys)
+        return results, cleanup
 
     for k in keys:
         lib = find_source_lib(k.folder)
@@ -466,4 +580,5 @@ def resolve(keys: Iterable[SnapshotKey], *, confirm: bool) -> list[ResolveResult
             results.append(ResolveResult(key=k, status="scrobble_failed"))
 
     remove_keys(keys)
-    return results
+    cleanup = aggregate_cleanup(keys)
+    return results, cleanup

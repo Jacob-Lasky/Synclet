@@ -320,9 +320,17 @@ async def api_maint_resolve(data: ResolvePendingRequest) -> dict:
     Confirm scrobbles each item to Plex (best-effort, per-item) and drops it
     from the snapshot. Reject just drops from the snapshot. Per-item results
     let the UI flag scrobble failures without aborting the rest of the batch.
+
+    After resolve, orphan sidecars (subtitles, .nfo, art) and now-empty
+    parent dirs are swept by pending.cleanup_after_resolve. Counts surface
+    in the response's `cleanup` field for toast UX.
     """
     if data.action not in {"confirm", "reject"}:
-        return {"error": f"unknown action: {data.action}", "results": []}
+        return {
+            "error": f"unknown action: {data.action}",
+            "results": [],
+            "cleanup": {"removed_files": 0, "removed_dirs": 0},
+        }
     keys = [
         pending.SnapshotKey(
             sync_sub=item.sync_sub,
@@ -332,8 +340,8 @@ async def api_maint_resolve(data: ResolvePendingRequest) -> dict:
         )
         for item in data.items
     ]
-    results = pending.resolve(keys, confirm=(data.action == "confirm"))
-    return {"results": [r.to_dict() for r in results]}
+    results, cleanup = pending.resolve(keys, confirm=(data.action == "confirm"))
+    return {"results": [r.to_dict() for r in results], "cleanup": cleanup}
 
 
 @post("/api/resolve-link")
