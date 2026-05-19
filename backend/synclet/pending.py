@@ -582,3 +582,118 @@ def resolve(
     remove_keys(keys)
     cleanup = aggregate_cleanup(keys)
     return results, cleanup
+
+
+# ── Explicit mark-watched (no snapshot mutation, no cleanup) ────────────────
+
+
+def mark_watched_scope(
+    lib: str,
+    folder: str,
+    scope: str,
+    season: int | None = None,
+    episode: int | None = None,
+) -> dict:
+    """Scrobble Plex for an explicit user gesture, no filesystem mutation.
+
+    Distinct from `resolve(confirm=True)`:
+    - The file is still on disk; this is "Plex's watch state drifted, sync it
+      up." The snapshot is NOT mutated, no orphan cleanup runs.
+    - Scope determines how the lib/folder pair expands to individual scrobble
+      targets:
+        "movie"   -> scrobble the movie's ratingKey
+        "episode" -> scrobble (season, episode)
+        "season"  -> scrobble every episode where parentIndex == season
+        "series"  -> scrobble every episode in the show
+
+    Returns {"scrobbled": N, "failed": N, "results": [...]} where each result
+    has the per-item scrobble status. A no_rating_key result means Plex's
+    library doesn't have the item (folder mismatch or library scanning).
+    """
+    from synclet.plex import (  # noqa: PLC0415
+        episode_rating_keys,
+        find_in_library,
+        scrobble,
+    )
+
+    if scope not in {"movie", "series", "season", "episode"}:
+        return {
+            "scrobbled": 0,
+            "failed": 0,
+            "results": [],
+            "error": f"unknown scope: {scope}",
+        }
+
+    meta = find_in_library(lib, folder)
+    show_or_movie_rk = meta["ratingKey"] if meta else None
+    if not show_or_movie_rk:
+        return {
+            "scrobbled": 0,
+            "failed": 1 if scope == "movie" else 0,
+            "results": [
+                {
+                    "season": season,
+                    "episode": episode,
+                    "status": "no_rating_key",
+                },
+            ]
+            if scope == "movie"
+            else [],
+            "error": (
+                None
+                if scope != "movie"
+                else f"no Plex item for {lib}/{folder}"
+            ),
+        }
+
+    targets: list[tuple[str, int | None, int | None]] = []
+    if scope == "movie":
+        targets.append((show_or_movie_rk, None, None))
+    else:
+        ep_map = episode_rating_keys(show_or_movie_rk)
+        if scope == "episode":
+            if season is None or episode is None:
+                return {
+                    "scrobbled": 0,
+                    "failed": 0,
+                    "results": [],
+                    "error": "season and episode required for scope=episode",
+                }
+            rk = ep_map.get((season, episode))
+            if rk is None:
+                return {
+                    "scrobbled": 0,
+                    "failed": 1,
+                    "results": [
+                        {"season": season, "episode": episode, "status": "no_rating_key"},
+                    ],
+                }
+            targets.append((rk, season, episode))
+        elif scope == "season":
+            if season is None:
+                return {
+                    "scrobbled": 0,
+                    "failed": 0,
+                    "results": [],
+                    "error": "season required for scope=season",
+                }
+            for (s, e), rk in sorted(ep_map.items()):
+                if s == season:
+                    targets.append((rk, s, e))
+        else:  # series
+            for (s, e), rk in sorted(ep_map.items()):
+                targets.append((rk, s, e))
+
+    results: list[dict] = []
+    scrobbled = 0
+    failed = 0
+    for rk, s, e in targets:
+        ok = scrobble(rk)
+        results.append(
+            {"season": s, "episode": e, "status": "ok" if ok else "scrobble_failed"},
+        )
+        if ok:
+            scrobbled += 1
+        else:
+            failed += 1
+    return {"scrobbled": scrobbled, "failed": failed, "results": results}

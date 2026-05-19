@@ -283,6 +283,62 @@ class TestMaintenanceResolveRoute:
         assert body["results"] == []
 
 
+class TestScrobbleRoute:
+    def test_movie_scrobble(self, client, monkeypatch):
+        called: list[str] = []
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "M-9"} if folder == "M" else None,
+        )
+        monkeypatch.setattr(
+            "synclet.plex.scrobble",
+            lambda rk, **_: called.append(rk) or True,
+        )
+        r = client.post(
+            "/api/scrobble",
+            json={"lib": "movies", "folder": "M", "scope": "movie"},
+        )
+        assert r.status_code == 201
+        body = r.json()
+        assert body["scrobbled"] == 1
+        assert body["failed"] == 0
+        assert called == ["M-9"]
+
+    def test_episode_scrobble(self, client, monkeypatch):
+        called: list[str] = []
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "S-1"},
+        )
+        monkeypatch.setattr(
+            "synclet.plex.episode_rating_keys",
+            lambda show_rk: {(1, 1): "E-1-1"},
+        )
+        monkeypatch.setattr(
+            "synclet.plex.scrobble",
+            lambda rk, **_: called.append(rk) or True,
+        )
+        r = client.post(
+            "/api/scrobble",
+            json={
+                "lib": "tv", "folder": "Show",
+                "scope": "episode", "season": 1, "episode": 1,
+            },
+        )
+        body = r.json()
+        assert body["scrobbled"] == 1
+        assert called == ["E-1-1"]
+
+    def test_unknown_scope_returns_error(self, client):
+        r = client.post(
+            "/api/scrobble",
+            json={"lib": "movies", "folder": "X", "scope": "bogus"},
+        )
+        body = r.json()
+        assert "error" in body
+        assert body["scrobbled"] == 0
+
+
 class TestResolveRoute:
     def test_text_match(self, client):
         r = client.post("/api/resolve-link", json={"url": "better call saul"})

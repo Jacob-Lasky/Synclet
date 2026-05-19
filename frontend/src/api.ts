@@ -7,6 +7,8 @@ import type {
   ResolveAction,
   ResolveResponse,
   ResolveResult,
+  ScrobbleResponse,
+  ScrobbleScope,
   StateBundle,
   SyncedEntry,
   TitleDetail,
@@ -69,6 +71,20 @@ export const api = {
     }),
 
   refresh: () => json<{ ok: true }>("/api/refresh", { method: "POST" }),
+
+  scrobble: (body: ScrobbleBody) =>
+    json<ScrobbleResponse>(`/api/scrobble`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+}
+
+export interface ScrobbleBody {
+  lib: string
+  folder: string
+  scope: ScrobbleScope
+  season?: number
+  episode?: number
 }
 
 export interface SyncBody {
