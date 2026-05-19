@@ -70,14 +70,21 @@ window.addEventListener("keydown", onKeydown)
     <TabBar :tab="store.tab" :counts="counts" @change="t => (store.tab = t)" />
 
     <main class="main">
+      <!-- KeepAlive preserves Synced / Watchlist / Maintenance state across
+           tab switches so leaving and returning is instant. Once loaded,
+           these views stay mounted and re-show without re-fetching. Library
+           is excluded because its TitleGrid is already store-backed and
+           cheap to remount. -->
       <template v-if="store.tab === 'library'">
         <FilterBar />
         <TitleGrid v-if="store.loaded" />
         <div v-else class="loading">Loading library…</div>
       </template>
-      <SyncedView      v-else-if="store.tab === 'synced'" />
-      <WatchlistView   v-else-if="store.tab === 'watchlist'" />
-      <MaintenanceView v-else-if="store.tab === 'maintenance'" />
+      <KeepAlive v-else>
+        <SyncedView      v-if="store.tab === 'synced'" />
+        <WatchlistView   v-else-if="store.tab === 'watchlist'" />
+        <MaintenanceView v-else-if="store.tab === 'maintenance'" />
+      </KeepAlive>
     </main>
 
     <DetailDrawer v-if="store.detail" />
