@@ -117,6 +117,37 @@ class TestListGrouped:
 # ── Integration: producers filter ignored ────────────────────────────────────
 
 
+class TestCacheInvalidation:
+    """Mutating actions must clear maint_cache so the next read recomputes."""
+
+    def test_ignore_invalidates_cache(self, patch_paths):
+        from synclet import maint_cache
+
+        # Prime the cache with a sentinel value.
+        maint_cache._cache["pending"] = (0.0, "stale")
+        # Just calling time.time() picks up the stale-since-epoch entry, so
+        # we use the actual cache helper to set a fresh-but-known value.
+        import time
+
+        maint_cache._cache["pending"] = (time.time(), "stale")
+        assert maint_cache._cache.get("pending", (0, None))[1] == "stale"
+
+        ignore_pending(PendingRef(sync_sub="tv", folder="X", season=1, episode=1))
+        # invalidate() should have cleared the cache entry.
+        assert "pending" not in maint_cache._cache
+
+    def test_unignore_invalidates_cache(self, patch_paths):
+        from synclet import maint_cache
+        import time
+
+        ignore_pending(PendingRef(sync_sub="tv", folder="Y", season=1, episode=1))
+        # Re-prime after the previous invalidation.
+        maint_cache._cache["pending"] = (time.time(), "stale")
+
+        unignore_pending(PendingRef(sync_sub="tv", folder="Y", season=1, episode=1))
+        assert "pending" not in maint_cache._cache
+
+
 class TestPendingFilters:
     def test_ignored_pending_disappears_from_compute_pending(
         self, patch_paths, patch_snapshot_for_pending

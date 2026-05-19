@@ -13,7 +13,7 @@ import type {
   ResolveItemResult,
   WatchedFiles,
 } from "../types"
-import { humanSize, loadMaintenanceCount, loadState, pushToast } from "../store"
+import { humanSize, loadMaintenanceCount, loadState, pushToast, store } from "../store"
 
 const watched = ref<WatchedFiles[]>([])
 const hanging = ref<HangingFile[]>([])
@@ -59,21 +59,107 @@ const ignoredCount = computed(() =>
   + ignoredList.value.hanging.length
 )
 
-async function ignoreItem(kind: IgnoreKind, ref: object, label: string): Promise<void> {
+// Mutate the local lists without re-fetching from the server. The
+// server-side cache TTL (30s) means a reload would still be slow even after
+// the invalidation triggered by the ignore call. Optimistic UI keeps the
+// click snappy; on error we restore the entry and surface the error.
+
+function removePendingLocal(kind: IgnoreKind, ref: any): void {
+  if (kind === "watched") {
+    watched.value = watched.value.filter(
+      w => !(w.lib === ref.lib && w.folder === ref.folder),
+    )
+  } else if (kind === "hanging") {
+    hanging.value = hanging.value.filter(h => h.path !== ref.path)
+  } else if (kind === "pending") {
+    if (ref.season === null || ref.season === undefined) {
+      // Movie-level pending: drop the entire group.
+      pending.value = pending.value.filter(
+        g => !(g.sync_sub === ref.sync_sub && g.folder === ref.folder),
+      )
+    } else {
+      // Episode-level pending: drop the episode; if the season becomes
+      // empty, drop the season; if the group becomes empty, drop the group.
+      pending.value = pending.value
+        .map(g => {
+          if (g.sync_sub !== ref.sync_sub || g.folder !== ref.folder) return g
+          const seasons = (g.seasons ?? [])
+            .map(s => {
+              if (s.season !== ref.season) return s
+              return { ...s, episodes: s.episodes.filter(e => e.episode !== ref.episode) }
+            })
+            .filter(s => s.episodes.length > 0)
+          return { ...g, seasons }
+        })
+        .filter(g => g.kind === "movie" || (g.seasons?.length ?? 0) > 0)
+    }
+  }
+}
+
+async function ignoreItem(kind: IgnoreKind, ref: any, label: string): Promise<void> {
+  // Snapshot for rollback on error.
+  const snapshot = {
+    watched: watched.value,
+    hanging: hanging.value,
+    pending: pending.value,
+    ignoredList: ignoredList.value,
+  }
+  // Optimistic: drop from source list immediately.
+  removePendingLocal(kind, ref)
+  // Add to the ignored list so the Ignored section reflects it without a refetch.
+  if (kind === "watched") {
+    ignoredList.value = {
+      ...ignoredList.value,
+      watched: [...ignoredList.value.watched, ref],
+    }
+  } else if (kind === "hanging") {
+    ignoredList.value = {
+      ...ignoredList.value,
+      hanging: [...ignoredList.value.hanging, ref],
+    }
+  } else {
+    ignoredList.value = {
+      ...ignoredList.value,
+      pending: [...ignoredList.value.pending, {
+        sync_sub: ref.sync_sub,
+        folder: ref.folder,
+        season: ref.season ?? null,
+        episode: ref.episode ?? null,
+      }],
+    }
+  }
+  // Decrement the tab badge locally so it updates instantly.
+  if (typeof store.maintenanceCount === "number") {
+    store.maintenanceCount = Math.max(0, store.maintenanceCount - 1)
+  }
+
   try {
     const r = await api.maintIgnore(kind, ref)
     if (!r.ok) {
+      // Rollback
+      watched.value = snapshot.watched
+      hanging.value = snapshot.hanging
+      pending.value = snapshot.pending
+      ignoredList.value = snapshot.ignoredList
+      loadMaintenanceCount()
       pushToast({ kind: "error", text: `Could not ignore ${label}` })
       return
     }
     pushToast({ kind: "success", text: `Ignored ${label}` })
-    await load()
   } catch (e) {
+    watched.value = snapshot.watched
+    hanging.value = snapshot.hanging
+    pending.value = snapshot.pending
+    ignoredList.value = snapshot.ignoredList
+    loadMaintenanceCount()
     pushToast({ kind: "error", text: (e as Error).message })
   }
 }
 
-async function unignoreItem(kind: IgnoreKind, ref: object, label: string): Promise<void> {
+async function unignoreItem(kind: IgnoreKind, ref: any, label: string): Promise<void> {
+  // Unignore needs a refetch because the entry has to reappear in its
+  // original source list, and we don't have all the fields (size, files)
+  // locally to reconstruct it.
   try {
     const r = await api.maintUnignore(kind, ref)
     if (!r.ok) {

@@ -160,11 +160,19 @@ def save(state: IgnoredState) -> None:
 # ── Mutation API ─────────────────────────────────────────────────────────────
 
 
+def _invalidate_maint_cache() -> None:
+    """Cache invalidation hook; local import keeps the module graph small."""
+    from synclet.maint_cache import invalidate  # noqa: PLC0415
+
+    invalidate()
+
+
 def ignore_pending(ref: PendingRef) -> None:
     """Add a pending key to the ignored set; idempotent."""
     state = load()
     state.pending.add(ref)
     save(state)
+    _invalidate_maint_cache()
 
 
 def unignore_pending(ref: PendingRef) -> None:
@@ -172,6 +180,7 @@ def unignore_pending(ref: PendingRef) -> None:
     state = load()
     state.pending.discard(ref)
     save(state)
+    _invalidate_maint_cache()
 
 
 def ignore_watched(ref: WatchedRef) -> None:
@@ -179,6 +188,7 @@ def ignore_watched(ref: WatchedRef) -> None:
     state = load()
     state.watched.add(ref)
     save(state)
+    _invalidate_maint_cache()
 
 
 def unignore_watched(ref: WatchedRef) -> None:
@@ -186,6 +196,7 @@ def unignore_watched(ref: WatchedRef) -> None:
     state = load()
     state.watched.discard(ref)
     save(state)
+    _invalidate_maint_cache()
 
 
 def ignore_hanging(ref: HangingRef) -> None:
@@ -193,6 +204,7 @@ def ignore_hanging(ref: HangingRef) -> None:
     state = load()
     state.hanging.add(ref)
     save(state)
+    _invalidate_maint_cache()
 
 
 def unignore_hanging(ref: HangingRef) -> None:
@@ -200,6 +212,7 @@ def unignore_hanging(ref: HangingRef) -> None:
     state = load()
     state.hanging.discard(ref)
     save(state)
+    _invalidate_maint_cache()
 
 
 # ── Filter helpers (used by producers) ───────────────────────────────────────
@@ -242,7 +255,8 @@ def ignore_ref(kind: str, ref: dict) -> bool:
     """Dispatch an ignore call by kind discriminator; returns True on success.
 
     Validates the kind and the ref shape per kind. Returns False if either is
-    malformed so the caller can surface a friendly error.
+    malformed so the caller can surface a friendly error. The per-kind
+    `ignore_*` callees handle cache invalidation.
     """
     try:
         if kind == "pending":
