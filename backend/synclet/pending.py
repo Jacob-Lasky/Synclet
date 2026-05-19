@@ -275,11 +275,11 @@ def keys_for_paths(paths: Iterable[str | Path]) -> set[SnapshotKey]:
 # ── Pending computation ─────────────────────────────────────────────────────
 
 
-def compute_pending() -> set[SnapshotKey]:
-    """Return the set of SnapshotKeys present in the snapshot but not on disk.
+def _compute_pending_uncached() -> set[SnapshotKey]:
+    """Walk SYNC_ROOT + intersect with snapshot + filter ignored.
 
-    Excludes user-muted entries from synclet.ignored so the maintenance UI
-    and the Maintenance tab badge both honor the mute.
+    The expensive part is scan_on_disk's filesystem walk on shfs FUSE.
+    Callers should go through `compute_pending()` for the cached path.
     """
     from synclet.ignored import PendingRef, ignored_pending_set  # noqa: PLC0415
 
@@ -299,6 +299,19 @@ def compute_pending() -> set[SnapshotKey]:
         )
         not in ignored
     }
+
+
+def compute_pending() -> set[SnapshotKey]:
+    """Return the set of SnapshotKeys present in the snapshot but not on disk.
+
+    Excludes user-muted entries from synclet.ignored so the maintenance UI
+    and the Maintenance tab badge both honor the mute. Cached via
+    `maint_cache` for STATE_CACHE_TTL seconds; invalidated by every
+    mutating maintenance action.
+    """
+    from synclet.maint_cache import get_cached  # noqa: PLC0415
+
+    return get_cached("pending", _compute_pending_uncached)
 
 
 # ── Post-resolve filesystem cleanup ─────────────────────────────────────────
@@ -571,10 +584,13 @@ def resolve(
     keys = list(keys)
     results: list[ResolveResult] = []
 
+    from synclet.maint_cache import invalidate as invalidate_maint_cache  # noqa: PLC0415
+
     if not confirm:
         results.extend(ResolveResult(key=k, status="rejected") for k in keys)
         remove_keys(keys)
         cleanup = aggregate_cleanup(keys)
+        invalidate_maint_cache()
         return results, cleanup
 
     for k in keys:
@@ -601,6 +617,7 @@ def resolve(
 
     remove_keys(keys)
     cleanup = aggregate_cleanup(keys)
+    invalidate_maint_cache()
     return results, cleanup
 
 
