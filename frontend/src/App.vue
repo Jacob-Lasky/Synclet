@@ -11,7 +11,13 @@ import MaintenanceView from "./components/MaintenanceView.vue"
 import LinkPasteModal from "./components/LinkPasteModal.vue"
 import JobToasts from "./components/JobToasts.vue"
 import { api } from "./api"
-import { loadState, pushToast, store } from "./store"
+import {
+  loadMaintenanceCount,
+  loadState,
+  loadWatchlistCount,
+  pushToast,
+  store,
+} from "./store"
 
 const showPaste = ref(false)
 
@@ -19,11 +25,20 @@ onMounted(() => {
   loadState().catch(e => {
     pushToast({ kind: "error", text: `Failed to load state: ${(e as Error).message}` })
   })
+  loadMaintenanceCount()
+  loadWatchlistCount()
 })
 
 const counts = computed(() => ({
   library: store.titles.length,
   synced: store.disk?.synced_titles ?? 0,
+  watchlist: store.watchlistCount ?? undefined,
+  // Maintenance is "attention required" not "inventory" — only badge when
+  // the count is positive. 0 means the user has nothing to do; no badge.
+  maintenance:
+    store.maintenanceCount != null && store.maintenanceCount > 0
+      ? store.maintenanceCount
+      : undefined,
 }))
 
 async function refresh(): Promise<void> {

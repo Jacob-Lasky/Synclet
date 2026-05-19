@@ -11,7 +11,7 @@ import type {
   ResolveItemResult,
   WatchedFiles,
 } from "../types"
-import { humanSize, loadState, pushToast } from "../store"
+import { humanSize, loadMaintenanceCount, loadState, pushToast } from "../store"
 
 const watched = ref<WatchedFiles[]>([])
 const hanging = ref<HangingFile[]>([])
@@ -36,6 +36,10 @@ async function load(): Promise<void> {
     watched.value = w.items
     hanging.value = h.items
     pending.value = p.items
+    // Surface the same counts to the tab badge. Cheap: load() already did
+    // the FS walks the counts endpoint would do; this round-trip just sums
+    // them server-side.
+    loadMaintenanceCount()
   } catch (e) {
     error.value = (e as Error).message
   } finally {
