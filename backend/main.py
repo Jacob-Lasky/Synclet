@@ -12,7 +12,7 @@ from litestar.exceptions import NotFoundException
 from pydantic import BaseModel
 
 from common.log_utils import get_logger
-from synclet import pending, sync_ops
+from synclet import ignored, pending, sync_ops
 from synclet.plex import fetch_art_bytes, fetch_thumb_bytes
 from synclet.resolve import resolve_url
 from synclet.scan import scan_title_detail, title_detail_to_dict
@@ -66,6 +66,19 @@ class PendingItemRef(BaseModel):
 class ResolvePendingRequest(BaseModel):
     items: list[PendingItemRef]
     action: str  # "confirm" | "reject"
+
+
+class IgnoreRequest(BaseModel):
+    """Mute or un-mute a maintenance entry.
+
+    `kind` discriminates the ref shape:
+      - "pending": ref = {sync_sub, folder, season?, episode?}
+      - "watched": ref = {lib, folder}
+      - "hanging": ref = {path}
+    """
+
+    kind: str
+    ref: dict
 
 
 class ScrobbleRequest(BaseModel):
@@ -316,6 +329,26 @@ async def api_maint_remove(data: RemoveFilesRequest) -> dict:
     return sync_ops.remove_files(data.paths)
 
 
+@get("/api/maintenance/ignored")
+async def api_maint_ignored() -> dict:
+    """Return the user's muted entries, grouped by kind, for the Ignored UI."""
+    return ignored.list_grouped()
+
+
+@post("/api/maintenance/ignore")
+async def api_maint_ignore(data: IgnoreRequest) -> dict:
+    """Mute a maintenance entry. Idempotent. Returns ok=False on malformed ref."""
+    ok = ignored.ignore_ref(data.kind, data.ref)
+    return {"ok": ok}
+
+
+@post("/api/maintenance/unignore")
+async def api_maint_unignore(data: IgnoreRequest) -> dict:
+    """Un-mute a maintenance entry. Idempotent. Returns ok=False on malformed ref."""
+    ok = ignored.unignore_ref(data.kind, data.ref)
+    return {"ok": ok}
+
+
 @get("/api/maintenance/counts")
 async def api_maint_counts() -> dict:
     """Actionable-item counts for the Maintenance tab badge.
@@ -424,6 +457,9 @@ app = Litestar(
         api_maint_hanging,
         api_maint_remove,
         api_maint_counts,
+        api_maint_ignored,
+        api_maint_ignore,
+        api_maint_unignore,
         api_maint_pending,
         api_maint_resolve,
         api_scrobble,

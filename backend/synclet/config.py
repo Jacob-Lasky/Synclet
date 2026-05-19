@@ -82,3 +82,9 @@ THUMB_CACHE = Path(os.environ.get("SYNCLET_THUMB_CACHE", "/app/data/.thumb-cache
 SNAPSHOT_FILE = Path(
     os.environ.get("SYNCLET_SNAPSHOT_FILE", "/app/data/snapshot.json"),
 )
+
+# User-muted maintenance entries (see synclet.ignored). Survives restarts so
+# muting is sticky; lives alongside snapshot.json.
+IGNORED_FILE = Path(
+    os.environ.get("SYNCLET_IGNORED_FILE", "/app/data/ignored.json"),
+)
