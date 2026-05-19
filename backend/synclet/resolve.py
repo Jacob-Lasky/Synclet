@@ -102,7 +102,11 @@ def resolve_url(url: str) -> dict:
                 by = _by_name(title)
                 if by:
                     return {"found": True, **by, "via": "plex_metadata"}
-        return {"found": False, "reason": "plex_metadata_lookup_failed", "ratingKey": rk}
+        return {
+            "found": False,
+            "reason": "plex_metadata_lookup_failed",
+            "ratingKey": rk,
+        }
 
     # 2. IMDb URL — fall back to title parsing from URL path (best-effort)
     m = _IMDB.search(decoded)
@@ -113,7 +117,11 @@ def resolve_url(url: str) -> dict:
     # 3. Jellyfin item URL — id is a server-local guid, can't resolve from outside
     m = _JELLYFIN_ID.search(decoded)
     if m:
-        return {"found": False, "reason": "jellyfin_url_unsupported", "jellyfin_id": m.group(1)}
+        return {
+            "found": False,
+            "reason": "jellyfin_url_unsupported",
+            "jellyfin_id": m.group(1),
+        }
 
     # 4. Plain text — fuzzy search the library
     by = _by_name(decoded)

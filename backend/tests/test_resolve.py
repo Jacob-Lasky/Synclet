@@ -13,6 +13,7 @@ from synclet.resolve import resolve_url
 def state_loaded(patch_paths, patch_watchstate):
     """Force the state cache to warm up so _by_name has data to search."""
     from synclet.state import get_state
+
     get_state(force=True)
 
 
@@ -47,33 +48,43 @@ class TestResolveUrl:
     def test_plex_url_metadata_fail(self, state_loaded, monkeypatch):
         """When the Plex API call fails, we surface a clear reason rather than crash."""
         monkeypatch.setattr("synclet.resolve.get_metadata", lambda _: None)
-        r = resolve_url("https://app.plex.tv/desktop/#!/details?key=%2Flibrary%2Fmetadata%2F12345")
+        r = resolve_url(
+            "https://app.plex.tv/desktop/#!/details?key=%2Flibrary%2Fmetadata%2F12345"
+        )
         assert r["found"] is False
         assert r["reason"] == "plex_metadata_lookup_failed"
         assert r["ratingKey"] == "12345"
 
     def test_plex_show_url(self, state_loaded, monkeypatch):
         """Plex returns a show; we map back to local folder via title."""
-        monkeypatch.setattr("synclet.resolve.get_metadata", lambda _: {
-            "ratingKey": "12345",
-            "title": "Better Call Saul",
-            "type": "show",
-            "location": None,
-        })
-        r = resolve_url("https://app.plex.tv/desktop/#!/details?key=%2Flibrary%2Fmetadata%2F12345")
+        monkeypatch.setattr(
+            "synclet.resolve.get_metadata",
+            lambda _: {
+                "ratingKey": "12345",
+                "title": "Better Call Saul",
+                "type": "show",
+                "location": None,
+            },
+        )
+        r = resolve_url(
+            "https://app.plex.tv/desktop/#!/details?key=%2Flibrary%2Fmetadata%2F12345"
+        )
         assert r["found"] is True
         assert r["name"] == "Better Call Saul (2015)"
         assert r["via"] == "plex_metadata"
 
     def test_plex_episode_walks_to_show(self, state_loaded, monkeypatch):
         """For an episode-type metadata key, we use grandparentTitle (the show)."""
-        monkeypatch.setattr("synclet.resolve.get_metadata", lambda _: {
-            "ratingKey": "99",
-            "title": "Uno",
-            "type": "episode",
-            "grandparentTitle": "Better Call Saul",
-            "parentTitle": "Season 1",
-        })
+        monkeypatch.setattr(
+            "synclet.resolve.get_metadata",
+            lambda _: {
+                "ratingKey": "99",
+                "title": "Uno",
+                "type": "episode",
+                "grandparentTitle": "Better Call Saul",
+                "parentTitle": "Season 1",
+            },
+        )
         r = resolve_url("/library/metadata/99")
         assert r["found"] is True
         assert r["name"] == "Better Call Saul (2015)"

@@ -27,7 +27,9 @@ class TestCleanName:
         assert clean_name("1917 (2019) {tmdb-530915}") == "1917 (2019)"
 
     def test_keeps_year(self):
-        assert clean_name("Better Call Saul (2015) {tvdb-1}") == "Better Call Saul (2015)"
+        assert (
+            clean_name("Better Call Saul (2015) {tvdb-1}") == "Better Call Saul (2015)"
+        )
 
     def test_no_cruft(self):
         assert clean_name("Fallout") == "Fallout"
@@ -123,8 +125,9 @@ class TestScanTitleDetail:
         assert len(season1.episodes) == 2
         # English sub should be counted; French sub should not show up in files
         e1 = next(e for e in season1.episodes if e.episode == 1)
-        assert all("fr.srt" not in f for f in e1.files), \
+        assert all("fr.srt" not in f for f in e1.files), (
             f"French subtitle leaked through filter: {e1.files}"
+        )
 
     def test_movie_detail(self, patch_paths):
         d = scan_title_detail("movies", "1917 (2019) {tmdb-3}")

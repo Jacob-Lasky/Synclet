@@ -1,6 +1,10 @@
 import type {
   HangingFile,
   Job,
+  PendingGroup,
+  PendingItemRef,
+  ResolveAction,
+  ResolveResponse,
   ResolveResult,
   StateBundle,
   SyncedEntry,
@@ -49,6 +53,12 @@ export const api = {
     json<{ removed: number; bytes_freed: number }>(`/api/maintenance/remove`, {
       method: "POST",
       body: JSON.stringify({ paths }),
+    }),
+  maintPending: () => json<{ items: PendingGroup[] }>(`/api/maintenance/pending`),
+  maintResolve: (items: PendingItemRef[], action: ResolveAction) =>
+    json<ResolveResponse>(`/api/maintenance/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ items, action }),
     }),
 
   resolve: (url: string) =>

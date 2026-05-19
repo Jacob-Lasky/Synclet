@@ -48,9 +48,9 @@ def watchstate_db(tmp_path: Path) -> Path:
         ("episode", 0, 1, "plex", "Better Call Saul", 2015, 1, 1),
         ("episode", 0, 1, "plex", "Better Call Saul", 2015, 1, 2),
         ("episode", 0, 0, "plex", "Better Call Saul", 2015, 1, 3),
-        ("episode", 0, 1, "plex", "After Life",       2019, 1, 1),
-        ("movie",   0, 1, "plex", "The Boys",         2019, None, None),
-        ("movie",   0, 0, "plex", "1917",             2019, None, None),
+        ("episode", 0, 1, "plex", "After Life", 2019, 1, 1),
+        ("movie", 0, 1, "plex", "The Boys", 2019, None, None),
+        ("movie", 0, 0, "plex", "1917", 2019, None, None),
     ]
     conn.executemany(
         "INSERT INTO state (type, updated, watched, via, title, year, season, episode)"
@@ -75,6 +75,7 @@ def patch_watchstate(monkeypatch: pytest.MonkeyPatch, watchstate_db: Path) -> Pa
 
 
 # ── Filesystem fixtures ───────────────────────────────────────────────────
+
 
 def _make_video(p: Path, size: int = 1024) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -123,7 +124,9 @@ def media_tree(tmp_path: Path) -> dict[str, Path]:
 
 
 @pytest.fixture
-def patch_paths(monkeypatch: pytest.MonkeyPatch, media_tree: dict[str, Path]) -> dict[str, Path]:
+def patch_paths(
+    monkeypatch: pytest.MonkeyPatch, media_tree: dict[str, Path]
+) -> dict[str, Path]:
     """Repoint every module's MEDIA_ROOT / SYNC_ROOT binding at the fixture tree.
 
     Each module imports the path once at module-load, so config-level patching
@@ -141,10 +144,20 @@ def patch_paths(monkeypatch: pytest.MonkeyPatch, media_tree: dict[str, Path]) ->
     monkeypatch.setattr("synclet.sync_ops.SYNC_ROOT", sync)
     monkeypatch.setattr("synclet.state.SYNC_ROOT", sync)
     monkeypatch.setattr("synclet.fs_helpers.SYNC_ROOT", sync)
-    monkeypatch.setattr("synclet.config.THUMB_CACHE", media_tree["tmp"] / ".thumb-cache")
+    monkeypatch.setattr("synclet.pending.SYNC_ROOT", sync)
+    monkeypatch.setattr(
+        "synclet.config.THUMB_CACHE", media_tree["tmp"] / ".thumb-cache"
+    )
+    # Snapshot file for the pending module. Default lives under /app/data
+    # which only exists inside the backend container; point at tmp so sync_ops
+    # tests that mutate the snapshot don't try to write into that path.
+    snapshot = media_tree["tmp"] / "snapshot.json"
+    monkeypatch.setattr("synclet.config.SNAPSHOT_FILE", snapshot)
+    monkeypatch.setattr("synclet.pending.SNAPSHOT_FILE", snapshot)
 
     # State cache holds previous-test data; invalidate every test.
     from synclet import state as state_mod
+
     state_mod.invalidate()
     yield media_tree
     state_mod.invalidate()

@@ -49,7 +49,9 @@ def _build() -> list[TitleWithState]:
             watched = sum(1 for v in ws_map.values() if v)
             denom = max(t.ep_count, 1)
             watched_pct = min(100, int(watched / denom * 100)) if t.ep_count else 0
-            synced_pct = min(100, int(t.synced_files / denom * 100)) if t.ep_count else 0
+            synced_pct = (
+                min(100, int(t.synced_files / denom * 100)) if t.ep_count else 0
+            )
         else:
             watched = 1 if movies.get(ws_key) else 0
             watched_pct = 100 if watched else 0

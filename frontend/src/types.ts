@@ -146,3 +146,57 @@ export interface ResolveResult {
 }
 
 export type Tab = "library" | "synced" | "watchlist" | "maintenance"
+
+export interface PendingEpisode {
+  season: number
+  episode: number
+  already_watched_in_plex: boolean
+  episode_rating_key: string | null
+  title: string
+}
+
+export interface PendingSeason {
+  season: number
+  episodes: PendingEpisode[]
+}
+
+export interface PendingGroup {
+  sync_sub: string
+  folder: string
+  title: string
+  kind: Kind
+  lib: string | null
+  rating_key: string | null
+  // movie-only:
+  already_watched_in_plex?: boolean
+  // show / youtube only:
+  seasons?: PendingSeason[]
+}
+
+export interface PendingItemRef {
+  sync_sub: string
+  folder: string
+  season?: number | null
+  episode?: number | null
+}
+
+export type ResolveAction = "confirm" | "reject"
+
+export type ResolveStatus =
+  | "ok"
+  | "scrobble_failed"
+  | "no_rating_key"
+  | "rejected"
+
+export interface ResolveItemResult {
+  sync_sub: string
+  folder: string
+  season: number | null
+  episode: number | null
+  status: ResolveStatus
+}
+
+export interface ResolveResponse {
+  results: ResolveItemResult[]
+  error?: string
+}

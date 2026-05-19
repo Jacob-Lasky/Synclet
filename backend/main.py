@@ -12,7 +12,7 @@ from litestar.exceptions import NotFoundException
 from pydantic import BaseModel
 
 from common.log_utils import get_logger
-from synclet import sync_ops
+from synclet import pending, sync_ops
 from synclet.plex import fetch_art_bytes, fetch_thumb_bytes
 from synclet.resolve import resolve_url
 from synclet.scan import scan_title_detail, title_detail_to_dict
@@ -48,6 +48,24 @@ class RemoveFilesRequest(BaseModel):
 
 class ResolveLinkRequest(BaseModel):
     url: str
+
+
+class PendingItemRef(BaseModel):
+    """One pending-deletion item the user is acting on.
+
+    season and episode are None for movies. The (sync_sub, folder) pair is
+    unique within SYNC_ROOT, so no library disambiguation is needed.
+    """
+
+    sync_sub: str
+    folder: str
+    season: int | None = None
+    episode: int | None = None
+
+
+class ResolvePendingRequest(BaseModel):
+    items: list[PendingItemRef]
+    action: str  # "confirm" | "reject"
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -216,12 +234,12 @@ async def api_synced() -> dict:
     from synclet.config import LIBRARIES
     from synclet.fs_helpers import iter_synced_titles
     from synclet.scan import clean_name, scan_title_detail
-    from synclet.sync_ops import _find_source_lib
+    from synclet.sync_ops import find_source_lib
     from synclet.watchstate import show_watch_map
 
     items: list[dict] = []
     for _sub_path, item in iter_synced_titles():
-        source_lib = _find_source_lib(item.name)
+        source_lib = find_source_lib(item.name)
 
         display = clean_name(item.name)
         total_bytes = 0
@@ -284,6 +302,40 @@ async def api_maint_remove(data: RemoveFilesRequest) -> dict:
     return sync_ops.remove_files(data.paths)
 
 
+@get("/api/maintenance/pending")
+async def api_maint_pending() -> dict:
+    """Synced items whose files were deleted since the last snapshot.
+
+    Returned as a grouped tree (one entry per show/movie, episodes nested
+    under seasons for shows). The frontend (MaintenanceView pending pane)
+    renders this directly.
+    """
+    return {"items": pending.grouped_pending()}
+
+
+@post("/api/maintenance/resolve")
+async def api_maint_resolve(data: ResolvePendingRequest) -> dict:
+    """Confirm or reject a batch of pending deletions.
+
+    Confirm scrobbles each item to Plex (best-effort, per-item) and drops it
+    from the snapshot. Reject just drops from the snapshot. Per-item results
+    let the UI flag scrobble failures without aborting the rest of the batch.
+    """
+    if data.action not in {"confirm", "reject"}:
+        return {"error": f"unknown action: {data.action}", "results": []}
+    keys = [
+        pending.SnapshotKey(
+            sync_sub=item.sync_sub,
+            folder=item.folder,
+            season=item.season,
+            episode=item.episode,
+        )
+        for item in data.items
+    ]
+    results = pending.resolve(keys, confirm=(data.action == "confirm"))
+    return {"results": [r.to_dict() for r in results]}
+
+
 @post("/api/resolve-link")
 async def api_resolve(data: ResolveLinkRequest) -> dict:
     return resolve_url(data.url)
@@ -311,6 +363,8 @@ app = Litestar(
         api_maint_watched,
         api_maint_hanging,
         api_maint_remove,
+        api_maint_pending,
+        api_maint_resolve,
         api_resolve,
         api_refresh,
     ],
