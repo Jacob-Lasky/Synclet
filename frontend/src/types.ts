@@ -227,3 +227,10 @@ export interface ScrobbleResponse {
   results: ScrobbleItemResult[]
   error?: string
 }
+
+export interface MaintenanceCounts {
+  watched_titles: number
+  hanging_files: number
+  pending_items: number
+  total: number
+}

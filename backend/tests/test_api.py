@@ -141,6 +141,30 @@ class TestSyncRoute:
             assert "total_bytes" in body
 
 
+class TestMaintenanceCountsRoute:
+    def test_returns_all_keys(self, client):
+        r = client.get("/api/maintenance/counts")
+        assert r.status_code == 200
+        body = r.json()
+        # Wire contract: TabBar consumes `total`; per-category counts let the
+        # UI deep-link without a second round-trip.
+        required = {"watched_titles", "hanging_files", "pending_items", "total"}
+        assert required <= body.keys(), f"missing: {required - body.keys()}"
+
+    def test_total_equals_sum_of_categories(self, client, patch_paths):
+        from synclet.pending import SnapshotKey, save_snapshot
+
+        # Seed one ghost pending so total is non-zero.
+        save_snapshot({SnapshotKey(sync_sub="tv", folder="Ghost", season=1, episode=1)})
+        r = client.get("/api/maintenance/counts")
+        body = r.json()
+        assert body["total"] == (
+            body["watched_titles"] + body["hanging_files"] + body["pending_items"]
+        )
+        # The ghost we seeded shows in pending_items.
+        assert body["pending_items"] >= 1
+
+
 class TestMaintenancePendingRoute:
     def test_empty_initially(self, client):
         # First call bootstraps the snapshot from current disk state.

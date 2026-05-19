@@ -152,6 +152,11 @@ const thumbUrl = api.thumbUrl(props.title.lib, props.title.folder)
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   margin-bottom: 2px;
+  /* Reserve two lines of space even for single-line names so the .info
+     section has a constant height. Without this, a one-line name shrinks
+     the card and the grid row's align-items: stretch behavior pushes
+     short-name posters down a few pixels relative to two-line neighbours. */
+  min-height: calc(2 * 1.25em);
 }
 .meta {
   font-size: 0.75rem;

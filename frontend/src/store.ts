@@ -19,6 +19,12 @@ interface State {
   // Drawer
   detail: { lib: string; folder: string } | null
 
+  // Tab badge counts. Maintenance is the sum of actionable items
+  // (pending + watched-in-synced + hanging); Watchlist is the watchlist
+  // item count. Refreshed on app mount and after relevant actions.
+  maintenanceCount: number | null
+  watchlistCount: number | null
+
   // Jobs
   jobs: Record<string, Job>
   toasts: Toast[]
@@ -70,6 +76,9 @@ export const store = reactive<State>({
 
   detail: null,
 
+  maintenanceCount: null,
+  watchlistCount: null,
+
   jobs: {},
   toasts: [],
 })
@@ -92,6 +101,28 @@ export async function loadState(refresh = false): Promise<void> {
     }
   })()
   return stateInflight
+}
+
+// Tab-badge count loaders. Failures intentionally swallow into null so the
+// badge just disappears instead of throwing; counts are advisory UI, not
+// load-bearing.
+
+export async function loadMaintenanceCount(): Promise<void> {
+  try {
+    const r = await api.maintCounts()
+    store.maintenanceCount = r.total
+  } catch {
+    store.maintenanceCount = null
+  }
+}
+
+export async function loadWatchlistCount(): Promise<void> {
+  try {
+    const r = await api.watchlist()
+    store.watchlistCount = r.items.length
+  } catch {
+    store.watchlistCount = null
+  }
 }
 
 // ── Filters ────────────────────────────────────────────────────────────────

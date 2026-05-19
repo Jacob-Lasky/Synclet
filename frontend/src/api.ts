@@ -1,6 +1,7 @@
 import type {
   HangingFile,
   Job,
+  MaintenanceCounts,
   PendingGroup,
   PendingItemRef,
   RemoveResponse,
@@ -57,6 +58,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ paths }),
     }),
+  maintCounts: () => json<MaintenanceCounts>(`/api/maintenance/counts`),
   maintPending: () => json<{ items: PendingGroup[] }>(`/api/maintenance/pending`),
   maintResolve: (items: PendingItemRef[], action: ResolveAction) =>
     json<ResolveResponse>(`/api/maintenance/resolve`, {

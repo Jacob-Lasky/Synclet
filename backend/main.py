@@ -316,6 +316,26 @@ async def api_maint_remove(data: RemoveFilesRequest) -> dict:
     return sync_ops.remove_files(data.paths)
 
 
+@get("/api/maintenance/counts")
+async def api_maint_counts() -> dict:
+    """Actionable-item counts for the Maintenance tab badge.
+
+    Sum is what TabBar surfaces as a single number. Per-category counts are
+    exposed too so the UI can target a specific section without re-fetching.
+    Walks the filesystem (cheap at homelab scale, <1s for ~hundreds of files);
+    callers should debounce or fetch on tab focus rather than every render.
+    """
+    watched = sync_ops.find_watched_synced_files()
+    hanging = sync_ops.find_hanging_files()
+    pending_items = pending.compute_pending()
+    return {
+        "watched_titles": len(watched),
+        "hanging_files": len(hanging),
+        "pending_items": len(pending_items),
+        "total": len(watched) + len(hanging) + len(pending_items),
+    }
+
+
 @get("/api/maintenance/pending")
 async def api_maint_pending() -> dict:
     """Synced items whose files were deleted since the last snapshot.
@@ -403,6 +423,7 @@ app = Litestar(
         api_maint_watched,
         api_maint_hanging,
         api_maint_remove,
+        api_maint_counts,
         api_maint_pending,
         api_maint_resolve,
         api_scrobble,
