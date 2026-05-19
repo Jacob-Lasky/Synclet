@@ -21,6 +21,7 @@ from synclet.pending import (
     compute_pending,
     keys_for_paths,
     load_snapshot,
+    mark_watched_scope,
     path_to_snapshot_key,
     remove_keys,
     resolve,
@@ -556,3 +557,127 @@ class TestResolveIntegratesCleanup:
         assert cleanup == {"removed_files": 3, "removed_dirs": 2}
         assert not m1.exists()
         assert not m2.exists()
+
+
+# ── mark_watched_scope ──────────────────────────────────────────────────────
+
+
+class TestMarkWatchedScope:
+    def test_movie_scrobbles_movie_rating_key(self, monkeypatch):
+        called: list[str] = []
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "M-300"} if folder == "Movie" else None,
+        )
+        monkeypatch.setattr(
+            "synclet.plex.scrobble",
+            lambda rk, **_: called.append(rk) or True,
+        )
+
+        r = mark_watched_scope(lib="movies", folder="Movie", scope="movie")
+        assert r["scrobbled"] == 1
+        assert r["failed"] == 0
+        assert called == ["M-300"]
+
+    def test_movie_returns_no_rating_key_when_plex_blank(self, monkeypatch):
+        monkeypatch.setattr("synclet.plex.find_in_library", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            "synclet.plex.scrobble",
+            lambda *a, **kw: pytest.fail("must not call scrobble"),
+        )
+        r = mark_watched_scope(lib="movies", folder="Unknown", scope="movie")
+        assert r["scrobbled"] == 0
+        assert r["failed"] == 1
+        assert r["results"][0]["status"] == "no_rating_key"
+
+    def test_episode_scrobbles_episode_rating_key(self, monkeypatch):
+        called: list[str] = []
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "SHOW100"} if folder == "Show" else None,
+        )
+        monkeypatch.setattr(
+            "synclet.plex.episode_rating_keys",
+            lambda show_rk: {(1, 3): "EP-1-3", (2, 1): "EP-2-1"}
+            if show_rk == "SHOW100"
+            else {},
+        )
+        monkeypatch.setattr(
+            "synclet.plex.scrobble",
+            lambda rk, **_: called.append(rk) or True,
+        )
+        r = mark_watched_scope(
+            lib="tv", folder="Show", scope="episode", season=1, episode=3,
+        )
+        assert r["scrobbled"] == 1
+        assert called == ["EP-1-3"]
+
+    def test_season_scrobbles_only_that_season(self, monkeypatch):
+        called: list[str] = []
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "SHOW100"},
+        )
+        monkeypatch.setattr(
+            "synclet.plex.episode_rating_keys",
+            lambda show_rk: {(1, 1): "E-1-1", (1, 2): "E-1-2", (2, 1): "E-2-1"},
+        )
+        monkeypatch.setattr(
+            "synclet.plex.scrobble",
+            lambda rk, **_: called.append(rk) or True,
+        )
+        r = mark_watched_scope(lib="tv", folder="Show", scope="season", season=1)
+        assert r["scrobbled"] == 2
+        # Both season-1 keys, none from season 2.
+        assert set(called) == {"E-1-1", "E-1-2"}
+
+    def test_series_scrobbles_all_episodes(self, monkeypatch):
+        called: list[str] = []
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "SHOW100"},
+        )
+        monkeypatch.setattr(
+            "synclet.plex.episode_rating_keys",
+            lambda show_rk: {(1, 1): "A", (1, 2): "B", (2, 1): "C"},
+        )
+        monkeypatch.setattr(
+            "synclet.plex.scrobble",
+            lambda rk, **_: called.append(rk) or True,
+        )
+        r = mark_watched_scope(lib="tv", folder="Show", scope="series")
+        assert r["scrobbled"] == 3
+        assert set(called) == {"A", "B", "C"}
+
+    def test_partial_failure_does_not_abort_batch(self, monkeypatch):
+        """If one scrobble fails (network/timeout), the rest still run."""
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "SHOW100"},
+        )
+        monkeypatch.setattr(
+            "synclet.plex.episode_rating_keys",
+            lambda show_rk: {(1, 1): "A", (1, 2): "FAIL", (1, 3): "C"},
+        )
+        monkeypatch.setattr(
+            "synclet.plex.scrobble",
+            lambda rk, **_: rk != "FAIL",
+        )
+        r = mark_watched_scope(lib="tv", folder="Show", scope="series")
+        assert r["scrobbled"] == 2
+        assert r["failed"] == 1
+        # Order preserved by sorted ep_map iteration
+        statuses = {(it["season"], it["episode"]): it["status"] for it in r["results"]}
+        assert statuses[(1, 1)] == "ok"
+        assert statuses[(1, 2)] == "scrobble_failed"
+        assert statuses[(1, 3)] == "ok"
+
+    def test_unknown_scope_returns_error(self):
+        r = mark_watched_scope(lib="tv", folder="Show", scope="bogus")
+        assert "error" in r
+        assert r["scrobbled"] == 0
+
+    def test_episode_scope_without_season_episode_errors(self):
+        r = mark_watched_scope(lib="tv", folder="Show", scope="episode")
+        assert "error" in r
+        assert r["scrobbled"] == 0

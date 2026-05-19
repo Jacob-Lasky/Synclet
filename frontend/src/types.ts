@@ -212,3 +212,18 @@ export interface RemoveResponse {
   bytes_freed: number
   cleanup: CleanupSummary
 }
+
+export type ScrobbleScope = "movie" | "series" | "season" | "episode"
+
+export interface ScrobbleItemResult {
+  season: number | null
+  episode: number | null
+  status: "ok" | "scrobble_failed" | "no_rating_key"
+}
+
+export interface ScrobbleResponse {
+  scrobbled: number
+  failed: number
+  results: ScrobbleItemResult[]
+  error?: string
+}

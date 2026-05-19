@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from "vue"
 import { api } from "../api"
 import type { Episode, TitleDetail } from "../types"
-import { closeDetail, humanSize, store, trackJob } from "../store"
+import { closeDetail, humanSize, pushToast, store, trackJob } from "../store"
 import EpisodeTile from "./EpisodeTile.vue"
 
 // How long after a sync/unsync job kicks off before we re-fetch the title
@@ -266,6 +266,75 @@ function toggleSeasonExpand(s: number): void {
   else expandedSeasons.value.add(s)
 }
 
+// ── Mark watched (explicit gesture, no file deletion) ──────────────────────
+
+async function markWatched(
+  scope: "movie" | "series" | "season" | "episode",
+  season?: number,
+  episode?: number,
+  confirmLabel?: string,
+): Promise<void> {
+  if (!detail.value) return
+  if (confirmLabel) {
+    if (!confirm(`Mark watched: ${confirmLabel}?`)) return
+  }
+  submitting.value = true
+  try {
+    const r = await api.scrobble({
+      lib: detail.value.lib,
+      folder: detail.value.folder,
+      scope,
+      season,
+      episode,
+    })
+    // Optimistically reflect successful scrobbles in local state. Plex's
+    // WatchState daemon picks the change up on its next poll; until then,
+    // refreshInPlace would still show the stale watch state.
+    if (detail.value.kind === "movie") {
+      if (r.scrobbled > 0) detail.value.watched = true
+    } else {
+      const okSet = new Set(
+        r.results
+          .filter(it => it.status === "ok" && it.season !== null && it.episode !== null)
+          .map(it => `${it.season}-${it.episode}`),
+      )
+      for (const s of detail.value.seasons) {
+        let watchedDelta = 0
+        for (const e of s.episodes) {
+          if (okSet.has(`${e.season}-${e.episode}`) && e.watch_state !== "watched") {
+            e.watch_state = "watched"
+            e.watch_pct = 100
+            watchedDelta++
+          }
+        }
+        s.watched_episodes += watchedDelta
+      }
+    }
+    if (r.error) {
+      pushToast({ kind: "error", text: r.error })
+    } else if (r.failed > 0) {
+      pushToast({
+        kind: "error",
+        text: `Marked ${r.scrobbled} watched, ${r.failed} failed`,
+      })
+    } else {
+      pushToast({
+        kind: "success",
+        text: `Marked ${r.scrobbled} watched`,
+      })
+    }
+    // Let WatchState catch up; this picks up any drift between optimistic and
+    // canonical state without resetting the UI.
+    const lib = detail.value.lib
+    const folder = detail.value.folder
+    setTimeout(() => refreshInPlace(lib, folder), UNSYNC_REFRESH_DELAY_MS)
+  } catch (e) {
+    pushToast({ kind: "error", text: (e as Error).message })
+  } finally {
+    submitting.value = false
+  }
+}
+
 function onBackdropClick(e: MouseEvent): void {
   if ((e.target as HTMLElement).classList.contains("backdrop")) closeDetail()
 }
@@ -329,6 +398,15 @@ const movieSynced = computed(() =>
               <button v-else class="danger" :disabled="submitting" @click="unsyncMovie">
                 Unsync
               </button>
+              <button
+                v-if="!detail.watched"
+                class="ghost"
+                :disabled="submitting"
+                data-testid="mark-movie-watched"
+                @click="markWatched('movie', undefined, undefined, detail.name)"
+              >
+                Mark watched
+              </button>
             </div>
           </div>
         </template>
@@ -341,6 +419,15 @@ const movieSynced = computed(() =>
             </button>
             <button class="ghost" @click="selectUnwatchedUnsynced">
               Unwatched + unsynced
+            </button>
+            <span class="spacer"></span>
+            <button
+              class="ghost"
+              :disabled="submitting"
+              data-testid="mark-series-watched"
+              @click="markWatched('series', undefined, undefined, `entire series ${detail.name}`)"
+            >
+              Mark series watched
             </button>
           </div>
 
@@ -356,6 +443,14 @@ const movieSynced = computed(() =>
                 <span v-if="s.synced_episodes" class="tag sync">{{ s.synced_episodes }} ⬇</span>
                 <span class="spacer"></span>
                 <button class="ghost mini" @click.stop="selectSeason(s.season)">select</button>
+                <button
+                  class="ghost mini"
+                  :disabled="submitting"
+                  data-testid="mark-season-watched"
+                  @click.stop="markWatched('season', s.season, undefined, `Season ${s.season}`)"
+                >
+                  ✓ season
+                </button>
               </header>
               <div v-show="expandedSeasons.has(s.season)" class="eps">
                 <EpisodeTile
@@ -364,6 +459,7 @@ const movieSynced = computed(() =>
                   :ep="e"
                   :selected="selected.has(key(e.season, e.episode))"
                   @toggle="toggle"
+                  @mark-watched="(season, episode) => markWatched('episode', season, episode)"
                 />
               </div>
             </section>

@@ -68,6 +68,20 @@ class ResolvePendingRequest(BaseModel):
     action: str  # "confirm" | "reject"
 
 
+class ScrobbleRequest(BaseModel):
+    """Explicit mark-watched gesture.
+
+    The file is still on disk; this is "Plex's watch state drifted, sync it
+    up." Distinct from /api/maintenance/resolve which is post-deletion.
+    """
+
+    lib: str
+    folder: str
+    scope: str  # "movie" | "series" | "season" | "episode"
+    season: int | None = None
+    episode: int | None = None
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 
@@ -344,6 +358,24 @@ async def api_maint_resolve(data: ResolvePendingRequest) -> dict:
     return {"results": [r.to_dict() for r in results], "cleanup": cleanup}
 
 
+@post("/api/scrobble")
+async def api_scrobble(data: ScrobbleRequest) -> dict:
+    """Mark Plex items watched explicitly (no file deletion required).
+
+    Surfaced in DetailDrawer as Mark-watched buttons at the movie / series /
+    season / episode levels. The file stays on disk; only Plex's watch state
+    is updated. WatchState's daemon picks up the change on its next poll, so
+    Synclet's grid view will reflect the new watched state shortly after.
+    """
+    return pending.mark_watched_scope(
+        lib=data.lib,
+        folder=data.folder,
+        scope=data.scope,
+        season=data.season,
+        episode=data.episode,
+    )
+
+
 @post("/api/resolve-link")
 async def api_resolve(data: ResolveLinkRequest) -> dict:
     return resolve_url(data.url)
@@ -373,6 +405,7 @@ app = Litestar(
         api_maint_remove,
         api_maint_pending,
         api_maint_resolve,
+        api_scrobble,
         api_resolve,
         api_refresh,
     ],
