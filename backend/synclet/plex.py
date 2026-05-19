@@ -24,7 +24,9 @@ def _plex_url(path: str, params: dict | None = None) -> str:
     return f"{PLEX_URL}{path}?{urllib.parse.urlencode(qp)}"
 
 
-def _get_xml(path: str, params: dict | None = None, timeout: int = 8) -> ET.Element | None:
+def _get_xml(
+    path: str, params: dict | None = None, timeout: int = 8
+) -> ET.Element | None:
     try:
         with urllib.request.urlopen(_plex_url(path, params), timeout=timeout) as r:
             return ET.fromstring(r.read())
@@ -40,7 +42,7 @@ def section_index(section_id: int) -> dict[str, dict]:
     (show) entries, so we can't join by folder path. Instead we join by the
     same key WatchState uses: title with year/tvdb cruft stripped, lowercased.
     """
-    from synclet.scan import watchstate_key   # local to avoid cycle
+    from synclet.scan import watchstate_key  # local to avoid cycle
 
     root = _get_xml(f"/library/sections/{section_id}/all", timeout=30)
     if root is None:
@@ -118,6 +120,56 @@ def fetch_art_bytes(lib: str, folder: str) -> tuple[bytes, str] | None:
         return data, content_type
     except Exception:
         return None
+
+
+# ── Write-back: episode ratingKey lookup + scrobble ─────────────────────────
+
+
+@lru_cache(maxsize=64)
+def episode_rating_keys(show_rating_key: str) -> dict[tuple[int, int], str]:
+    """Return {(season_index, episode_index): episode_rating_key} for a show.
+
+    Scrobble takes the EPISODE's ratingKey, not the show's. Plex exposes
+    `/library/metadata/{showRatingKey}/allLeaves` as a flat list of every
+    episode in one round-trip. Cached for the process lifetime since Plex
+    episode ratingKeys are stable.
+    """
+    root = _get_xml(f"/library/metadata/{show_rating_key}/allLeaves", timeout=15)
+    if root is None:
+        return {}
+    out: dict[tuple[int, int], str] = {}
+    for video in root:
+        if video.tag != "Video":
+            continue
+        rk = video.get("ratingKey")
+        s = video.get("parentIndex")
+        e = video.get("index")
+        if rk and s is not None and e is not None:
+            try:
+                out[(int(s), int(e))] = rk
+            except ValueError:
+                continue
+    return out
+
+
+def scrobble(rating_key: str, timeout: int = 8) -> bool:
+    """Mark a Plex item watched. Returns True on success.
+
+    `PUT /:/scrobble?identifier=com.plexapp.plugins.library&key=<ratingKey>`
+    is idempotent. Plex returns 200 even if the item was already watched, so
+    callers don't need to pre-check. Network errors and non-2xx responses
+    return False so callers can report per-item status without aborting a
+    batch resolve.
+    """
+    url = _plex_url(
+        "/:/scrobble",
+        {"identifier": "com.plexapp.plugins.library", "key": rating_key},
+    )
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:  # noqa: S310
+            return 200 <= r.status < 300
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def get_metadata(rating_key: str) -> dict | None:

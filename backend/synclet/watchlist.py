@@ -42,7 +42,10 @@ def get_watchlist() -> list[dict]:
     out: list[dict] = []
     for item in items:
         scored = sorted(
-            ((fuzzy_score(item["title"], n), n, lib, folder, ts) for n, lib, folder, ts in titles),
+            (
+                (fuzzy_score(item["title"], n), n, lib, folder, ts)
+                for n, lib, folder, ts in titles
+            ),
             key=lambda x: -x[0],
         )
         best = scored[0] if scored else None

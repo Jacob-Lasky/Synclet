@@ -46,9 +46,9 @@ class TestFuzzyScore:
         # the precise target higher than a partial one.
         scores = [
             ("better call saul", "Better Call Saul"),  # exact
-            ("better call",      "Better Call Saul"),  # substring
-            ("call",             "Better Call Saul"),  # substring
-            ("xyz",              "Better Call Saul"),  # no match
+            ("better call", "Better Call Saul"),  # substring
+            ("call", "Better Call Saul"),  # substring
+            ("xyz", "Better Call Saul"),  # no match
         ]
         results = [fuzzy_score(q, t) for q, t in scores]
         assert results == sorted(results, reverse=True), f"Not monotonic: {results}"

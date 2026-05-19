@@ -20,16 +20,17 @@ from pathlib import PurePath
 from synclet.config import LIBRARIES, MEDIA_ROOT, SYNC_ROOT, VIDEO_EXTS
 from synclet.fs_helpers import iter_sync_subs, iter_synced_titles
 from synclet.scan import is_wanted_file, scan_title_detail
+from synclet import pending as pending_mod
 from synclet import state as state_mod
 
 
 @dataclass
 class Job:
     id: str
-    op: str                                # "sync" | "unsync"
-    status: str                            # "queued" | "running" | "done" | "error"
-    total_files: int = 0                   # every file (videos + subs + chapters)
-    total_media_files: int = 0             # video files only — what humans care about
+    op: str  # "sync" | "unsync"
+    status: str  # "queued" | "running" | "done" | "error"
+    total_files: int = 0  # every file (videos + subs + chapters)
+    total_media_files: int = 0  # video files only — what humans care about
     processed_files: int = 0
     processed_media_files: int = 0
     processed_bytes: int = 0
@@ -38,7 +39,7 @@ class Job:
     started_at: float = 0.0
     ended_at: float = 0.0
     error: str = ""
-    title: str = ""                        # display name for the job
+    title: str = ""  # display name for the job
     items: list[dict] = field(default_factory=list)  # [{src, dst, size, is_video}]
 
     def to_dict(self) -> dict:
@@ -110,9 +111,10 @@ def resolve_selection(
     lib: str,
     folder: str,
     *,
-    selection_type: str,                     # "all" | "season" | "episodes" | "movie"
+    selection_type: str,  # "all" | "season" | "episodes" | "movie"
     season: int | None = None,
-    episodes: list[list[int]] | None = None, # [[s,e], ...] for selection_type="episodes"
+    episodes: list[list[int]]
+    | None = None,  # [[s,e], ...] for selection_type="episodes"
     unwatched_only: bool = False,
 ) -> list[tuple[Path, Path]]:
     """Return [(src, dst)] pairs given the user's selection.
@@ -124,12 +126,15 @@ def resolve_selection(
         return []
 
     if detail.kind == "movie":
-        files = [Path(f["path"]) for f in detail.files if is_wanted_file(Path(f["path"]))]
+        files = [
+            Path(f["path"]) for f in detail.files if is_wanted_file(Path(f["path"]))
+        ]
         return [(f, _sync_dest(f, lib)) for f in files]
 
     watched_map: dict[tuple[int, int], bool] | None = None
     if unwatched_only:
         from synclet.watchstate import show_watch_map
+
         watched_map = show_watch_map(detail.name)
 
     ep_keys: list[tuple[int, int]] | None = None
@@ -170,6 +175,15 @@ async def _run_sync(job: Job) -> None:
                 job.processed_media_files += 1
             job.processed_bytes += item["size"]
         job.status = "done"
+        # Snapshot tracks what Synclet thinks is on disk. A completed sync
+        # adds every newly-present media file. Run after the loop, not per
+        # item, so a mid-job crash doesn't half-update the snapshot.
+        added_keys = {
+            pending_mod.path_to_snapshot_key(Path(item["dst"]))
+            for item in job.items
+            if item["is_video"]
+        }
+        pending_mod.add_keys(k for k in added_keys if k is not None)
     except Exception as exc:  # noqa: BLE001 — surface to client verbatim
         job.error = str(exc)
         job.status = "error"
@@ -202,6 +216,14 @@ async def _run_unsync(job: Job) -> None:
             except OSError:
                 pass
         job.status = "done"
+        # Explicit unsync is "I no longer want this here", not "I watched it".
+        # Same shape as a reject: drop from snapshot, do not scrobble.
+        unsync_keys = {
+            pending_mod.path_to_snapshot_key(Path(item["dst"]))
+            for item in job.items
+            if item["is_video"]
+        }
+        pending_mod.remove_keys(k for k in unsync_keys if k is not None)
     except Exception as exc:  # noqa: BLE001
         job.error = str(exc)
         job.status = "error"
@@ -221,7 +243,12 @@ def start_sync(pairs: list[tuple[Path, Path]], title: str = "") -> Job:
         except OSError:
             continue
         items.append(
-            {"src": str(src), "dst": str(dst), "size": size, "is_video": _is_video(str(src))}
+            {
+                "src": str(src),
+                "dst": str(dst),
+                "size": size,
+                "is_video": _is_video(str(src)),
+            }
         )
     job.items = items
     job.total_files = len(items)
@@ -242,7 +269,12 @@ def start_unsync(pairs: list[tuple[Path, Path]], title: str = "") -> Job:
             except OSError:
                 size = 0
             items.append(
-                {"src": str(src), "dst": str(dst), "size": size, "is_video": _is_video(str(dst))}
+                {
+                    "src": str(src),
+                    "dst": str(dst),
+                    "size": size,
+                    "is_video": _is_video(str(dst)),
+                }
             )
     job.items = items
     job.total_files = len(items)
@@ -256,7 +288,7 @@ def start_unsync(pairs: list[tuple[Path, Path]], title: str = "") -> Job:
 # ── Maintenance: remove watched, hanging files ────────────────────────────────
 
 
-def _find_source_lib(folder_name: str) -> str | None:
+def find_source_lib(folder_name: str) -> str | None:
     """Return the library name whose media folder contains `folder_name`."""
     for lib in LIBRARIES:
         if (MEDIA_ROOT / lib / folder_name).exists():
@@ -274,7 +306,7 @@ def find_watched_synced_files() -> list[dict]:
 
     out: list[dict] = []
     for _sub_path, item in iter_synced_titles():
-        source_lib = _find_source_lib(item.name)
+        source_lib = find_source_lib(item.name)
         if not source_lib:
             continue
 
@@ -328,7 +360,11 @@ def find_hanging_files() -> list[dict]:
         for dirpath in sub_path.rglob("*"):
             if not dirpath.is_dir() or dirpath.name.startswith("."):
                 continue
-            files = [f for f in dirpath.iterdir() if f.is_file() and not f.name.startswith(".")]
+            files = [
+                f
+                for f in dirpath.iterdir()
+                if f.is_file() and not f.name.startswith(".")
+            ]
             if not files:
                 continue
             if not any(f.suffix.lower() in VIDEO_EXTS for f in files):
@@ -344,6 +380,12 @@ def find_hanging_files() -> list[dict]:
 
 
 def remove_files(paths: list[str]) -> dict:
+    # Translate to snapshot keys BEFORE deleting; path_to_snapshot_key reads
+    # the file extension, not the inode, so post-delete translation still
+    # works, but doing it first means the resolution is unambiguous even if
+    # a sibling path collision happens.
+    keys_removing = pending_mod.keys_for_paths(paths)
+
     removed = 0
     bytes_freed = 0
     parents: set[Path] = set()
@@ -366,4 +408,8 @@ def remove_files(paths: list[str]) -> dict:
         except OSError:
             pass
     state_mod.invalidate()
+    # Implicit confirm: the maintenance "remove watched" path means the user
+    # already watched these in Plex. Drop them from the snapshot so they do
+    # NOT later appear as pending deletions.
+    pending_mod.remove_keys(keys_removing)
     return {"removed": removed, "bytes_freed": bytes_freed}

@@ -34,11 +34,31 @@ WATCHLIST_RSS = os.environ.get(
 
 # library folder under MEDIA_ROOT -> (sync-folder under SYNC_ROOT, content kind, plex section id, display label)
 LIBRARIES: dict[str, dict] = {
-    "tv":           {"sync_sub": "tv",      "kind": "show",    "plex_section": 2,  "label": "TV"},
-    "tv-4kUHD":     {"sync_sub": "tv",      "kind": "show",    "plex_section": 12, "label": "TV 4K"},
-    "movies":       {"sync_sub": "movies",  "kind": "movie",   "plex_section": 1,  "label": "Movies"},
-    "movies-4kUHD": {"sync_sub": "movies",  "kind": "movie",   "plex_section": 7,  "label": "Movies 4K"},
-    "YouTube":      {"sync_sub": "youtube", "kind": "youtube", "plex_section": 6,  "label": "YouTube"},
+    "tv": {"sync_sub": "tv", "kind": "show", "plex_section": 2, "label": "TV"},
+    "tv-4kUHD": {
+        "sync_sub": "tv",
+        "kind": "show",
+        "plex_section": 12,
+        "label": "TV 4K",
+    },
+    "movies": {
+        "sync_sub": "movies",
+        "kind": "movie",
+        "plex_section": 1,
+        "label": "Movies",
+    },
+    "movies-4kUHD": {
+        "sync_sub": "movies",
+        "kind": "movie",
+        "plex_section": 7,
+        "label": "Movies 4K",
+    },
+    "YouTube": {
+        "sync_sub": "youtube",
+        "kind": "youtube",
+        "plex_section": 6,
+        "label": "YouTube",
+    },
 }
 
 EXCLUDED_DIRS = {".Recycle.Bin", ".recycle", ".trash", ".stfolder", ".stversions"}
@@ -55,3 +75,10 @@ STATE_CACHE_TTL = int(os.environ.get("SYNCLET_STATE_TTL", "30"))
 # Where to cache Plex poster bytes. Lives under /app/data inside the backend
 # container; persistent across restarts via docker-compose bind mount.
 THUMB_CACHE = Path(os.environ.get("SYNCLET_THUMB_CACHE", "/app/data/.thumb-cache"))
+
+# Snapshot of what Synclet last knew was synced. Source of truth for the
+# deletion-driven watch-state write-back flow (see synclet.pending). Persists
+# across restarts via the same /app/data bind mount as THUMB_CACHE.
+SNAPSHOT_FILE = Path(
+    os.environ.get("SYNCLET_SNAPSHOT_FILE", "/app/data/snapshot.json"),
+)

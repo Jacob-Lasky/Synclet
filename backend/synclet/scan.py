@@ -37,15 +37,15 @@ _EP_TITLE_FROM_FILENAME = re.compile(
 class Title:
     """A show, movie, or YouTube channel as seen from disk."""
 
-    id: str                          # f"{lib}/{folder}" — stable composite key
+    id: str  # f"{lib}/{folder}" — stable composite key
     lib: str
-    folder: str                      # raw folder name (with {tvdb-...} cruft)
-    name: str                        # display name (cleaned)
-    kind: str                        # "show" | "movie" | "youtube"
+    folder: str  # raw folder name (with {tvdb-...} cruft)
+    name: str  # display name (cleaned)
+    kind: str  # "show" | "movie" | "youtube"
     year: int | None
-    ep_count: int                    # 0 for movies; episode count for shows
-    synced_files: int                # count of files present in synced-media for this title
-    has_synced: bool                 # convenience: synced_files > 0
+    ep_count: int  # 0 for movies; episode count for shows
+    synced_files: int  # count of files present in synced-media for this title
+    has_synced: bool  # convenience: synced_files > 0
 
     def to_dict(self) -> dict:
         return {
@@ -67,9 +67,9 @@ class Episode:
     episode: int
     title: str
     size_bytes: int
-    files: list[str] = field(default_factory=list)   # absolute paths
+    files: list[str] = field(default_factory=list)  # absolute paths
     is_synced: bool = False
-    watch_state: str = "unwatched"   # "unwatched" | "watched" | "progress"
+    watch_state: str = "unwatched"  # "unwatched" | "watched" | "progress"
     watch_pct: int = 0
 
 
@@ -129,7 +129,8 @@ def is_wanted_file(f: Path) -> bool:
     qualifiers = f.stem.lower().split(".")
     lang = next(
         (
-            q for q in reversed(qualifiers)
+            q
+            for q in reversed(qualifiers)
             if re.fullmatch(r"[a-z]{2,3}", q) and q not in SUBTITLE_QUALIFIERS
         ),
         None,
@@ -170,7 +171,9 @@ def _synced_folder_index() -> dict[str, int]:
     for sub_path in iter_sync_subs():
         with os.scandir(sub_path) as it:
             for entry in it:
-                if not entry.is_dir(follow_symlinks=False) or entry.name.startswith("."):
+                if not entry.is_dir(follow_symlinks=False) or entry.name.startswith(
+                    "."
+                ):
                     continue
                 # rglob over a single synced title — small (one show's worth).
                 n = 0
@@ -194,7 +197,7 @@ def scan_titles() -> list[Title]:
     """
     from synclet.watchstate import all_watched_shows  # local to avoid cycle
 
-    show_eps = all_watched_shows()                         # {show_title_lower: {(s,e): watched}}
+    show_eps = all_watched_shows()  # {show_title_lower: {(s,e): watched}}
     show_ep_count = {k: len(v) for k, v in show_eps.items()}
     synced_index = _synced_folder_index()
 
@@ -205,17 +208,22 @@ def scan_titles() -> list[Title]:
             continue
         with os.scandir(root) as it:
             entries = sorted(
-                (e for e in it
-                 if e.is_dir(follow_symlinks=False)
-                 and e.name not in EXCLUDED_DIRS
-                 and not e.name.startswith(".")),
+                (
+                    e
+                    for e in it
+                    if e.is_dir(follow_symlinks=False)
+                    and e.name not in EXCLUDED_DIRS
+                    and not e.name.startswith(".")
+                ),
                 key=lambda e: e.name,
             )
         for entry in entries:
             kind = info["kind"]
             name = clean_name(entry.name)
             ws_key = watchstate_key(entry.name)
-            ep_count = show_ep_count.get(ws_key, 0) if kind in ("show", "youtube") else 0
+            ep_count = (
+                show_ep_count.get(ws_key, 0) if kind in ("show", "youtube") else 0
+            )
             synced_files = synced_index.get(entry.name, 0)
 
             out.append(
@@ -243,7 +251,8 @@ def _files_for_episode(season_dir: Path, s_num: int, e_num: int) -> list[Path]:
         re.compile(rf"[Ss]{s_num}[Ee]{e_num:04d}(?!\d)", re.IGNORECASE),
     ]
     return sorted(
-        f for f in season_dir.iterdir()
+        f
+        for f in season_dir.iterdir()
         if not f.is_dir() and any(p.search(f.name) for p in pats)
     )
 
@@ -277,7 +286,9 @@ def scan_title_detail(lib: str, folder: str) -> TitleDetail | None:
     )
 
     if info["kind"] == "movie":
-        files = sorted(f for f in path.iterdir() if not f.is_dir() and is_wanted_file(f))
+        files = sorted(
+            f for f in path.iterdir() if not f.is_dir() and is_wanted_file(f)
+        )
         total = 0
         synced = 0
         for f in files:
@@ -320,7 +331,9 @@ def scan_title_detail(lib: str, folder: str) -> TitleDetail | None:
             wanted = [f for f in files if is_wanted_file(f)]
             videos = [f for f in wanted if f.suffix.lower() in VIDEO_EXTS]
             size = sum(f.stat().st_size for f in wanted)
-            is_synced = bool(videos) and all(_sync_dest(v, lib).exists() for v in videos)
+            is_synced = bool(videos) and all(
+                _sync_dest(v, lib).exists() for v in videos
+            )
             ep = Episode(
                 season=s_num,
                 episode=e_num,
