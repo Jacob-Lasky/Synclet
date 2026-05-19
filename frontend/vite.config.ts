@@ -1,16 +1,10 @@
+/// <reference types="vitest" />
 import { defineConfig } from "vite"
 import vue from "@vitejs/plugin-vue"
-import { resolve } from "path"
-import terminal from "vite-plugin-terminal"
+import { resolve } from "node:path"
 
 export default defineConfig(({ mode }) => ({
-    plugins: [
-        vue(),
-        terminal({
-            console: "terminal",
-            output: ["terminal", "console"],
-        }),
-    ],
+    plugins: [vue()],
     resolve: {
         alias: {
             "@": resolve(__dirname, "./src"),
@@ -19,20 +13,19 @@ export default defineConfig(({ mode }) => ({
     server: {
         host: true,
         port: 80,
-        watch: {
-            usePolling: true,
-        },
+        watch: { usePolling: true },
         proxy:
             mode === "development"
                 ? {
                       "/api": {
-                          target:
-                              process.env.VITE_BACKEND_URL ||
-                              "http://localhost:1314",
+                          target: process.env.VITE_BACKEND_URL || "http://localhost:1314",
                           changeOrigin: true,
-                          rewrite: (path) => path.replace(/^\/api/, "/api"),
                       },
                   }
                 : undefined,
+    },
+    test: {
+        environment: "happy-dom",
+        include: ["src/**/*.{test,spec}.ts"],
     },
 }))

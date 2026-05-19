@@ -1,2 +1,5 @@
 ignoredBuiltDependencies:
   - esbuild
+minimumReleaseAgeExclude:
+  - '@vue/language-core@3.3.0'
+  - vue-tsc@3.3.0

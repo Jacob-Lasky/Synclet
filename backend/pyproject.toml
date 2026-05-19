@@ -1,14 +1,28 @@
 [project]
 name = "synclet"
-version = "0.0.1"
-description = "Synclet"
+version = "0.1.0"
+description = "Synclet — visual Plex media sync for Syncthing-shared libraries"
 authors = [{ name = "Jacob Lasky", email = "jacob.s.lasky@gmail.com" }]
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
-    "litestar>=2.17.0",
-    "pydantic>=2.11.9",
-    "uvicorn>=0.36.0",
+    "litestar>=2.21.1",
+    "pydantic>=2.13.4",
+    "uvicorn>=0.47.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.28.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::DeprecationWarning",
 ]
 
 [tool.ruff]
@@ -21,18 +35,18 @@ lint.ignore = [
     "D211",    # no-blank-line-before-class
     "D213",    # multi-line-summary-second-line
     "FAST001", # routes should use the response_model parameter
-    "FIX002", # allow TODO
+    "FIX002",  # allow TODO
 
     # temporarily ignore
-    "S608", # need to figure out a better way to sanitize SQL
+    "S608",    # need to figure out a better way to sanitize SQL
 
-    "E501", # line too long
+    "E501",    # line too long
 
     "PLR0912", # need to simplify functions (too many branches)
     "PLR0913", # need to simplify functions (too many arguments)
     "PLR0915", # need to simplify functions (too many statements)
     "PLR0917", # need to simplify functions (too many positional arguments)
-    "C901", # need to simplify functions (too complex)
-    "FBT001", # split functions (boolean-typed positional argument)
-    "FBT002", # split functions (boolean-typed default argument)
+    "C901",    # need to simplify functions (too complex)
+    "FBT001",  # split functions (boolean-typed positional argument)
+    "FBT002",  # split functions (boolean-typed default argument)
 ]

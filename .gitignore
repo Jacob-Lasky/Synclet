@@ -1,3 +1,29 @@
-*__pycache__*
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+backend/.venv/
+
+# Node
+node_modules/
+.pnpm-store/
+frontend/.pnpm-store/
+
+# Editor
+.vscode/
+.idea/
+
+# Synclet runtime data (poster cache + sqlite scratch — regenerated at runtime)
+data/
+# Leftover from template (Meilisearch removed)
 meili_data/
-*.vscode
+# Local Plex token overrides
+.env
+
+# OS
+.DS_Store
+Thumbs.db
