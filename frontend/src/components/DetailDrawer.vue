@@ -412,7 +412,16 @@ const movieSynced = computed(() =>
 .drawer {
   width: 540px;
   max-width: 100vw;
+  /* dvh accounts for dynamic browser chrome (URL bar, etc.) where
+     100vh would extend the scroll region beyond the visible viewport,
+     leaving the bottom of long content unreachable. 100vh stays as the
+     fallback for browsers without dvh support. */
   height: 100vh;
+  height: 100dvh;
+  /* flex-item with overflow:auto needs min-height:0 to size against its
+     content correctly; without it, deeply-stacked content can render
+     past the scroll plane and become unreachable. */
+  min-height: 0;
   background: var(--bg);
   border-left: 1px solid var(--border);
   overflow-y: auto;
