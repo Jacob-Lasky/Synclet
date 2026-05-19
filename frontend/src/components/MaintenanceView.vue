@@ -287,6 +287,23 @@ const totalPendingEpisodes = computed(() =>
 async function removePaths(paths: string[], label: string): Promise<void> {
   if (paths.length === 0) return
   if (!confirm(`Remove ${paths.length} file${paths.length === 1 ? "" : "s"}?\n\n${label}`)) return
+  // Optimistic: drop the matching rows from local state immediately so the
+  // UI updates without waiting for the (cold) re-walk that follows the
+  // server-side cache invalidation. Snapshot for rollback.
+  const pathSet = new Set(paths)
+  const snapshotW = watched.value
+  const snapshotH = hanging.value
+  watched.value = watched.value
+    .map(w => ({ ...w, files: w.files.filter(p => !pathSet.has(p)) }))
+    .filter(w => w.files.length > 0)
+  hanging.value = hanging.value.filter(h => !pathSet.has(h.path))
+  // Approximate badge decrement: number of titles+files dropped from view.
+  const dropped =
+    (snapshotW.length - watched.value.length)
+    + (snapshotH.length - hanging.value.length)
+  if (typeof store.maintenanceCount === "number" && dropped > 0) {
+    store.maintenanceCount = Math.max(0, store.maintenanceCount - dropped)
+  }
   removing.value = true
   try {
     const r = await api.maintRemove(paths)
@@ -294,9 +311,14 @@ async function removePaths(paths: string[], label: string): Promise<void> {
       kind: "success",
       text: `Removed ${r.removed} files (${humanSize(r.bytes_freed)})${summarizeCleanup(r.cleanup)}`,
     })
-    await load()
-    await loadState(true)
+    // Refresh state in the background (for the library grid's synced/watched
+    // percentages); not awaited so the maintenance view stays snappy.
+    loadState(true)
   } catch (e) {
+    // Rollback the optimistic state and surface the error.
+    watched.value = snapshotW
+    hanging.value = snapshotH
+    loadMaintenanceCount()
     pushToast({ kind: "error", text: (e as Error).message })
   } finally {
     removing.value = false
