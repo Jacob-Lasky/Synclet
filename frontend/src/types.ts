@@ -196,7 +196,19 @@ export interface ResolveItemResult {
   status: ResolveStatus
 }
 
+export interface CleanupSummary {
+  removed_files: number
+  removed_dirs: number
+}
+
 export interface ResolveResponse {
   results: ResolveItemResult[]
+  cleanup: CleanupSummary
   error?: string
+}
+
+export interface RemoveResponse {
+  removed: number
+  bytes_freed: number
+  cleanup: CleanupSummary
 }

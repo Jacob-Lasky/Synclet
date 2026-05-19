@@ -388,7 +388,6 @@ def remove_files(paths: list[str]) -> dict:
 
     removed = 0
     bytes_freed = 0
-    parents: set[Path] = set()
     for p in paths:
         path = Path(p)
         if path.exists() and path.is_file():
@@ -397,19 +396,20 @@ def remove_files(paths: list[str]) -> dict:
                 path.unlink()
                 removed += 1
                 bytes_freed += size
-                parents.add(path.parent)
-                parents.add(path.parent.parent)
             except OSError:
                 continue
-    # Prune empty dirs
-    for parent in sorted(parents, key=lambda x: -len(x.parts)):
-        try:
-            parent.rmdir()
-        except OSError:
-            pass
     state_mod.invalidate()
     # Implicit confirm: the maintenance "remove watched" path means the user
     # already watched these in Plex. Drop them from the snapshot so they do
     # NOT later appear as pending deletions.
     pending_mod.remove_keys(keys_removing)
-    return {"removed": removed, "bytes_freed": bytes_freed}
+    # Sweep orphan sidecars + prune empty parent dirs via the shared cleanup
+    # helper (same logic that runs after explicit resolve). This subsumes
+    # the prior parent.rmdir() loop and additionally clears subtitle/.nfo
+    # leftovers the user did not explicitly select.
+    cleanup = pending_mod.aggregate_cleanup(keys_removing)
+    return {
+        "removed": removed,
+        "bytes_freed": bytes_freed,
+        "cleanup": cleanup,
+    }
