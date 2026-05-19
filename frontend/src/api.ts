@@ -1,5 +1,7 @@
 import type {
   HangingFile,
+  IgnoredGrouped,
+  IgnoreKind,
   Job,
   MaintenanceCounts,
   PendingGroup,
@@ -59,6 +61,17 @@ export const api = {
       body: JSON.stringify({ paths }),
     }),
   maintCounts: () => json<MaintenanceCounts>(`/api/maintenance/counts`),
+  maintIgnored: () => json<IgnoredGrouped>(`/api/maintenance/ignored`),
+  maintIgnore: (kind: IgnoreKind, ref: object) =>
+    json<{ ok: boolean }>(`/api/maintenance/ignore`, {
+      method: "POST",
+      body: JSON.stringify({ kind, ref }),
+    }),
+  maintUnignore: (kind: IgnoreKind, ref: object) =>
+    json<{ ok: boolean }>(`/api/maintenance/unignore`, {
+      method: "POST",
+      body: JSON.stringify({ kind, ref }),
+    }),
   maintPending: () => json<{ items: PendingGroup[] }>(`/api/maintenance/pending`),
   maintResolve: (items: PendingItemRef[], action: ResolveAction) =>
     json<ResolveResponse>(`/api/maintenance/resolve`, {

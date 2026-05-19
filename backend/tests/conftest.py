@@ -154,6 +154,10 @@ def patch_paths(
     snapshot = media_tree["tmp"] / "snapshot.json"
     monkeypatch.setattr("synclet.config.SNAPSHOT_FILE", snapshot)
     monkeypatch.setattr("synclet.pending.SNAPSHOT_FILE", snapshot)
+    # Same treatment for the ignored-entries store (see synclet.ignored).
+    ignored_file = media_tree["tmp"] / "ignored.json"
+    monkeypatch.setattr("synclet.config.IGNORED_FILE", ignored_file)
+    monkeypatch.setattr("synclet.ignored.IGNORED_FILE", ignored_file)
 
     # State cache holds previous-test data; invalidate every test.
     from synclet import state as state_mod

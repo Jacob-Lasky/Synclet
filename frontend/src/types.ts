@@ -234,3 +234,28 @@ export interface MaintenanceCounts {
   pending_items: number
   total: number
 }
+
+export type IgnoreKind = "pending" | "watched" | "hanging"
+
+export interface IgnoredPendingRef {
+  sync_sub: string
+  folder: string
+  season: number | null
+  episode: number | null
+}
+
+export interface IgnoredWatchedRef {
+  lib: string
+  folder: string
+}
+
+export interface IgnoredHangingRef {
+  path: string
+}
+
+export interface IgnoredGrouped {
+  version: number
+  pending: IgnoredPendingRef[]
+  watched: IgnoredWatchedRef[]
+  hanging: IgnoredHangingRef[]
+}

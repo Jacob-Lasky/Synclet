@@ -8,6 +8,14 @@ vi.mock("./api", () => ({
   api: {
     maintWatched: () => Promise.resolve({ items: [] }),
     maintHanging: () => Promise.resolve({ items: [] }),
+    maintIgnored: () => Promise.resolve({
+      version: 1,
+      pending: [],
+      watched: [],
+      hanging: [],
+    }),
+    maintIgnore: vi.fn().mockResolvedValue({ ok: true }),
+    maintUnignore: vi.fn().mockResolvedValue({ ok: true }),
     maintPending: () => Promise.resolve({
       items: [
         {
@@ -63,5 +71,7 @@ describe("MaintenanceView pending pane visual artifact", () => {
     expect(html).toContain("Mark watched")
     expect(html).toContain("Reject")
     expect(html).toContain('data-testid="pending-deletions"')
+    // Ignore affordance present on the movie row.
+    expect(html).toContain("Ignore")
   })
 })

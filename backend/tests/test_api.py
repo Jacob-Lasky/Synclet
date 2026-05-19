@@ -141,6 +141,67 @@ class TestSyncRoute:
             assert "total_bytes" in body
 
 
+class TestMaintenanceIgnoreRoutes:
+    def test_ignore_then_list_then_unignore(self, client):
+        # ignore a pending entry via the API
+        r = client.post(
+            "/api/maintenance/ignore",
+            json={
+                "kind": "pending",
+                "ref": {"sync_sub": "tv", "folder": "X", "season": 1, "episode": 1},
+            },
+        )
+        assert r.status_code == 201
+        assert r.json()["ok"] is True
+
+        # list shows the entry
+        r = client.get("/api/maintenance/ignored")
+        body = r.json()
+        assert len(body["pending"]) == 1
+        assert body["pending"][0]["folder"] == "X"
+
+        # unignore clears it
+        r = client.post(
+            "/api/maintenance/unignore",
+            json={
+                "kind": "pending",
+                "ref": {"sync_sub": "tv", "folder": "X", "season": 1, "episode": 1},
+            },
+        )
+        assert r.json()["ok"] is True
+        r = client.get("/api/maintenance/ignored")
+        assert r.json()["pending"] == []
+
+    def test_unknown_kind_returns_ok_false(self, client):
+        r = client.post(
+            "/api/maintenance/ignore",
+            json={"kind": "bogus", "ref": {}},
+        )
+        assert r.json()["ok"] is False
+
+    def test_counts_excludes_ignored_pending(self, client, patch_paths):
+        from synclet.pending import SnapshotKey, save_snapshot
+
+        # Seed a pending ghost so counts.total >= 1
+        save_snapshot({SnapshotKey(sync_sub="tv", folder="Ghost", season=1, episode=1)})
+
+        before = client.get("/api/maintenance/counts").json()
+        assert before["pending_items"] >= 1
+        baseline = before["pending_items"]
+
+        # Ignore it
+        client.post(
+            "/api/maintenance/ignore",
+            json={
+                "kind": "pending",
+                "ref": {"sync_sub": "tv", "folder": "Ghost", "season": 1, "episode": 1},
+            },
+        )
+
+        after = client.get("/api/maintenance/counts").json()
+        assert after["pending_items"] == baseline - 1
+
+
 class TestMaintenanceCountsRoute:
     def test_returns_all_keys(self, client):
         r = client.get("/api/maintenance/counts")

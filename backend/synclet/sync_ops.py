@@ -299,15 +299,21 @@ def find_source_lib(folder_name: str) -> str | None:
 def find_watched_synced_files() -> list[dict]:
     """Files in SYNC_ROOT that correspond to watched episodes/movies.
 
-    Returns [{title, lib, files: [paths], size}] grouped by title.
+    Returns [{title, lib, files: [paths], size}] grouped by title. Excludes
+    user-muted entries from synclet.ignored.
     """
     from synclet.scan import clean_name, _EP_PAT, _season_num
     from synclet.watchstate import show_watch_map, movie_watch_state
+    from synclet.ignored import WatchedRef, ignored_watched_set
+
+    ignored = ignored_watched_set()
 
     out: list[dict] = []
     for _sub_path, item in iter_synced_titles():
         source_lib = find_source_lib(item.name)
         if not source_lib:
+            continue
+        if WatchedRef(lib=source_lib, folder=item.name) in ignored:
             continue
 
         display = clean_name(item.name)
@@ -354,7 +360,11 @@ def find_watched_synced_files() -> list[dict]:
 
 
 def find_hanging_files() -> list[dict]:
-    """Sync-root files in folders that have no video file (auxiliary leftovers)."""
+    """Sync-root files in folders with no video file. Excludes user-muted paths."""
+    from synclet.ignored import HangingRef, ignored_hanging_set
+
+    ignored_paths = {h.path for h in ignored_hanging_set()}
+
     hanging: list[dict] = []
     for sub_path in iter_sync_subs():
         for dirpath in sub_path.rglob("*"):
@@ -369,6 +379,8 @@ def find_hanging_files() -> list[dict]:
                 continue
             if not any(f.suffix.lower() in VIDEO_EXTS for f in files):
                 for f in files:
+                    if str(f) in ignored_paths:
+                        continue
                     hanging.append(
                         {
                             "path": str(f),

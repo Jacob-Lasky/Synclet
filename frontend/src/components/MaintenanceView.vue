@@ -4,6 +4,8 @@ import { api } from "../api"
 import type {
   CleanupSummary,
   HangingFile,
+  IgnoredGrouped,
+  IgnoreKind,
   PendingEpisode,
   PendingGroup,
   PendingItemRef,
@@ -16,6 +18,8 @@ import { humanSize, loadMaintenanceCount, loadState, pushToast } from "../store"
 const watched = ref<WatchedFiles[]>([])
 const hanging = ref<HangingFile[]>([])
 const pending = ref<PendingGroup[]>([])
+const ignoredList = ref<IgnoredGrouped>({ version: 1, pending: [], watched: [], hanging: [] })
+const ignoredOpen = ref(false)
 const loading = ref(true)
 const error = ref("")
 const removing = ref(false)
@@ -28,14 +32,16 @@ async function load(): Promise<void> {
   loading.value = true
   error.value = ""
   try {
-    const [w, h, p] = await Promise.all([
+    const [w, h, p, ig] = await Promise.all([
       api.maintWatched(),
       api.maintHanging(),
       api.maintPending(),
+      api.maintIgnored(),
     ])
     watched.value = w.items
     hanging.value = h.items
     pending.value = p.items
+    ignoredList.value = ig
     // Surface the same counts to the tab badge. Cheap: load() already did
     // the FS walks the counts endpoint would do; this round-trip just sums
     // them server-side.
@@ -44,6 +50,40 @@ async function load(): Promise<void> {
     error.value = (e as Error).message
   } finally {
     loading.value = false
+  }
+}
+
+const ignoredCount = computed(() =>
+  ignoredList.value.pending.length
+  + ignoredList.value.watched.length
+  + ignoredList.value.hanging.length
+)
+
+async function ignoreItem(kind: IgnoreKind, ref: object, label: string): Promise<void> {
+  try {
+    const r = await api.maintIgnore(kind, ref)
+    if (!r.ok) {
+      pushToast({ kind: "error", text: `Could not ignore ${label}` })
+      return
+    }
+    pushToast({ kind: "success", text: `Ignored ${label}` })
+    await load()
+  } catch (e) {
+    pushToast({ kind: "error", text: (e as Error).message })
+  }
+}
+
+async function unignoreItem(kind: IgnoreKind, ref: object, label: string): Promise<void> {
+  try {
+    const r = await api.maintUnignore(kind, ref)
+    if (!r.ok) {
+      pushToast({ kind: "error", text: `Could not unignore ${label}` })
+      return
+    }
+    pushToast({ kind: "success", text: `Unignored ${label}` })
+    await load()
+  } catch (e) {
+    pushToast({ kind: "error", text: (e as Error).message })
   }
 }
 
@@ -222,6 +262,13 @@ function totalHangingBytes(): number {
             <button class="danger mini" :disabled="removing" @click="removePaths(w.files, w.title)">
               Remove
             </button>
+            <button
+              class="ghost mini"
+              title="Mute this entry"
+              @click="ignoreItem('watched', { lib: w.lib, folder: w.folder }, w.title)"
+            >
+              Ignore
+            </button>
           </li>
         </ul>
       </section>
@@ -261,6 +308,13 @@ function totalHangingBytes(): number {
                   @click="resolveItems(refsForGroup(g), 'reject', g.title)"
                 >
                   Reject
+                </button>
+                <button
+                  class="ghost mini"
+                  title="Mute this entry"
+                  @click="ignoreItem('pending', { sync_sub: g.sync_sub, folder: g.folder, season: null, episode: null }, g.title)"
+                >
+                  Ignore
                 </button>
               </div>
             </template>
@@ -354,6 +408,13 @@ function totalHangingBytes(): number {
                       >
                         Reject
                       </button>
+                      <button
+                        class="ghost mini"
+                        title="Mute this entry"
+                        @click="ignoreItem('pending', { sync_sub: g.sync_sub, folder: g.folder, season: e.season, episode: e.episode }, `${g.title} S${e.season}E${e.episode}`)"
+                      >
+                        Ignore
+                      </button>
                     </li>
                   </ul>
                 </li>
@@ -381,8 +442,74 @@ function totalHangingBytes(): number {
             <button class="danger mini" :disabled="removing" @click="removePaths([h.path], h.rel)">
               Remove
             </button>
+            <button
+              class="ghost mini"
+              title="Mute this entry"
+              @click="ignoreItem('hanging', { path: h.path }, h.rel)"
+            >
+              Ignore
+            </button>
           </li>
         </ul>
+      </section>
+
+      <section v-if="ignoredCount > 0" class="panel" data-testid="ignored-section">
+        <header>
+          <h2>
+            <button class="toggle" :aria-expanded="ignoredOpen" @click="ignoredOpen = !ignoredOpen">
+              <span class="caret">{{ ignoredOpen ? "▾" : "▸" }}</span>
+              Ignored
+            </button>
+          </h2>
+          <span class="dim">{{ ignoredCount }} muted</span>
+        </header>
+        <div v-if="ignoredOpen">
+          <ul v-if="ignoredList.pending.length">
+            <li v-for="p in ignoredList.pending" :key="`p-${p.sync_sub}-${p.folder}-${p.season}-${p.episode}`">
+              <span class="kind-tag dim">pending</span>
+              <span class="name">
+                {{ p.folder }}
+                <span v-if="p.season !== null && p.episode !== null" class="dim mono">
+                  S{{ String(p.season).padStart(2, "0") }}E{{ String(p.episode).padStart(2, "0") }}
+                </span>
+              </span>
+              <span class="spacer"></span>
+              <button
+                class="ghost mini"
+                @click="unignoreItem('pending', p, p.folder)"
+              >
+                Unignore
+              </button>
+            </li>
+          </ul>
+          <ul v-if="ignoredList.watched.length">
+            <li v-for="w in ignoredList.watched" :key="`w-${w.lib}-${w.folder}`">
+              <span class="kind-tag dim">watched</span>
+              <span class="name">{{ w.folder }}</span>
+              <span class="lib dim">{{ w.lib }}</span>
+              <span class="spacer"></span>
+              <button
+                class="ghost mini"
+                @click="unignoreItem('watched', w, w.folder)"
+              >
+                Unignore
+              </button>
+            </li>
+          </ul>
+          <ul v-if="ignoredList.hanging.length">
+            <li v-for="h in ignoredList.hanging" :key="`h-${h.path}`">
+              <span class="kind-tag dim">hanging</span>
+              <span class="name mono">{{ h.path }}</span>
+              <span class="spacer"></span>
+              <button
+                class="ghost mini"
+                @click="unignoreItem('hanging', h, h.path)"
+              >
+                Unignore
+              </button>
+            </li>
+          </ul>
+        </div>
       </section>
     </template>
   </div>
@@ -474,4 +601,14 @@ button.primary {
   cursor: pointer;
 }
 button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.kind-tag {
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-weight: 600;
+}
 </style>

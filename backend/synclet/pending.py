@@ -276,9 +276,29 @@ def keys_for_paths(paths: Iterable[str | Path]) -> set[SnapshotKey]:
 
 
 def compute_pending() -> set[SnapshotKey]:
-    """Return the set of SnapshotKeys present in the snapshot but not on disk."""
+    """Return the set of SnapshotKeys present in the snapshot but not on disk.
+
+    Excludes user-muted entries from synclet.ignored so the maintenance UI
+    and the Maintenance tab badge both honor the mute.
+    """
+    from synclet.ignored import PendingRef, ignored_pending_set  # noqa: PLC0415
+
     bootstrap_if_missing()
-    return load_snapshot() - scan_on_disk()
+    raw = load_snapshot() - scan_on_disk()
+    ignored = ignored_pending_set()
+    if not ignored:
+        return raw
+    return {
+        k
+        for k in raw
+        if PendingRef(
+            sync_sub=k.sync_sub,
+            folder=k.folder,
+            season=k.season,
+            episode=k.episode,
+        )
+        not in ignored
+    }
 
 
 # ── Post-resolve filesystem cleanup ─────────────────────────────────────────
