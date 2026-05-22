@@ -656,9 +656,9 @@ class TestMarkWatchedScope:
         assert r["failed"] == 1
         # Order preserved by sorted ep_map iteration
         statuses = {(it["season"], it["episode"]): it["status"] for it in r["results"]}
-        assert statuses[(1, 1)] == "ok"
-        assert statuses[(1, 2)] == "scrobble_failed"
-        assert statuses[(1, 3)] == "ok"
+        assert statuses[1, 1] == "ok"
+        assert statuses[1, 2] == "scrobble_failed"
+        assert statuses[1, 3] == "ok"
 
     def test_unknown_scope_returns_error(self):
         r = mark_watched_scope(lib="tv", folder="Show", scope="bogus")

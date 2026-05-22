@@ -22,7 +22,6 @@ from synclet.fuzzy import fuzzy_score
 from synclet.plex import get_metadata
 from synclet.state import get_state
 
-
 _PLEX_KEY = re.compile(r"/library/metadata/(\d+)")
 _IMDB = re.compile(r"imdb\.com/title/(tt\d+)")
 _JELLYFIN_ID = re.compile(r"[?&#]id=([a-f0-9-]+)", re.IGNORECASE)

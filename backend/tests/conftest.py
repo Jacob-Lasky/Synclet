@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ── WatchState schema (matches v02 — keep in sync with the real DB) ────────
 
 WATCHSTATE_SCHEMA = """
@@ -160,7 +159,8 @@ def patch_paths(
     monkeypatch.setattr("synclet.ignored.IGNORED_FILE", ignored_file)
 
     # State cache holds previous-test data; invalidate every test.
-    from synclet import maint_cache, state as state_mod
+    from synclet import maint_cache
+    from synclet import state as state_mod
 
     state_mod.invalidate()
     maint_cache.invalidate()

@@ -97,7 +97,7 @@ class SnapshotKey:
 _MIN_REL_PARTS = 2
 
 
-def path_to_snapshot_key(path: Path) -> SnapshotKey | None:  # noqa: PLR0911 — guards
+def path_to_snapshot_key(path: Path) -> SnapshotKey | None:
     """Reverse a synced file path to its SnapshotKey.
 
     Returns None for paths outside SYNC_ROOT, non-video files, or paths whose
@@ -281,7 +281,7 @@ def _compute_pending_uncached() -> set[SnapshotKey]:
     The expensive part is scan_on_disk's filesystem walk on shfs FUSE.
     Callers should go through `compute_pending()` for the cached path.
     """
-    from synclet.ignored import PendingRef, ignored_pending_set  # noqa: PLC0415
+    from synclet.ignored import PendingRef, ignored_pending_set
 
     bootstrap_if_missing()
     raw = load_snapshot() - scan_on_disk()
@@ -309,7 +309,7 @@ def compute_pending() -> set[SnapshotKey]:
     `maint_cache` for STATE_CACHE_TTL seconds; invalidated by every
     mutating maintenance action.
     """
-    from synclet.maint_cache import get_cached  # noqa: PLC0415
+    from synclet.maint_cache import get_cached
 
     return get_cached("pending", _compute_pending_uncached)
 
@@ -375,7 +375,7 @@ def cleanup_after_resolve(key: SnapshotKey) -> dict[str, int]:
     # Show / youtube: match SxxEyy on filenames inside the season dir(s).
     # Multiple season dirs with the same number are uncommon but possible
     # (e.g. "Season 01" vs "Specials 01"); iterate all that parse to the key.
-    from synclet.scan import _season_num  # noqa: PLC0415
+    from synclet.scan import _season_num
 
     ep_pat = re.compile(
         rf"[Ss]{key.season:02d}[Ee]{key.episode:02d}(?!\d)|"
@@ -452,10 +452,10 @@ def grouped_pending() -> list[dict]:
     rather than the whole list failing to render.
     """
     # Local imports avoid cycles: plex -> scan -> ... and sync_ops needs us.
-    from synclet.plex import episode_rating_keys, find_in_library  # noqa: PLC0415
-    from synclet.scan import clean_name  # noqa: PLC0415
-    from synclet.sync_ops import find_source_lib  # noqa: PLC0415
-    from synclet.watchstate import movie_watch_state, show_watch_map  # noqa: PLC0415
+    from synclet.plex import episode_rating_keys, find_in_library
+    from synclet.scan import clean_name
+    from synclet.sync_ops import find_source_lib
+    from synclet.watchstate import movie_watch_state, show_watch_map
 
     by_folder: dict[tuple[str, str], list[SnapshotKey]] = {}
     for key in compute_pending():
@@ -572,17 +572,19 @@ def resolve(
     {"removed_files": N, "removed_dirs": M} aggregated across the batch.
     """
     # Local imports keep the module's import graph small.
-    from synclet.plex import (  # noqa: PLC0415
+    from synclet.plex import (
         episode_rating_keys,
         find_in_library,
         scrobble,
     )
-    from synclet.sync_ops import find_source_lib  # noqa: PLC0415
+    from synclet.sync_ops import find_source_lib
 
     keys = list(keys)
     results: list[ResolveResult] = []
 
-    from synclet.maint_cache import invalidate as invalidate_maint_cache  # noqa: PLC0415
+    from synclet.maint_cache import (
+        invalidate as invalidate_maint_cache,
+    )
 
     if not confirm:
         results.extend(ResolveResult(key=k, status="rejected") for k in keys)
@@ -645,7 +647,7 @@ def mark_watched_scope(
     has the per-item scrobble status. A no_rating_key result means Plex's
     library doesn't have the item (folder mismatch or library scanning).
     """
-    from synclet.plex import (  # noqa: PLC0415
+    from synclet.plex import (
         episode_rating_keys,
         find_in_library,
         scrobble,

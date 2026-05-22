@@ -26,7 +26,6 @@ from dataclasses import dataclass
 
 from synclet.config import IGNORED_FILE
 
-
 # ── Per-kind references (frozen so they're hashable, set-safe) ───────────────
 
 
@@ -173,7 +172,7 @@ def save(state: IgnoredState) -> None:
 
 def _invalidate_maint_cache() -> None:
     """Cache invalidation hook; local import keeps the module graph small."""
-    from synclet.maint_cache import invalidate  # noqa: PLC0415
+    from synclet.maint_cache import invalidate
 
     invalidate()
 

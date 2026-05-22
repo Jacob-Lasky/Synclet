@@ -90,7 +90,7 @@ def all_watched_shows() -> dict[str, dict[tuple[int, int], bool]]:
             if title is None or s is None or e is None:
                 continue
             key = title.lower().strip()
-            out.setdefault(key, {})[(int(s), int(e))] = bool(w)
+            out.setdefault(key, {})[int(s), int(e)] = bool(w)
         return out
     finally:
         c.close()

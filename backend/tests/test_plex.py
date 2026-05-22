@@ -5,10 +5,8 @@ attributes the parser actually consumes. If Plex changes the XML schema in
 ways that drop these attributes, the test breaks loudly.
 """
 
-from unittest.mock import patch
 
-from synclet.plex import section_index, find_in_library
-
+from synclet.plex import find_in_library, section_index
 
 # Captured from live Plex `/library/sections/2/all` response, trimmed to two
 # items. Real responses have Image/Genre/Role/etc. children we don't parse.
@@ -126,9 +124,9 @@ class TestEpisodeRatingKeys:
             "synclet.plex.urllib.request.urlopen", lambda *a, **kw: _AllLeavesResp()
         )
         m = episode_rating_keys("100")
-        assert m[(1, 1)] == "1001"
-        assert m[(1, 2)] == "1002"
-        assert m[(2, 1)] == "2001"
+        assert m[1, 1] == "1001"
+        assert m[1, 2] == "1002"
+        assert m[2, 1] == "2001"
 
     def test_handles_api_failure(self, monkeypatch):
         from synclet.plex import episode_rating_keys

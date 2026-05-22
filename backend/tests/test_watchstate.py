@@ -16,12 +16,12 @@ from synclet.watchstate import (
 class TestShowWatchMap:
     def test_watched_episodes(self, patch_watchstate):
         m = show_watch_map("Better Call Saul")
-        assert m[(1, 1)] is True
-        assert m[(1, 2)] is True
+        assert m[1, 1] is True
+        assert m[1, 2] is True
 
     def test_unwatched_episode(self, patch_watchstate):
         m = show_watch_map("Better Call Saul")
-        assert m[(1, 3)] is False
+        assert m[1, 3] is False
 
     def test_case_insensitive(self, patch_watchstate):
         # COLLATE NOCASE on the SQL query

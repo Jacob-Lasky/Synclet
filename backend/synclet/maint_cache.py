@@ -28,7 +28,7 @@ from synclet.config import STATE_CACHE_TTL
 _cache: dict[str, tuple[float, Any]] = {}
 
 
-def get_cached(key: str, build: callable) -> Any:  # noqa: ANN401 — generic cache value
+def get_cached(key: str, build: callable) -> Any:
     """Return cached value for `key`, recomputing via `build()` on miss/expire.
 
     The `build` callable runs synchronously and replaces the cache entry
