@@ -64,20 +64,12 @@ class TestPathToSnapshotKey:
         )
 
     def test_movie(self, patch_paths):
-        path = (
-            patch_paths["sync"] / "movies" / "1917 (2019) {tmdb-3}" / "1917.mkv"
-        )
+        path = patch_paths["sync"] / "movies" / "1917 (2019) {tmdb-3}" / "1917.mkv"
         key = path_to_snapshot_key(path)
         assert key == SnapshotKey(sync_sub="movies", folder="1917 (2019) {tmdb-3}")
 
     def test_non_video_returns_none(self, patch_paths):
-        path = (
-            patch_paths["sync"]
-            / "tv"
-            / "Foo"
-            / "Season 01"
-            / "Foo - S01E01.srt"
-        )
+        path = patch_paths["sync"] / "tv" / "Foo" / "Season 01" / "Foo - S01E01.srt"
         assert path_to_snapshot_key(path) is None
 
     def test_path_outside_sync_root_returns_none(self, patch_paths, tmp_path: Path):
@@ -151,9 +143,7 @@ class TestBootstrap:
 
 
 class TestComputePending:
-    def test_no_pending_immediately_after_bootstrap(
-        self, patch_snapshot, patch_paths
-    ):
+    def test_no_pending_immediately_after_bootstrap(self, patch_snapshot, patch_paths):
         bootstrap_if_missing()
         assert compute_pending() == set()
 
@@ -200,9 +190,7 @@ class TestKeysForPaths:
         srt = sync / "tv" / "X" / "Season 01" / "X - S01E01.srt"
         mkv = sync / "tv" / "X" / "Season 01" / "X - S01E01.mkv"
         keys = keys_for_paths([str(srt), str(mkv)])
-        assert keys == {
-            SnapshotKey(sync_sub="tv", folder="X", season=1, episode=1)
-        }
+        assert keys == {SnapshotKey(sync_sub="tv", folder="X", season=1, episode=1)}
 
     def test_drops_paths_outside_sync_root(self, patch_paths, tmp_path: Path):
         outside = tmp_path / "elsewhere" / "S01E01.mkv"
@@ -359,7 +347,7 @@ class TestResolveConfirm:
 
         results, _cleanup = resolve([k], confirm=True)
         assert [r.status for r in results] == ["no_rating_key"]
-        # Snapshot still cleared — the file is gone, leaving it in pending
+        # Snapshot still cleared , the file is gone, leaving it in pending
         # would re-prompt the user every page load.
         assert load_snapshot() == set()
 
@@ -370,9 +358,7 @@ class TestResolveConfirm:
 class TestGroupedPending:
     def test_movie_entry_shape(self, patch_snapshot, patch_paths, monkeypatch):
         monkeypatch.setattr("synclet.plex.find_in_library", lambda *a, **kw: None)
-        monkeypatch.setattr(
-            "synclet.plex.episode_rating_keys", lambda show_rk: {}
-        )
+        monkeypatch.setattr("synclet.plex.episode_rating_keys", lambda show_rk: {})
         (patch_paths["media"] / "movies" / "Ghost Movie").mkdir(parents=True)
         save_snapshot({SnapshotKey(sync_sub="movies", folder="Ghost Movie")})
 
@@ -386,7 +372,9 @@ class TestGroupedPending:
         assert "rating_key" in g
         assert "already_watched_in_plex" in g
 
-    def test_show_entry_groups_by_season(self, patch_snapshot, patch_paths, monkeypatch):
+    def test_show_entry_groups_by_season(
+        self, patch_snapshot, patch_paths, monkeypatch
+    ):
         monkeypatch.setattr("synclet.plex.find_in_library", lambda *a, **kw: None)
         monkeypatch.setattr("synclet.plex.episode_rating_keys", lambda show_rk: {})
         (patch_paths["media"] / "tv" / "Ghost Show").mkdir(parents=True)
@@ -417,7 +405,7 @@ class TestCleanupAfterResolveMovie:
         sync = patch_paths["sync"]
         folder = sync / "movies" / "Ghost Movie (2099)"
         folder.mkdir(parents=True)
-        # Sidecars only. No video — the user deleted that already.
+        # Sidecars only. No video , the user deleted that already.
         (folder / "Ghost Movie.en.srt").write_text("subs")
         (folder / "movie.nfo").write_text("nfo")
         (folder / "poster.jpg").write_bytes(b"\xff")
@@ -451,15 +439,13 @@ class TestCleanupAfterResolveMovie:
 
 
 class TestCleanupAfterResolveShow:
-    def test_sweeps_episode_sidecars_when_video_gone(
-        self, patch_snapshot, patch_paths
-    ):
+    def test_sweeps_episode_sidecars_when_video_gone(self, patch_snapshot, patch_paths):
         sync = patch_paths["sync"]
         season = sync / "tv" / "Ghost Show (2099)" / "Season 01"
         season.mkdir(parents=True)
         # Only the S01E01 sidecar remains; user deleted the .mkv.
         (season / "Ghost Show - S01E01 - X.en.srt").write_text("subs")
-        # S01E02 video is still here — must NOT touch it.
+        # S01E02 video is still here , must NOT touch it.
         (season / "Ghost Show - S01E02 - Y.mkv").write_bytes(b"\0" * 5)
         (season / "Ghost Show - S01E02 - Y.en.srt").write_text("subs2")
 
@@ -502,9 +488,7 @@ class TestCleanupAfterResolveShow:
         # Sub root must NOT be pruned (it's a stable mount point).
         assert (sync / "tv").exists()
 
-    def test_no_op_when_video_for_episode_present(
-        self, patch_snapshot, patch_paths
-    ):
+    def test_no_op_when_video_for_episode_present(self, patch_snapshot, patch_paths):
         """Safety latch: don't strip sidecars when the video is still there."""
         sync = patch_paths["sync"]
         season = sync / "tv" / "Ghost Show (2099)" / "Season 01"
@@ -598,16 +582,20 @@ class TestMarkWatchedScope:
         )
         monkeypatch.setattr(
             "synclet.plex.episode_rating_keys",
-            lambda show_rk: {(1, 3): "EP-1-3", (2, 1): "EP-2-1"}
-            if show_rk == "SHOW100"
-            else {},
+            lambda show_rk: (
+                {(1, 3): "EP-1-3", (2, 1): "EP-2-1"} if show_rk == "SHOW100" else {}
+            ),
         )
         monkeypatch.setattr(
             "synclet.plex.scrobble",
             lambda rk, **_: called.append(rk) or True,
         )
         r = mark_watched_scope(
-            lib="tv", folder="Show", scope="episode", season=1, episode=3,
+            lib="tv",
+            folder="Show",
+            scope="episode",
+            season=1,
+            episode=3,
         )
         assert r["scrobbled"] == 1
         assert called == ["EP-1-3"]
@@ -668,9 +656,9 @@ class TestMarkWatchedScope:
         assert r["failed"] == 1
         # Order preserved by sorted ep_map iteration
         statuses = {(it["season"], it["episode"]): it["status"] for it in r["results"]}
-        assert statuses[(1, 1)] == "ok"
-        assert statuses[(1, 2)] == "scrobble_failed"
-        assert statuses[(1, 3)] == "ok"
+        assert statuses[1, 1] == "ok"
+        assert statuses[1, 2] == "scrobble_failed"
+        assert statuses[1, 3] == "ok"
 
     def test_unknown_scope_returns_error(self):
         r = mark_watched_scope(lib="tv", folder="Show", scope="bogus")

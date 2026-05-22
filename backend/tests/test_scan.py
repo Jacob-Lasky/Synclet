@@ -7,8 +7,6 @@ synthetic tree.
 
 from pathlib import Path
 
-import pytest
-
 from synclet.scan import (
     clean_name,
     is_wanted_file,
@@ -77,7 +75,7 @@ class TestIsWantedFile:
         assert not is_wanted_file(Path("Show.S01E01.de.srt"))
 
     def test_forced_sub_kept(self):
-        # "forced" qualifier means it shows during non-English audio — always wanted
+        # "forced" qualifier means it shows during non-English audio , always wanted
         # The lang code is the last 2-3 letter token NOT in SUBTITLE_QUALIFIERS
         assert is_wanted_file(Path("Show.S01E01.forced.en.srt"))
 

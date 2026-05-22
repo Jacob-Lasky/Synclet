@@ -39,7 +39,7 @@ async def _get(
     client: httpx.AsyncClient,
     path: str,
     params: dict[str, str] | None = None,
-) -> Any:  # noqa: ANN401
+) -> Any:
     """Single GET against Syncthing's REST API.
 
     No retries; the caller poll-loops at 8s and any transient failure just

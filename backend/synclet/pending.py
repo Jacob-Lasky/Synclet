@@ -93,11 +93,11 @@ class SnapshotKey:
 
 
 # Minimum SYNC_ROOT-relative path depth that can identify a media item: at
-# least <sync_sub>/<folder>/... — anything shallower is a stray top-level file.
+# least <sync_sub>/<folder>/... , anything shallower is a stray top-level file.
 _MIN_REL_PARTS = 2
 
 
-def path_to_snapshot_key(path: Path) -> SnapshotKey | None:  # noqa: PLR0911 — guards
+def path_to_snapshot_key(path: Path) -> SnapshotKey | None:
     """Reverse a synced file path to its SnapshotKey.
 
     Returns None for paths outside SYNC_ROOT, non-video files, or paths whose
@@ -178,7 +178,7 @@ def _iter_videos(root: Path) -> Iterable[Path]:
 def load_snapshot() -> set[SnapshotKey]:
     """Return the persisted snapshot, or an empty set if the file is missing.
 
-    A missing file means "not bootstrapped yet" — callers should run
+    A missing file means "not bootstrapped yet" , callers should run
     bootstrap_if_missing() before computing pending, otherwise every existing
     on-disk file would erroneously appear as a deletion candidate the first
     time the feature is used.
@@ -187,7 +187,7 @@ def load_snapshot() -> set[SnapshotKey]:
         return set()
     try:
         raw = json.loads(SNAPSHOT_FILE.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return set()
     items = raw.get("items", [])
     return {SnapshotKey.from_dict(item) for item in items if isinstance(item, dict)}
@@ -281,7 +281,7 @@ def _compute_pending_uncached() -> set[SnapshotKey]:
     The expensive part is scan_on_disk's filesystem walk on shfs FUSE.
     Callers should go through `compute_pending()` for the cached path.
     """
-    from synclet.ignored import PendingRef, ignored_pending_set  # noqa: PLC0415
+    from synclet.ignored import PendingRef, ignored_pending_set
 
     bootstrap_if_missing()
     raw = load_snapshot() - scan_on_disk()
@@ -309,7 +309,7 @@ def compute_pending() -> set[SnapshotKey]:
     `maint_cache` for STATE_CACHE_TTL seconds; invalidated by every
     mutating maintenance action.
     """
-    from synclet.maint_cache import get_cached  # noqa: PLC0415
+    from synclet.maint_cache import get_cached
 
     return get_cached("pending", _compute_pending_uncached)
 
@@ -375,7 +375,7 @@ def cleanup_after_resolve(key: SnapshotKey) -> dict[str, int]:
     # Show / youtube: match SxxEyy on filenames inside the season dir(s).
     # Multiple season dirs with the same number are uncommon but possible
     # (e.g. "Season 01" vs "Specials 01"); iterate all that parse to the key.
-    from synclet.scan import _season_num  # noqa: PLC0415
+    from synclet.scan import _season_num
 
     ep_pat = re.compile(
         rf"[Ss]{key.season:02d}[Ee]{key.episode:02d}(?!\d)|"
@@ -383,15 +383,11 @@ def cleanup_after_resolve(key: SnapshotKey) -> dict[str, int]:
         re.IGNORECASE,
     )
     season_dirs = [
-        d
-        for d in folder_path.iterdir()
-        if d.is_dir() and _season_num(d) == key.season
+        d for d in folder_path.iterdir() if d.is_dir() and _season_num(d) == key.season
     ]
     for season_dir in season_dirs:
         matching = [f for f in season_dir.iterdir() if ep_pat.search(f.name)]
-        videos_remaining = any(
-            f.suffix.lower() in VIDEO_EXTS for f in matching
-        )
+        videos_remaining = any(f.suffix.lower() in VIDEO_EXTS for f in matching)
         if videos_remaining:
             continue
         for f in matching:
@@ -456,10 +452,10 @@ def grouped_pending() -> list[dict]:
     rather than the whole list failing to render.
     """
     # Local imports avoid cycles: plex -> scan -> ... and sync_ops needs us.
-    from synclet.plex import episode_rating_keys, find_in_library  # noqa: PLC0415
-    from synclet.scan import clean_name  # noqa: PLC0415
-    from synclet.sync_ops import find_source_lib  # noqa: PLC0415
-    from synclet.watchstate import movie_watch_state, show_watch_map  # noqa: PLC0415
+    from synclet.plex import episode_rating_keys, find_in_library
+    from synclet.scan import clean_name
+    from synclet.sync_ops import find_source_lib
+    from synclet.watchstate import movie_watch_state, show_watch_map
 
     by_folder: dict[tuple[str, str], list[SnapshotKey]] = {}
     for key in compute_pending():
@@ -554,7 +550,9 @@ class ResolveResult:
 
 
 def resolve(
-    keys: Iterable[SnapshotKey], *, confirm: bool,
+    keys: Iterable[SnapshotKey],
+    *,
+    confirm: bool,
 ) -> tuple[list[ResolveResult], dict[str, int]]:
     """Resolve a batch of pending keys, sweep filesystem leftovers.
 
@@ -562,7 +560,7 @@ def resolve(
     "rejected" per key. On confirm: each key is scrobbled to Plex first
     (best-effort, per-item); successful scrobbles get status "ok", failures
     get "scrobble_failed" or "no_rating_key". The snapshot drops every key
-    regardless of scrobble outcome — the user already deleted the file, so
+    regardless of scrobble outcome , the user already deleted the file, so
     putting it back in pending would be incorrect.
 
     After the snapshot mutation, runs cleanup_after_resolve for each key to
@@ -574,17 +572,19 @@ def resolve(
     {"removed_files": N, "removed_dirs": M} aggregated across the batch.
     """
     # Local imports keep the module's import graph small.
-    from synclet.plex import (  # noqa: PLC0415
+    from synclet.plex import (
         episode_rating_keys,
         find_in_library,
         scrobble,
     )
-    from synclet.sync_ops import find_source_lib  # noqa: PLC0415
+    from synclet.sync_ops import find_source_lib
 
     keys = list(keys)
     results: list[ResolveResult] = []
 
-    from synclet.maint_cache import invalidate as invalidate_maint_cache  # noqa: PLC0415
+    from synclet.maint_cache import (
+        invalidate as invalidate_maint_cache,
+    )
 
     if not confirm:
         results.extend(ResolveResult(key=k, status="rejected") for k in keys)
@@ -647,7 +647,7 @@ def mark_watched_scope(
     has the per-item scrobble status. A no_rating_key result means Plex's
     library doesn't have the item (folder mismatch or library scanning).
     """
-    from synclet.plex import (  # noqa: PLC0415
+    from synclet.plex import (
         episode_rating_keys,
         find_in_library,
         scrobble,
@@ -676,11 +676,7 @@ def mark_watched_scope(
             ]
             if scope == "movie"
             else [],
-            "error": (
-                None
-                if scope != "movie"
-                else f"no Plex item for {lib}/{folder}"
-            ),
+            "error": (None if scope != "movie" else f"no Plex item for {lib}/{folder}"),
         }
 
     targets: list[tuple[str, int | None, int | None]] = []
@@ -702,7 +698,11 @@ def mark_watched_scope(
                     "scrobbled": 0,
                     "failed": 1,
                     "results": [
-                        {"season": season, "episode": episode, "status": "no_rating_key"},
+                        {
+                            "season": season,
+                            "episode": episode,
+                            "status": "no_rating_key",
+                        },
                     ],
                 }
             targets.append((rk, season, episode))

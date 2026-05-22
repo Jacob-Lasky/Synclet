@@ -7,6 +7,7 @@ title, so we precompute those aggregates here.
 
 from __future__ import annotations
 
+import contextlib
 import time
 from dataclasses import dataclass
 
@@ -31,7 +32,11 @@ class TitleWithState:
         return d
 
 
-_cache: dict[str, object] = {"ts": 0.0, "data": None}
+# Module-level cache as separate typed scalars, so static analysis can verify
+# arithmetic on the timestamp. A dict[str, object] was forcing a # type: ignore
+# in get_state because object - float isn't well-typed.
+_cache_ts: float = 0.0
+_cache_data: list[TitleWithState] | None = None
 
 
 def _build() -> list[TitleWithState]:
@@ -69,16 +74,18 @@ def _build() -> list[TitleWithState]:
 
 
 def get_state(force: bool = False) -> list[TitleWithState]:
+    global _cache_ts, _cache_data
     now = time.time()
-    if force or _cache["data"] is None or now - _cache["ts"] > STATE_CACHE_TTL:
-        _cache["data"] = _build()
-        _cache["ts"] = now
-    return _cache["data"]  # type: ignore[return-value]
+    if force or _cache_data is None or now - _cache_ts > STATE_CACHE_TTL:
+        _cache_data = _build()
+        _cache_ts = now
+    return _cache_data
 
 
 def invalidate() -> None:
-    _cache["data"] = None
-    _cache["ts"] = 0.0
+    global _cache_ts, _cache_data
+    _cache_data = None
+    _cache_ts = 0.0
     invalidate_cache()
 
 
@@ -94,10 +101,8 @@ def disk_usage() -> dict:
         synced_titles += 1
         for f in item.rglob("*"):
             if f.is_file():
-                try:
+                with contextlib.suppress(OSError):
                     synced_bytes += f.stat().st_size
-                except OSError:
-                    pass
 
     return {
         "total": usage.total,

@@ -1,6 +1,6 @@
 """Runtime config. Paths and constants the rest of the package reads.
 
-DO NOT scatter Plex token / paths across modules — keep all environment-dependent
+DO NOT scatter Plex token / paths across modules , keep all environment-dependent
 values here so changing a path or rotating a token is one edit.
 """
 
@@ -8,12 +8,12 @@ import os
 from pathlib import Path
 
 # Mounted from the host. /data/media is read-only source, /data/others/synced-media
-# is what Syncthing watches — read-write, owned by the user that runs Syncthing.
+# is what Syncthing watches , read-write, owned by the user that runs Syncthing.
 MEDIA_ROOT = Path(os.environ.get("SYNCLET_MEDIA_ROOT", "/data/media"))
 SYNC_ROOT = Path(os.environ.get("SYNCLET_SYNC_ROOT", "/data/others/synced-media"))
 
 # Watch history. /appdata/watchstate is read-only mount from the host.
-# The filename is watchstate_v02.db, NOT user.db — the CLI's hardcoded path is stale.
+# The filename is watchstate_v02.db, NOT user.db , the CLI's hardcoded path is stale.
 WATCHSTATE_DB = Path(
     os.environ.get(
         "SYNCLET_WATCHSTATE_DB",

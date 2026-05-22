@@ -1,6 +1,6 @@
 """Tests for the URL/text → local-title resolver.
 
-Plex metadata lookup is patched out — we don't hit the real Plex server.
+Plex metadata lookup is patched out , we don't hit the real Plex server.
 The state lookup uses the fixture media tree.
 """
 

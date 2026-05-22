@@ -1,17 +1,19 @@
 """fuzzy_score is the canonical title-matching algorithm shared by watchlist
-and resolve. Behavior is duplicated on the frontend (store.ts:fuzzyScore) —
+and resolve. Behavior is duplicated on the frontend (store.ts:fuzzyScore) ,
 if either side changes, both should change.
 """
+
+import pytest
 
 from synclet.fuzzy import fuzzy_score
 
 
 class TestFuzzyScore:
     def test_exact_match(self):
-        assert fuzzy_score("Fallout", "Fallout") == 2.0
+        assert fuzzy_score("Fallout", "Fallout") == pytest.approx(2.0)
 
     def test_case_insensitive_exact(self):
-        assert fuzzy_score("fallout", "FALLOUT") == 2.0
+        assert fuzzy_score("fallout", "FALLOUT") == pytest.approx(2.0)
 
     def test_substring_match(self):
         # "fa" appears in "Fallout"
@@ -25,12 +27,12 @@ class TestFuzzyScore:
     def test_all_words_substring(self):
         # Each word appears in target, but not as contiguous substring
         score = fuzzy_score("call saul better", "Better Call Saul")
-        assert score == 0.9
+        assert score == pytest.approx(0.9)
 
     def test_prefix_match(self):
         # "fa" matches the first word of "Fallout Series"
         score = fuzzy_score("fa", "Fallout Series")
-        # Substring wins over prefix — "fa" is in "Fallout Series"
+        # Substring wins over prefix: "fa" is in "Fallout Series"
         assert score > 0.5
 
     def test_no_match(self):
@@ -39,7 +41,7 @@ class TestFuzzyScore:
         assert fuzzy_score("xyz", "Fallout") < 0.4
 
     def test_empty_query(self):
-        assert fuzzy_score("", "Fallout") == 0.0
+        assert fuzzy_score("", "Fallout") == pytest.approx(0.0)
 
     def test_ordering_consistency(self):
         # Verify ranking matches user intuition: more specific query ranks

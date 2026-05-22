@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import pytest
 
-from synclet import ignored as ignored_mod
 from synclet.ignored import (
     HangingRef,
     IgnoredState,
@@ -24,7 +23,6 @@ from synclet.ignored import (
     save,
     total_ignored,
     unignore_pending,
-    unignore_ref,
 )
 
 
@@ -79,7 +77,9 @@ class TestIgnoreRef:
             {"sync_sub": "tv", "folder": "X", "season": 1, "episode": 1},
         )
         assert ok is True
-        assert PendingRef(sync_sub="tv", folder="X", season=1, episode=1) in load().pending
+        assert (
+            PendingRef(sync_sub="tv", folder="X", season=1, episode=1) in load().pending
+        )
 
     def test_watched_via_ref_dict(self, patch_paths):
         ok = ignore_ref("watched", {"lib": "movies", "folder": "X"})
@@ -137,8 +137,9 @@ class TestCacheInvalidation:
         assert "pending" not in maint_cache._cache
 
     def test_unignore_invalidates_cache(self, patch_paths):
-        from synclet import maint_cache
         import time
+
+        from synclet import maint_cache
 
         ignore_pending(PendingRef(sync_sub="tv", folder="Y", season=1, episode=1))
         # Re-prime after the previous invalidation.
@@ -233,7 +234,6 @@ def patch_snapshot_for_pending(monkeypatch, patch_paths):
     The default conftest.patch_paths already points SNAPSHOT_FILE at tmp,
     but recreating here keeps the test isolated and self-documenting.
     """
-    from synclet import pending as pending_mod
 
     snap = patch_paths["tmp"] / "snapshot.json"
     monkeypatch.setattr("synclet.config.SNAPSHOT_FILE", snap)

@@ -19,7 +19,7 @@ from synclet.config import WATCHSTATE_DB
 
 def _conn() -> sqlite3.Connection | None:
     # `immutable=1` is required because the file lives on a read-only bind mount
-    # — sqlite's WAL mode wants to create/update sidecar -wal/-shm files even
+    # , sqlite's WAL mode wants to create/update sidecar -wal/-shm files even
     # for `mode=ro`, which fails with "unable to open database file". Since we
     # re-open a fresh connection per call, sqlite picks up new WatchState writes
     # on the next read regardless of the "immutable" promise.
@@ -90,7 +90,7 @@ def all_watched_shows() -> dict[str, dict[tuple[int, int], bool]]:
             if title is None or s is None or e is None:
                 continue
             key = title.lower().strip()
-            out.setdefault(key, {})[(int(s), int(e))] = bool(w)
+            out.setdefault(key, {})[int(s), int(e)] = bool(w)
         return out
     finally:
         c.close()

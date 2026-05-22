@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 
 from synclet.sync_ops import (
-    find_source_lib,
     _is_video,
     find_hanging_files,
+    find_source_lib,
     find_watched_synced_files,
     remove_files,
     resolve_selection,
@@ -92,7 +92,7 @@ class TestResolveSelection:
             selection_type="episodes",
             episodes=[[1, 1]],
         )
-        # tv-4kUHD would also map to /sync/tv/ — tv → tv per LIBRARIES config
+        # tv-4kUHD would also map to /sync/tv/ , tv → tv per LIBRARIES config
         for _src, dst in pairs:
             assert "/synced-media/tv/" in str(dst)
 
@@ -149,7 +149,7 @@ class TestSyncJob:
 class TestMaintenance:
     def test_hanging_files_finds_orphans(self, patch_paths, patch_watchstate):
         sync = patch_paths["sync"]
-        # Place a .srt next to a video in a fresh dir — the video makes it
+        # Place a .srt next to a video in a fresh dir , the video makes it
         # not-hanging.
         d1 = sync / "tv" / "Some Show" / "Season 01"
         d1.mkdir(parents=True)
@@ -168,7 +168,7 @@ class TestMaintenance:
     def test_find_watched_finds_synced_watched_movie(
         self, patch_paths, patch_watchstate
     ):
-        # Pre-sync 1917 (watched=False in fixture) — should NOT appear
+        # Pre-sync 1917 (watched=False in fixture) , should NOT appear
         sync = patch_paths["sync"]
         movie_dir = sync / "movies" / "1917 (2019) {tmdb-3}"
         movie_dir.mkdir(parents=True)
@@ -262,7 +262,7 @@ class TestSyncOpsSnapshotIntegration:
         )
         assert target_key in load_snapshot()
 
-        # Now unsync that episode — explicit user gesture, not a watched-confirm.
+        # Now unsync that episode , explicit user gesture, not a watched-confirm.
         upairs = resolve_selection(
             "tv",
             "Better Call Saul (2015) {tvdb-1}",
@@ -295,20 +295,12 @@ class TestSyncOpsSnapshotIntegration:
         from synclet.pending import SnapshotKey, load_snapshot, save_snapshot
 
         sync = patch_paths["sync"]
-        target = (
-            sync
-            / "tv"
-            / "Some Show"
-            / "Season 01"
-            / "Some Show - S01E01 - X.mkv"
-        )
+        target = sync / "tv" / "Some Show" / "Season 01" / "Some Show - S01E01 - X.mkv"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"\0" * 50)
 
         # Pre-seed the snapshot to simulate "this file was tracked".
-        key = SnapshotKey(
-            sync_sub="tv", folder="Some Show", season=1, episode=1
-        )
+        key = SnapshotKey(sync_sub="tv", folder="Some Show", season=1, episode=1)
         save_snapshot({key})
         assert key in load_snapshot()
 

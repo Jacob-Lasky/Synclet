@@ -9,12 +9,12 @@ not silently incomplete.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
 
-
-# ── WatchState schema (matches v02 — keep in sync with the real DB) ────────
+# ── WatchState schema (matches v02 , keep in sync with the real DB) ────────
 
 WATCHSTATE_SCHEMA = """
 CREATE TABLE state (
@@ -63,7 +63,9 @@ def watchstate_db(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def patch_watchstate(monkeypatch: pytest.MonkeyPatch, watchstate_db: Path) -> Path:
+def patch_watchstate(
+    monkeypatch: pytest.MonkeyPatch, watchstate_db: Path
+) -> Generator[Path]:
     """Point synclet.watchstate at the fixture DB and clear its caches."""
     from synclet import watchstate as ws
 
@@ -126,12 +128,12 @@ def media_tree(tmp_path: Path) -> dict[str, Path]:
 @pytest.fixture
 def patch_paths(
     monkeypatch: pytest.MonkeyPatch, media_tree: dict[str, Path]
-) -> dict[str, Path]:
+) -> Generator[dict[str, Path]]:
     """Repoint every module's MEDIA_ROOT / SYNC_ROOT binding at the fixture tree.
 
     Each module imports the path once at module-load, so config-level patching
     alone is not enough. This fixture is the single source of truth for "all
-    the places the path leaks into" — if a new module is added, add it here.
+    the places the path leaks into" , if a new module is added, add it here.
     """
     media = media_tree["media"]
     sync = media_tree["sync"]
@@ -145,9 +147,13 @@ def patch_paths(
     monkeypatch.setattr("synclet.state.SYNC_ROOT", sync)
     monkeypatch.setattr("synclet.fs_helpers.SYNC_ROOT", sync)
     monkeypatch.setattr("synclet.pending.SYNC_ROOT", sync)
-    monkeypatch.setattr(
-        "synclet.config.THUMB_CACHE", media_tree["tmp"] / ".thumb-cache"
-    )
+    # plex.py imports THUMB_CACHE at module-load, so we have to patch BOTH
+    # the config binding and the per-module re-import. Without the plex.py
+    # patch, fetch_thumb_bytes mkdirs the production-default path, which
+    # raises and surfaces as a 500 on the route.
+    thumb_cache = media_tree["tmp"] / ".thumb-cache"
+    monkeypatch.setattr("synclet.config.THUMB_CACHE", thumb_cache)
+    monkeypatch.setattr("synclet.plex.THUMB_CACHE", thumb_cache)
     # Snapshot file for the pending module. Default lives under /app/data
     # which only exists inside the backend container; point at tmp so sync_ops
     # tests that mutate the snapshot don't try to write into that path.
@@ -160,7 +166,8 @@ def patch_paths(
     monkeypatch.setattr("synclet.ignored.IGNORED_FILE", ignored_file)
 
     # State cache holds previous-test data; invalidate every test.
-    from synclet import maint_cache, state as state_mod
+    from synclet import maint_cache
+    from synclet import state as state_mod
 
     state_mod.invalidate()
     maint_cache.invalidate()

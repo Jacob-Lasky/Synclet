@@ -8,7 +8,11 @@ available vs not.
 from __future__ import annotations
 
 import urllib.request
-import xml.etree.ElementTree as ET
+
+# DO NOT switch xml.etree without considering defusedxml , see plex.py for
+# the same trust-boundary discussion. The Plex watchlist RSS URL comes from
+# env config (WATCHLIST_RSS); same scope.
+import xml.etree.ElementTree as ET  # noqa: S405
 
 from synclet.config import WATCHLIST_RSS
 from synclet.fuzzy import fuzzy_score
@@ -17,8 +21,10 @@ from synclet.state import get_state
 
 def fetch_rss() -> list[dict]:
     try:
-        with urllib.request.urlopen(WATCHLIST_RSS, timeout=10) as r:
-            root = ET.fromstring(r.read())
+        with urllib.request.urlopen(  # noqa: S310 (trusted WATCHLIST_RSS env)
+            WATCHLIST_RSS, timeout=10
+        ) as r:
+            root = ET.fromstring(r.read())  # noqa: S314 (same trust boundary)
     except Exception as exc:
         return [{"_error": str(exc)}]
     items: list[dict] = []
@@ -49,15 +55,15 @@ def get_watchlist() -> list[dict]:
             key=lambda x: -x[0],
         )
         best = scored[0] if scored else None
-        matched = best and best[0] >= 0.8
+        matched = best is not None and best[0] >= 0.8
 
         entry = {
             "title": item["title"],
             "category": item["category"],
             "guid": item["guid"],
-            "matched": bool(matched),
+            "matched": matched,
         }
-        if matched:
+        if matched and best is not None:
             _, _, lib, folder, ts = best
             entry.update(
                 {

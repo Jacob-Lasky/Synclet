@@ -1,10 +1,12 @@
 """Synclet HTTP API.
 
-Routes are flat by design — no controllers, no DI containers. The file should
+Routes are flat by design: no controllers, no DI containers. The file should
 read like a contract: every endpoint the frontend touches is listed here.
 """
 
 from __future__ import annotations
+
+import contextlib
 
 from litestar import Litestar, MediaType, Response, get, post
 from litestar.config.cors import CORSConfig
@@ -17,8 +19,8 @@ from synclet.plex import fetch_art_bytes, fetch_thumb_bytes
 from synclet.resolve import resolve_url
 from synclet.scan import scan_title_detail, title_detail_to_dict
 from synclet.state import disk_usage, get_state, invalidate
-from synclet.watchstate import movie_watch_state, show_watch_map
 from synclet.watchlist import get_watchlist
+from synclet.watchstate import movie_watch_state, show_watch_map
 
 logger = get_logger(__name__)
 
@@ -127,7 +129,7 @@ async def api_state(refresh: bool = False) -> dict:
 
 
 def _short_label(lib_id: str, label: str) -> str:
-    """Two-char badge code for a library — '4K' for 4K libs, 'YT' for YouTube,
+    """Two-char badge code for a library: '4K' for 4K libs, 'YT' for YouTube,
     else the first letter of the first two words, or the first two letters of
     a single-word label."""
     if "4K" in label or "4kUHD" in lib_id:
@@ -272,10 +274,8 @@ async def api_synced() -> dict:
         total_bytes = 0
         for f in item.rglob("*"):
             if f.is_file():
-                try:
+                with contextlib.suppress(OSError):
                     total_bytes += f.stat().st_size
-                except OSError:
-                    pass
 
         entry = {
             "title": display,
