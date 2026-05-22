@@ -18,6 +18,11 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "httpx>=0.28.0",
     "pytest-cov>=7.1.0",
+    # Lint toolchain — pocket-dev has these pre-installed globally, but CI
+    # and other dev machines need them via uv sync. Pinned to current
+    # working versions; bump together when the toolchain shifts.
+    "ruff>=0.14.4",
+    "pyright>=1.1.405",
 ]
 
 [tool.pytest.ini_options]

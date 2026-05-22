@@ -1,0 +1,79 @@
+name: ci
+
+# Gate every PR and every push to dev/main on:
+#   - backend: ruff format --check, ruff check, pyright, pytest with 90% gate
+#   - frontend: eslint, prettier --check, vue-tsc + vite build, vitest
+# Both jobs run in parallel. Image building/publishing is the separate
+# publish.yml workflow that runs only after this passes on dev or main.
+
+on:
+    pull_request:
+        branches: [main, dev]
+    push:
+        branches: [main, dev]
+
+# Cancel in-flight runs when a new push lands on the same ref — saves
+# minutes when force-pushing during PR review.
+concurrency:
+    group: ci-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    backend:
+        runs-on: ubuntu-latest
+        defaults:
+            run:
+                working-directory: backend
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v6
+              with:
+                  # Pin matches Dockerfile and Dockerfile.dev. Bump together.
+                  version: "0.11.15"
+                  enable-cache: true
+
+            # uv manages the Python toolchain itself — pyproject.toml pins
+            # >=3.14, uv resolves and installs the matching interpreter.
+            - name: Sync deps
+              run: uv sync --frozen
+
+            - name: Lint (ruff format --check + ruff check + pyright)
+              run: ./lint.sh
+
+            - name: Test (pytest with 90% coverage gate)
+              run: uv run pytest
+
+    frontend:
+        runs-on: ubuntu-latest
+        defaults:
+            run:
+                working-directory: frontend
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup pnpm
+              uses: pnpm/action-setup@v4
+              with:
+                  # Pin matches Dockerfile + Dockerfile.dev. Bump together.
+                  version: 11.1.3
+
+            - name: Setup Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: "24"
+                  cache: pnpm
+                  cache-dependency-path: frontend/pnpm-lock.yaml
+
+            - name: Install
+              run: pnpm install --frozen-lockfile
+
+            - name: Lint (eslint + prettier --check)
+              run: pnpm lint
+
+            - name: Build (vue-tsc + vite build)
+              run: pnpm build
+
+            - name: Test (vitest)
+              run: pnpm test
