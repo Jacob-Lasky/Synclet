@@ -17,6 +17,7 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "httpx>=0.28.0",
+    "pytest-cov>=7.1.0",
 ]
 
 [tool.pytest.ini_options]
@@ -27,27 +28,47 @@ filterwarnings = [
 ]
 
 [tool.ruff]
-lint.select = ["ALL"]
+# Curated rule families — each chosen because it catches real defects in a
+# small Litestar + Pydantic homelab app. We do NOT select = ["ALL"]; that
+# approach forces an ever-growing ignore list and surfaces enterprise-style
+# docstring/annotation theater that hurts readability rather than helps.
 lint.preview = true
+lint.select = [
+    "F",       # pyflakes — undefined names, unused imports, unused vars
+    "E", "W",  # pycodestyle errors and warnings
+    "B",       # bugbear — mutable defaults, bare except, real footguns
+    "S",       # bandit — security smells (we touch a Plex token + filesystem)
+    "I",       # isort — pure auto-fix signal
+    "UP",      # pyupgrade — keep syntax aligned with py3.14
+    "SIM",     # simplify — collapse redundant if/else, etc.
+    "RUF",     # ruff-native — catches RUF006 (unawaited tasks) and similar
+    "ASYNC",   # async footguns — blocking sleep/io in async ctx
+    "PIE",     # misc cleanup
+    "C4",      # comprehensions
+    "N",       # naming
+    "A",       # shadowing builtins
+    "PTH",     # use pathlib over os.path (repo already on pathlib)
+    "LOG",     # logging-format issues
+    "G",       # logging-format string issues
+    "ANN",     # type annotations on source (tests exempted below)
+    "TID252",  # ban relative imports — already the convention
+]
 lint.ignore = [
-    "COM812",  # missing-trailing-comma
-    "CPY001",  # missing copyright notice at top of file
-    "D203",    # blank line required before class docstring
-    "D211",    # no-blank-line-before-class
-    "D213",    # multi-line-summary-second-line
-    "FAST001", # routes should use the response_model parameter
-    "FIX002",  # allow TODO
+    "E501",    # line too long — the formatter handles wrapping
+    "RUF029",  # async-no-await — Litestar requires `async def` for handlers
+    "ANN401",  # any-type escape hatch is sometimes the right answer
+    "S608",    # hardcoded SQL — revisit when watchstate query layer changes
+]
 
-    # temporarily ignore
-    "S608",    # need to figure out a better way to sanitize SQL
-
-    "E501",    # line too long
-
-    "PLR0912", # need to simplify functions (too many branches)
-    "PLR0913", # need to simplify functions (too many arguments)
-    "PLR0915", # need to simplify functions (too many statements)
-    "PLR0917", # need to simplify functions (too many positional arguments)
-    "C901",    # need to simplify functions (too complex)
-    "FBT001",  # split functions (boolean-typed positional argument)
-    "FBT002",  # split functions (boolean-typed default argument)
+[tool.ruff.lint.per-file-ignores]
+# Tests use universal pytest conventions that the source codebase doesn't.
+# Each rule is excluded here because it fights the test idiom, not because
+# we're hiding a bug.
+"tests/**" = [
+    "S101",    # asserts ARE how pytest works
+    "ANN",     # fixtures + parametrize-injected args are noise to annotate
+    "PLR2004", # magic numbers in `assert x == 42` are clearer inline
+    "ARG",     # pytest fixtures look like unused method args
+    "PLC0415", # tests deliberately import inside functions for isolation
+    "SLF001",  # tests poke at private attrs to exercise internals
 ]
