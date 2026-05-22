@@ -1,4 +1,4 @@
-"""Tests for synclet.watchlist — RSS fetch + fuzzy match against library state.
+"""Tests for synclet.watchlist , RSS fetch + fuzzy match against library state.
 
 We mock urllib.request.urlopen (the network seam) and synclet.state.get_state
 (the library-state seam) so the fuzzy-match join is the only thing under
@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from unittest.mock import patch
 
 from synclet import watchlist
+from tests._http_mocks import boom_urlopen, fake_urlopen
 
 
 @dataclass
@@ -89,30 +90,9 @@ _RSS_XML_MISSING_FIELDS = b"""<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
-def _mock_urlopen(payload: bytes):
-    """Build a context-manager mock for urllib.request.urlopen."""
-
-    class _Resp:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            return None
-
-        def read(self):
-            return payload
-
-    def _open(*_args, **_kwargs):
-        return _Resp()
-
-    return _open
-
-
 class TestFetchRss:
     def test_returns_parsed_items(self):
-        with patch.object(
-            watchlist.urllib.request, "urlopen", _mock_urlopen(_RSS_XML)
-        ):
+        with patch.object(watchlist.urllib.request, "urlopen", fake_urlopen(_RSS_XML)):
             items = watchlist.fetch_rss()
         assert len(items) == 3
         assert items[0] == {
@@ -126,10 +106,10 @@ class TestFetchRss:
         with patch.object(
             watchlist.urllib.request,
             "urlopen",
-            _mock_urlopen(_RSS_XML_MISSING_FIELDS),
+            fake_urlopen(_RSS_XML_MISSING_FIELDS),
         ):
             items = watchlist.fetch_rss()
-        # The title-less item is dropped; the title-only one keeps empty
+        # The title-less item is dropped, the title-only one keeps empty
         # strings for category and guid (frontend tolerates).
         assert len(items) == 1
         assert items[0] == {
@@ -139,11 +119,9 @@ class TestFetchRss:
         }
 
     def test_network_error_surfaces_as_error_item(self):
-        def _boom(*_a, **_k):
-            msg = "RSS unreachable"
-            raise OSError(msg)
-
-        with patch.object(watchlist.urllib.request, "urlopen", _boom):
+        with patch.object(
+            watchlist.urllib.request, "urlopen", boom_urlopen("RSS unreachable")
+        ):
             items = watchlist.fetch_rss()
         assert len(items) == 1
         assert "_error" in items[0]
@@ -153,7 +131,7 @@ class TestFetchRss:
         with patch.object(
             watchlist.urllib.request,
             "urlopen",
-            _mock_urlopen(b"<not-valid-xml"),
+            fake_urlopen(b"<not-valid-xml"),
         ):
             items = watchlist.fetch_rss()
         assert len(items) == 1
@@ -164,11 +142,9 @@ class TestGetWatchlist:
     def test_propagates_fetch_error(self):
         # If fetch_rss returned an error sentinel, get_watchlist should pass
         # it through without trying to join against state.
-        def _boom(*_a, **_k):
-            msg = "DNS failure"
-            raise OSError(msg)
-
-        with patch.object(watchlist.urllib.request, "urlopen", _boom):
+        with patch.object(
+            watchlist.urllib.request, "urlopen", boom_urlopen("DNS failure")
+        ):
             result = watchlist.get_watchlist()
         assert len(result) == 1
         assert "_error" in result[0]
@@ -186,9 +162,7 @@ class TestGetWatchlist:
             ),
         ]
         with (
-            patch.object(
-                watchlist.urllib.request, "urlopen", _mock_urlopen(_RSS_XML)
-            ),
+            patch.object(watchlist.urllib.request, "urlopen", fake_urlopen(_RSS_XML)),
             patch.object(watchlist, "get_state", return_value=fake_state),
         ):
             result = watchlist.get_watchlist()
@@ -210,27 +184,21 @@ class TestGetWatchlist:
             _make_title("Better Call Saul"),
         ]
         with (
-            patch.object(
-                watchlist.urllib.request, "urlopen", _mock_urlopen(_RSS_XML)
-            ),
+            patch.object(watchlist.urllib.request, "urlopen", fake_urlopen(_RSS_XML)),
             patch.object(watchlist, "get_state", return_value=fake_state),
         ):
             result = watchlist.get_watchlist()
 
-        unmatched = next(
-            e for e in result if e["title"] == "Unrelated Future Title"
-        )
+        unmatched = next(e for e in result if e["title"] == "Unrelated Future Title")
         assert unmatched["matched"] is False
         assert "lib" not in unmatched
         assert "folder" not in unmatched
 
     def test_empty_state_yields_all_unmatched(self):
-        # No titles in library = nothing to match against. Every RSS item
+        # No titles in library means nothing to match against. Every RSS item
         # gets matched=False and minimal payload.
         with (
-            patch.object(
-                watchlist.urllib.request, "urlopen", _mock_urlopen(_RSS_XML)
-            ),
+            patch.object(watchlist.urllib.request, "urlopen", fake_urlopen(_RSS_XML)),
             patch.object(watchlist, "get_state", return_value=[]),
         ):
             result = watchlist.get_watchlist()
@@ -242,9 +210,7 @@ class TestGetWatchlist:
         <rss><channel></channel></rss>
         """
         with (
-            patch.object(
-                watchlist.urllib.request, "urlopen", _mock_urlopen(empty_rss)
-            ),
+            patch.object(watchlist.urllib.request, "urlopen", fake_urlopen(empty_rss)),
             patch.object(watchlist, "get_state", return_value=[]),
         ):
             result = watchlist.get_watchlist()

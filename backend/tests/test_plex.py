@@ -9,6 +9,7 @@ import pytest
 
 from synclet import plex
 from synclet.plex import find_in_library, section_index
+from tests._http_mocks import boom_urlopen, fake_urlopen
 
 # Captured from live Plex `/library/sections/2/all` response, trimmed to two
 # items. Real responses have Image/Genre/Role/etc. children we don't parse.
@@ -30,29 +31,14 @@ _FAKE_TV_SECTION_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
-def _mock_urlopen(_):
-    """Return an object whose .read() yields our fixture XML."""
-
-    class _Resp:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            pass
-
-        def read(self):
-            return _FAKE_TV_SECTION_XML
-
-    return _Resp()
-
-
 class TestSectionIndex:
     def setup_method(self):
         section_index.cache_clear()
 
     def test_parses_directory_entries(self, monkeypatch):
         monkeypatch.setattr(
-            "synclet.plex.urllib.request.urlopen", lambda *a, **kw: _mock_urlopen(None)
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_TV_SECTION_XML),
         )
         idx = section_index(2)
         assert "better call saul" in idx
@@ -60,7 +46,8 @@ class TestSectionIndex:
 
     def test_extracts_thumb_and_art(self, monkeypatch):
         monkeypatch.setattr(
-            "synclet.plex.urllib.request.urlopen", lambda *a, **kw: _mock_urlopen(None)
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_TV_SECTION_XML),
         )
         idx = section_index(2)
         bcs = idx["better call saul"]
@@ -70,16 +57,14 @@ class TestSectionIndex:
         assert bcs["year"] == "2015"
 
     def test_handles_api_failure(self, monkeypatch):
-        def _raise(*a, **kw):
-            raise OSError("network gone")
-
-        monkeypatch.setattr("synclet.plex.urllib.request.urlopen", _raise)
-        idx = section_index(99)  # different id → cache miss
+        monkeypatch.setattr("synclet.plex.urllib.request.urlopen", boom_urlopen())
+        idx = section_index(99)  # different id, cache miss
         assert idx == {}
 
     def test_find_in_library_with_year_in_folder(self, monkeypatch):
         monkeypatch.setattr(
-            "synclet.plex.urllib.request.urlopen", lambda *a, **kw: _mock_urlopen(None)
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_TV_SECTION_XML),
         )
         # Folder name has year + tvdb cruft; lookup key should be normalized
         result = find_in_library("tv", "Better Call Saul (2015) {tvdb-1}")
@@ -90,7 +75,7 @@ class TestSectionIndex:
         assert find_in_library("nonexistent", "anything") is None
 
 
-# ── Episode ratingKey + scrobble ─────────────────────────────────────────────
+# Episode ratingKey + scrobble
 
 
 _FAKE_ALL_LEAVES_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -100,17 +85,6 @@ _FAKE_ALL_LEAVES_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 <Video ratingKey="2001" parentIndex="2" index="1" type="episode" title="Switch"/>
 </MediaContainer>
 """
-
-
-class _AllLeavesResp:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_):
-        pass
-
-    def read(self):
-        return _FAKE_ALL_LEAVES_XML
 
 
 class TestEpisodeRatingKeys:
@@ -123,7 +97,8 @@ class TestEpisodeRatingKeys:
         from synclet.plex import episode_rating_keys
 
         monkeypatch.setattr(
-            "synclet.plex.urllib.request.urlopen", lambda *a, **kw: _AllLeavesResp()
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_ALL_LEAVES_XML),
         )
         m = episode_rating_keys("100")
         assert m[1, 1] == "1001"
@@ -133,22 +108,9 @@ class TestEpisodeRatingKeys:
     def test_handles_api_failure(self, monkeypatch):
         from synclet.plex import episode_rating_keys
 
-        def _raise(*_a, **_kw):
-            raise OSError("network gone")
-
-        monkeypatch.setattr("synclet.plex.urllib.request.urlopen", _raise)
-        # Different key -> cache miss -> empty.
+        monkeypatch.setattr("synclet.plex.urllib.request.urlopen", boom_urlopen())
+        # Different key, cache miss, empty result.
         assert episode_rating_keys("999") == {}
-
-
-class _ScrobbleResp:
-    status = 200
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_):
-        pass
 
 
 class TestScrobble:
@@ -159,7 +121,9 @@ class TestScrobble:
 
         def _capture(url, timeout=8):
             captured.append(url)
-            return _ScrobbleResp()
+            from tests._http_mocks import FakeUrlopenResponse
+
+            return FakeUrlopenResponse(b"", status=200)
 
         monkeypatch.setattr("synclet.plex.urllib.request.urlopen", _capture)
         ok = scrobble("4242")
@@ -175,26 +139,15 @@ class TestScrobble:
     def test_returns_false_on_network_error(self, monkeypatch):
         from synclet.plex import scrobble
 
-        def _raise(*_a, **_kw):
-            raise OSError("network gone")
-
-        monkeypatch.setattr("synclet.plex.urllib.request.urlopen", _raise)
+        monkeypatch.setattr("synclet.plex.urllib.request.urlopen", boom_urlopen())
         assert scrobble("4242") is False
 
     def test_returns_false_on_non_2xx(self, monkeypatch):
         from synclet.plex import scrobble
 
-        class _Resp404:
-            status = 404
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_):
-                pass
-
         monkeypatch.setattr(
-            "synclet.plex.urllib.request.urlopen", lambda *a, **kw: _Resp404()
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(b"", status=404),
         )
         assert scrobble("4242") is False
 
@@ -215,17 +168,6 @@ _SECTION_WITH_NOISE_XML = b"""<?xml version="1.0"?>
 """
 
 
-class _NoiseSectionResp:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_):
-        return None
-
-    def read(self):
-        return _SECTION_WITH_NOISE_XML
-
-
 class TestSectionIndexEdgeCases:
     def setup_method(self):
         section_index.cache_clear()
@@ -233,33 +175,18 @@ class TestSectionIndexEdgeCases:
     def test_skips_non_video_or_directory_tags(self, monkeypatch):
         monkeypatch.setattr(
             "synclet.plex.urllib.request.urlopen",
-            lambda *a, **kw: _NoiseSectionResp(),
+            fake_urlopen(_SECTION_WITH_NOISE_XML),
         )
         idx = section_index(7)
-        # <Image> at the top is ignored; the title-less Directory is skipped;
+        # <Image> at the top is ignored, the title-less Directory is skipped,
         # only the Video survives.
         assert list(idx.keys()) == ["real movie"]
 
 
-# ── fetch_thumb_bytes / fetch_art_bytes ─────────────────────────────────────
+# fetch_thumb_bytes / fetch_art_bytes
 
 
 _FAKE_JPEG_BYTES = b"\xff\xd8\xff\xe0FAKEJPEG"
-
-
-class _ImageResp:
-    def __init__(self, payload: bytes, content_type: str = "image/jpeg"):
-        self._payload = payload
-        self.headers = {"Content-Type": content_type}
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_):
-        return None
-
-    def read(self):
-        return self._payload
 
 
 @pytest.fixture
@@ -286,7 +213,7 @@ class TestFetchThumbBytes:
         monkeypatch.setattr(
             plex.urllib.request,
             "urlopen",
-            lambda *a, **kw: _ImageResp(_FAKE_JPEG_BYTES),
+            fake_urlopen(_FAKE_JPEG_BYTES),
         )
         result = plex.fetch_thumb_bytes("tv", "Better Call Saul")
         assert result is not None
@@ -299,17 +226,17 @@ class TestFetchThumbBytes:
         assert cache_file.read_bytes() == _FAKE_JPEG_BYTES
 
     def test_cache_hit_skips_network(self, monkeypatch, plex_with_meta):
-        # Pre-seed the cache; urlopen is patched to raise so a network attempt
+        # Pre-seed the cache, then patch urlopen to raise so a network attempt
         # would fail the test loudly.
         cache_file = plex_with_meta / "tv__Cached Show.jpg"
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_bytes(_FAKE_JPEG_BYTES)
 
-        def _no_network(*_a, **_k):
-            msg = "urlopen should not be called on cache hit"
-            raise AssertionError(msg)
-
-        monkeypatch.setattr(plex.urllib.request, "urlopen", _no_network)
+        monkeypatch.setattr(
+            plex.urllib.request,
+            "urlopen",
+            boom_urlopen("urlopen should not be called on cache hit"),
+        )
         result = plex.fetch_thumb_bytes("tv", "Cached Show")
         assert result == (_FAKE_JPEG_BYTES, "image/jpeg")
 
@@ -328,11 +255,7 @@ class TestFetchThumbBytes:
         assert plex.fetch_thumb_bytes("tv", "No Thumb") is None
 
     def test_returns_none_on_network_error(self, monkeypatch, plex_with_meta):
-        def _boom(*_a, **_k):
-            msg = "network gone"
-            raise OSError(msg)
-
-        monkeypatch.setattr(plex.urllib.request, "urlopen", _boom)
+        monkeypatch.setattr(plex.urllib.request, "urlopen", boom_urlopen())
         assert plex.fetch_thumb_bytes("tv", "Better Call Saul") is None
 
 
@@ -341,7 +264,7 @@ class TestFetchArtBytes:
         monkeypatch.setattr(
             plex.urllib.request,
             "urlopen",
-            lambda *a, **kw: _ImageResp(_FAKE_JPEG_BYTES, "image/png"),
+            fake_urlopen(_FAKE_JPEG_BYTES, headers={"Content-Type": "image/png"}),
         )
         result = plex.fetch_art_bytes("tv", "Better Call Saul")
         assert result is not None
@@ -362,15 +285,11 @@ class TestFetchArtBytes:
         assert plex.fetch_art_bytes("tv", "No Art") is None
 
     def test_returns_none_on_network_error(self, monkeypatch, plex_with_meta):
-        def _boom(*_a, **_k):
-            msg = "network gone"
-            raise OSError(msg)
-
-        monkeypatch.setattr(plex.urllib.request, "urlopen", _boom)
+        monkeypatch.setattr(plex.urllib.request, "urlopen", boom_urlopen())
         assert plex.fetch_art_bytes("tv", "Better Call Saul") is None
 
 
-# ── episode_rating_keys edge cases ──────────────────────────────────────────
+# episode_rating_keys edge cases
 
 
 _LEAVES_WITH_NOISE_XML = b"""<?xml version="1.0"?>
@@ -382,17 +301,6 @@ _LEAVES_WITH_NOISE_XML = b"""<?xml version="1.0"?>
 <Video ratingKey="2002" parentIndex="2" index="3" type="episode"/>
 </MediaContainer>
 """
-
-
-class _LeavesNoiseResp:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_):
-        return None
-
-    def read(self):
-        return _LEAVES_WITH_NOISE_XML
 
 
 class TestEpisodeRatingKeysEdgeCases:
@@ -407,7 +315,7 @@ class TestEpisodeRatingKeysEdgeCases:
         monkeypatch.setattr(
             plex.urllib.request,
             "urlopen",
-            lambda *a, **kw: _LeavesNoiseResp(),
+            fake_urlopen(_LEAVES_WITH_NOISE_XML),
         )
         m = episode_rating_keys("777")
         # Only the well-formed Video makes it in; the Directory and the
@@ -415,7 +323,7 @@ class TestEpisodeRatingKeysEdgeCases:
         assert m == {(2, 3): "2002"}
 
 
-# ── get_metadata ────────────────────────────────────────────────────────────
+# get_metadata
 
 
 _METADATA_SHOW_XML = b"""<?xml version="1.0"?>
@@ -440,24 +348,10 @@ _METADATA_EMPTY_XML = b"""<?xml version="1.0"?>
 """
 
 
-def _xml_resp(payload: bytes):
-    class _Resp:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            return None
-
-        def read(self):
-            return payload
-
-    return lambda *a, **kw: _Resp()
-
-
 class TestGetMetadata:
     def test_returns_show_metadata_with_location(self, monkeypatch):
         monkeypatch.setattr(
-            plex.urllib.request, "urlopen", _xml_resp(_METADATA_SHOW_XML)
+            plex.urllib.request, "urlopen", fake_urlopen(_METADATA_SHOW_XML)
         )
         meta = plex.get_metadata("100")
         assert meta is not None
@@ -468,7 +362,7 @@ class TestGetMetadata:
 
     def test_returns_episode_metadata_with_parent_info(self, monkeypatch):
         monkeypatch.setattr(
-            plex.urllib.request, "urlopen", _xml_resp(_METADATA_EPISODE_XML)
+            plex.urllib.request, "urlopen", fake_urlopen(_METADATA_EPISODE_XML)
         )
         meta = plex.get_metadata("1001")
         assert meta is not None
@@ -476,19 +370,15 @@ class TestGetMetadata:
         assert meta["grandparentTitle"] == "Better Call Saul"
         assert meta["parentTitle"] == "Season 1"
         assert meta["librarySectionID"] == "2"
-        # Episode has no Location child; absence is None, not an error
+        # Episode has no Location child, absence is None, not an error.
         assert "location" not in meta
 
     def test_returns_none_on_network_error(self, monkeypatch):
-        def _boom(*_a, **_k):
-            msg = "no plex"
-            raise OSError(msg)
-
-        monkeypatch.setattr(plex.urllib.request, "urlopen", _boom)
+        monkeypatch.setattr(plex.urllib.request, "urlopen", boom_urlopen("no plex"))
         assert plex.get_metadata("any") is None
 
     def test_returns_none_on_empty_container(self, monkeypatch):
         monkeypatch.setattr(
-            plex.urllib.request, "urlopen", _xml_resp(_METADATA_EMPTY_XML)
+            plex.urllib.request, "urlopen", fake_urlopen(_METADATA_EMPTY_XML)
         )
         assert plex.get_metadata("doesnt-exist") is None

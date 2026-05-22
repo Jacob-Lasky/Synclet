@@ -26,16 +26,15 @@ asyncio_mode = "auto"
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
-# Coverage gate enforced on every pytest run. Anti-regression floor: drops
-# below this and pytest exits non-zero. Bumped to 90 after the low-coverage
-# modules (watchlist.py, plex.py, main.py) get test coverage in this PR.
+# Coverage gate enforced on every pytest run. Floor at 90 with ~2pp of
+# headroom (measured 92%); raise the floor before the headroom shrinks.
 addopts = [
     "--cov=synclet",
     "--cov=common",
     "--cov=main",
     "--cov-branch",
     "--cov-report=term-missing",
-    "--cov-fail-under=82",
+    "--cov-fail-under=90",
 ]
 
 [tool.coverage.run]

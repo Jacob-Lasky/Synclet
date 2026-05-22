@@ -1,6 +1,6 @@
 """Tests against the WatchState SQLite schema.
 
-The schema is captured in conftest.py:WATCHSTATE_SCHEMA — if WatchState ships
+The schema is captured in conftest.py:WATCHSTATE_SCHEMA , if WatchState ships
 v03 with breaking column changes, these tests break loudly instead of the
 production read silently returning empty maps.
 """

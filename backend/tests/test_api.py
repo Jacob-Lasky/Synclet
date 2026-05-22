@@ -48,7 +48,7 @@ class TestStateRoute:
         body = r.json()
         assert "titles" in body
         assert "disk" in body
-        assert "libraries" in body, "frontend depends on this — see store.ts:loadState"
+        assert "libraries" in body, "frontend depends on this , see store.ts:loadState"
         # Library metadata wire contract
         lib_ids = [lib["id"] for lib in body["libraries"]]
         assert "tv" in lib_ids
@@ -79,14 +79,14 @@ class TestStateRoute:
         assert required <= t.keys(), f"missing: {required - t.keys()}"
 
     def test_kind_values_are_known(self, client):
-        """The frontend's Kind type is "show" | "movie" | "youtube" — any
+        """The frontend's Kind type is "show" | "movie" | "youtube" , any
         other value silently misroutes the UI."""
         r = client.get("/api/state")
         kinds = {t["kind"] for t in r.json()["titles"]}
         assert kinds <= {"show", "movie", "youtube"}, f"unexpected kind: {kinds}"
 
     def test_library_short_labels_are_2_chars(self, client):
-        """libraryShort() in store.ts feeds the card badge — short codes must
+        """libraryShort() in store.ts feeds the card badge , short codes must
         be exactly two characters or the layout breaks."""
         r = client.get("/api/state")
         shorts = [(lib["id"], lib["short"]) for lib in r.json()["libraries"]]
@@ -109,7 +109,7 @@ class TestTitleRoute:
 
 class TestSyncRoute:
     def test_no_matches_returns_error_field(self, client):
-        # Empty selection — no files match
+        # Empty selection , no files match
         r = client.post(
             "/api/sync",
             json={
@@ -135,7 +135,7 @@ class TestSyncRoute:
             },
         )
         body = r.json()
-        # Either error path or success path — both should have predictable shape
+        # Either error path or success path , both should have predictable shape
         if body.get("job_id"):
             assert "total_media_files" in body
             assert "total_bytes" in body
@@ -591,17 +591,36 @@ class TestSyncedRoute:
 
 
 class TestWatchlistRoute:
-    def test_returns_items_array(self, client, monkeypatch):
-        # The route delegates to get_watchlist which hits Plex's RSS — stub it
-        # so the test doesn't depend on network.
-        from synclet import watchlist as wl_mod
+    def test_forwards_watchlist_payload(self, client, monkeypatch):
+        # get_watchlist hits Plex's RSS, so we stub it. The route's job is
+        # forward-payload-as-items: Watchlist.vue reads items[].title /
+        # .matched / .lib, so the test asserts on that exact shape.
+        payload = [
+            {
+                "title": "Better Call Saul",
+                "matched": True,
+                "lib": "tv",
+                "folder": "Better Call Saul (2015) {tvdb-1}",
+                "watched_pct": 50,
+                "synced_pct": 80,
+            },
+            {
+                "title": "Unmatched Future Title",
+                "matched": False,
+                "category": "movie",
+                "guid": "plex://x",
+            },
+        ]
+        monkeypatch.setattr("main.get_watchlist", lambda: payload)
+        r = client.get("/api/watchlist")
+        assert r.status_code == 200
+        assert r.json() == {"items": payload}
 
+    def test_empty_watchlist_returns_empty_items(self, client, monkeypatch):
         monkeypatch.setattr("main.get_watchlist", list)
         r = client.get("/api/watchlist")
         assert r.status_code == 200
         assert r.json() == {"items": []}
-        # Reference wl_mod to keep import locally used:
-        assert wl_mod is not None
 
 
 class TestMaintenanceWatchedAndHanging:

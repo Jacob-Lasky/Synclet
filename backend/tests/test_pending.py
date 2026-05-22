@@ -347,7 +347,7 @@ class TestResolveConfirm:
 
         results, _cleanup = resolve([k], confirm=True)
         assert [r.status for r in results] == ["no_rating_key"]
-        # Snapshot still cleared — the file is gone, leaving it in pending
+        # Snapshot still cleared , the file is gone, leaving it in pending
         # would re-prompt the user every page load.
         assert load_snapshot() == set()
 
@@ -405,7 +405,7 @@ class TestCleanupAfterResolveMovie:
         sync = patch_paths["sync"]
         folder = sync / "movies" / "Ghost Movie (2099)"
         folder.mkdir(parents=True)
-        # Sidecars only. No video — the user deleted that already.
+        # Sidecars only. No video , the user deleted that already.
         (folder / "Ghost Movie.en.srt").write_text("subs")
         (folder / "movie.nfo").write_text("nfo")
         (folder / "poster.jpg").write_bytes(b"\xff")
@@ -445,7 +445,7 @@ class TestCleanupAfterResolveShow:
         season.mkdir(parents=True)
         # Only the S01E01 sidecar remains; user deleted the .mkv.
         (season / "Ghost Show - S01E01 - X.en.srt").write_text("subs")
-        # S01E02 video is still here — must NOT touch it.
+        # S01E02 video is still here , must NOT touch it.
         (season / "Ghost Show - S01E02 - Y.mkv").write_bytes(b"\0" * 5)
         (season / "Ghost Show - S01E02 - Y.en.srt").write_text("subs2")
 

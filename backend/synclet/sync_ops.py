@@ -32,7 +32,7 @@ class Job:
     op: str  # "sync" | "unsync"
     status: str  # "queued" | "running" | "done" | "error"
     total_files: int = 0  # every file (videos + subs + chapters)
-    total_media_files: int = 0  # video files only — what humans care about
+    total_media_files: int = 0  # video files only , what humans care about
     processed_files: int = 0
     processed_media_files: int = 0
     processed_bytes: int = 0
@@ -100,7 +100,7 @@ def _sync_dest(src: Path, lib: str) -> Path:
 
 
 def _filter_episodes(
-    detail: Any,  # synclet.scan.TitleDetail — kept loose to avoid circular import
+    detail: Any,  # synclet.scan.TitleDetail , kept loose to avoid circular import
     season_filter: int | None,
     episode_keys: list[tuple[int, int]] | None,
     unwatched_only: bool,

@@ -3,7 +3,7 @@
 Designed for batch listing per section (one HTTP call per library) since the
 section dump contains every title's poster key, ratingKey, year, and summary
 in a single response. We cache the {folder_name: metadata} map for the
-process lifetime — it's a few hundred KB and Plex updates rarely.
+process lifetime , it's a few hundred KB and Plex updates rarely.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 
 # DO NOT switch to `xml.etree` without defusedxml without tracking the
-# trust boundary — Plex responses come from the user's own Plex Media Server
+# trust boundary , Plex responses come from the user's own Plex Media Server
 # at PLEX_URL (env-configured trusted source on the home LAN). Replacing
 # with defusedxml is tracked in a follow-up; for now the bandit warnings
 # are silenced per-import with this audit trail.
@@ -33,10 +33,10 @@ def _get_xml(
     path: str, params: dict | None = None, timeout: int = 8
 ) -> ET.Element | None:
     try:
-        with urllib.request.urlopen(  # noqa: S310 — trusted PLEX_URL
+        with urllib.request.urlopen(  # noqa: S310 (trusted PLEX_URL)
             _plex_url(path, params), timeout=timeout
         ) as r:
-            return ET.fromstring(r.read())  # noqa: S314 — same trust boundary
+            return ET.fromstring(r.read())  # noqa: S314 (same trust boundary)
     except Exception:
         return None
 
@@ -99,7 +99,7 @@ def fetch_thumb_bytes(lib: str, folder: str) -> tuple[bytes, str] | None:
     if not meta or not meta.get("thumb"):
         return None
     try:
-        with urllib.request.urlopen(  # noqa: S310 — trusted PLEX_URL
+        with urllib.request.urlopen(  # noqa: S310 (trusted PLEX_URL)
             _plex_url(meta["thumb"]), timeout=10
         ) as r:
             data = r.read()
@@ -122,7 +122,7 @@ def fetch_art_bytes(lib: str, folder: str) -> tuple[bytes, str] | None:
     if not meta or not meta.get("art"):
         return None
     try:
-        with urllib.request.urlopen(  # noqa: S310 — trusted PLEX_URL
+        with urllib.request.urlopen(  # noqa: S310 (trusted PLEX_URL)
             _plex_url(meta["art"]), timeout=10
         ) as r:
             data = r.read()
@@ -184,7 +184,7 @@ def scrobble(rating_key: str, timeout: int = 8) -> bool:
 
 
 def get_metadata(rating_key: str) -> dict | None:
-    """Look up Plex metadata by ratingKey — used by link resolver."""
+    """Look up Plex metadata by ratingKey , used by link resolver."""
     root = _get_xml(f"/library/metadata/{rating_key}")
     if root is None:
         return None
