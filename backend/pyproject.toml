@@ -26,6 +26,35 @@ asyncio_mode = "auto"
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
+# Coverage gate enforced on every pytest run. Anti-regression floor: drops
+# below this and pytest exits non-zero. Bumped to 90 after the low-coverage
+# modules (watchlist.py, plex.py, main.py) get test coverage in this PR.
+addopts = [
+    "--cov=synclet",
+    "--cov=common",
+    "--cov=main",
+    "--cov-branch",
+    "--cov-report=term-missing",
+    "--cov-fail-under=82",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["synclet", "common", "main"]
+
+[tool.coverage.report]
+# DO NOT remove these exclusions without checking what they hide.
+# Each line below is unreachable-by-design for the test suite:
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "@overload",
+    "@abstractmethod",
+]
+show_missing = true
+skip_covered = false
 
 [tool.ruff]
 # Curated rule families — each chosen because it catches real defects in a
