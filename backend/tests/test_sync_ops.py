@@ -295,20 +295,12 @@ class TestSyncOpsSnapshotIntegration:
         from synclet.pending import SnapshotKey, load_snapshot, save_snapshot
 
         sync = patch_paths["sync"]
-        target = (
-            sync
-            / "tv"
-            / "Some Show"
-            / "Season 01"
-            / "Some Show - S01E01 - X.mkv"
-        )
+        target = sync / "tv" / "Some Show" / "Season 01" / "Some Show - S01E01 - X.mkv"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"\0" * 50)
 
         # Pre-seed the snapshot to simulate "this file was tracked".
-        key = SnapshotKey(
-            sync_sub="tv", folder="Some Show", season=1, episode=1
-        )
+        key = SnapshotKey(sync_sub="tv", folder="Some Show", season=1, episode=1)
         save_snapshot({key})
         assert key in load_snapshot()
 

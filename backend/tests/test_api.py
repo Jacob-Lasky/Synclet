@@ -258,18 +258,34 @@ class TestMaintenancePendingRoute:
         # of them without a matching frontend change silently breaks the UI;
         # this assertion is the contract test for that seam.
         required_group = {
-            "sync_sub", "folder", "title", "kind", "lib", "rating_key", "seasons",
+            "sync_sub",
+            "folder",
+            "title",
+            "kind",
+            "lib",
+            "rating_key",
+            "seasons",
         }
-        assert required_group <= g.keys(), f"missing group fields: {required_group - g.keys()}"
+        assert required_group <= g.keys(), (
+            f"missing group fields: {required_group - g.keys()}"
+        )
         assert g["folder"] == "Ghost"
-        assert g["kind"] == "show", "frontend dispatches on kind == 'movie' | 'show' | 'youtube'"
+        assert g["kind"] == "show", (
+            "frontend dispatches on kind == 'movie' | 'show' | 'youtube'"
+        )
 
         required_season = {"season", "episodes"}
         s = g["seasons"][0]
-        assert required_season <= s.keys(), f"missing season fields: {required_season - s.keys()}"
+        assert required_season <= s.keys(), (
+            f"missing season fields: {required_season - s.keys()}"
+        )
 
         required_episode = {
-            "season", "episode", "already_watched_in_plex", "episode_rating_key", "title",
+            "season",
+            "episode",
+            "already_watched_in_plex",
+            "episode_rating_key",
+            "title",
         }
         e = s["episodes"][0]
         assert required_episode <= e.keys(), (
@@ -406,8 +422,11 @@ class TestScrobbleRoute:
         r = client.post(
             "/api/scrobble",
             json={
-                "lib": "tv", "folder": "Show",
-                "scope": "episode", "season": 1, "episode": 1,
+                "lib": "tv",
+                "folder": "Show",
+                "scope": "episode",
+                "season": 1,
+                "episode": 1,
             },
         )
         body = r.json()

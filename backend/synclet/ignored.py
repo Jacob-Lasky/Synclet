@@ -109,7 +109,12 @@ class IgnoredState:
             "version": 1,
             "pending": sorted(
                 (p.to_dict() for p in self.pending),
-                key=lambda d: (d["sync_sub"], d["folder"], d.get("season") or -1, d.get("episode") or -1),
+                key=lambda d: (
+                    d["sync_sub"],
+                    d["folder"],
+                    d.get("season") or -1,
+                    d.get("episode") or -1,
+                ),
             ),
             "watched": sorted(
                 (w.to_dict() for w in self.watched),
@@ -134,17 +139,23 @@ def load() -> IgnoredState:
         return IgnoredState(pending=set(), watched=set(), hanging=set())
     try:
         raw = json.loads(IGNORED_FILE.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return IgnoredState(pending=set(), watched=set(), hanging=set())
     return IgnoredState(
         pending={
-            PendingRef.from_dict(d) for d in raw.get("pending", []) if isinstance(d, dict)
+            PendingRef.from_dict(d)
+            for d in raw.get("pending", [])
+            if isinstance(d, dict)
         },
         watched={
-            WatchedRef.from_dict(d) for d in raw.get("watched", []) if isinstance(d, dict)
+            WatchedRef.from_dict(d)
+            for d in raw.get("watched", [])
+            if isinstance(d, dict)
         },
         hanging={
-            HangingRef.from_dict(d) for d in raw.get("hanging", []) if isinstance(d, dict)
+            HangingRef.from_dict(d)
+            for d in raw.get("hanging", [])
+            if isinstance(d, dict)
         },
     )
 
@@ -267,7 +278,7 @@ def ignore_ref(kind: str, ref: dict) -> bool:
             ignore_hanging(HangingRef.from_dict(ref))
         else:
             return False
-    except (KeyError, TypeError):
+    except KeyError, TypeError:
         return False
     return True
 
@@ -283,6 +294,6 @@ def unignore_ref(kind: str, ref: dict) -> bool:
             unignore_hanging(HangingRef.from_dict(ref))
         else:
             return False
-    except (KeyError, TypeError):
+    except KeyError, TypeError:
         return False
     return True
