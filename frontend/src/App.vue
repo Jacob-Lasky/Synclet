@@ -13,100 +13,114 @@ import LinkPasteModal from "./components/LinkPasteModal.vue"
 import JobToasts from "./components/JobToasts.vue"
 import { api } from "./api"
 import {
-  loadMaintenanceCount,
-  loadState,
-  loadWatchlistCount,
-  pushToast,
-  store,
+    loadMaintenanceCount,
+    loadState,
+    loadWatchlistCount,
+    pushToast,
+    store,
 } from "./store"
 
 const showPaste = ref(false)
 
 onMounted(() => {
-  loadState().catch(e => {
-    pushToast({ kind: "error", text: `Failed to load state: ${(e as Error).message}` })
-  })
-  loadMaintenanceCount()
-  loadWatchlistCount()
+    loadState().catch((e) => {
+        pushToast({
+            kind: "error",
+            text: `Failed to load state: ${(e as Error).message}`,
+        })
+    })
+    loadMaintenanceCount()
+    loadWatchlistCount()
 })
 
 const counts = computed(() => ({
-  library: store.titles.length,
-  synced: store.disk?.synced_titles ?? 0,
-  watchlist: store.watchlistCount ?? undefined,
-  // Maintenance is "attention required" not "inventory" — only badge when
-  // the count is positive. 0 means the user has nothing to do; no badge.
-  maintenance:
-    store.maintenanceCount != null && store.maintenanceCount > 0
-      ? store.maintenanceCount
-      : undefined,
+    library: store.titles.length,
+    synced: store.disk?.synced_titles ?? 0,
+    watchlist: store.watchlistCount ?? undefined,
+    // Maintenance is "attention required" not "inventory" — only badge when
+    // the count is positive. 0 means the user has nothing to do; no badge.
+    maintenance:
+        store.maintenanceCount != null && store.maintenanceCount > 0
+            ? store.maintenanceCount
+            : undefined,
 }))
 
 async function refresh(): Promise<void> {
-  try {
-    await api.refresh()
-    await loadState(true)
-    pushToast({ kind: "success", text: "Library rescanned." })
-  } catch (e) {
-    pushToast({ kind: "error", text: (e as Error).message })
-  }
+    try {
+        await api.refresh()
+        await loadState(true)
+        pushToast({ kind: "success", text: "Library rescanned." })
+    } catch (e) {
+        pushToast({ kind: "error", text: (e as Error).message })
+    }
 }
 
 // Global ⌘K / Ctrl-K → paste modal
 function onKeydown(e: KeyboardEvent): void {
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-    e.preventDefault()
-    showPaste.value = true
-  }
-  if (e.key === "Escape" && showPaste.value) {
-    showPaste.value = false
-  }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault()
+        showPaste.value = true
+    }
+    if (e.key === "Escape" && showPaste.value) {
+        showPaste.value = false
+    }
 }
 window.addEventListener("keydown", onKeydown)
 </script>
 
 <template>
-  <div class="app">
-    <TopBar :on-paste-link="() => (showPaste = true)" :on-refresh="refresh" />
-    <TabBar :tab="store.tab" :counts="counts" @change="t => (store.tab = t)" />
+    <div class="app">
+        <TopBar
+            :on-paste-link="() => (showPaste = true)"
+            :on-refresh="refresh"
+        />
+        <TabBar
+            :tab="store.tab"
+            :counts="counts"
+            @change="(t) => (store.tab = t)"
+        />
 
-    <main class="main">
-      <!-- KeepAlive preserves Synced / Watchlist / Maintenance state across
+        <main class="main">
+            <!-- KeepAlive preserves Synced / Watchlist / Maintenance state across
            tab switches so leaving and returning is instant. Once loaded,
            these views stay mounted and re-show without re-fetching. Library
            is excluded because its TitleGrid is already store-backed and
            cheap to remount. -->
-      <template v-if="store.tab === 'library'">
-        <FilterBar />
-        <TitleGrid v-if="store.loaded" />
-        <div v-else class="loading">Loading library…</div>
-      </template>
-      <KeepAlive v-else>
-        <SyncedView      v-if="store.tab === 'synced'" />
-        <WatchlistView   v-else-if="store.tab === 'watchlist'" />
-        <MaintenanceView v-else-if="store.tab === 'maintenance'" />
-        <SyncthingView   v-else-if="store.tab === 'syncthing'" />
-      </KeepAlive>
-    </main>
+            <template v-if="store.tab === 'library'">
+                <FilterBar />
+                <TitleGrid v-if="store.loaded" />
+                <div v-else class="loading">Loading library…</div>
+            </template>
+            <KeepAlive v-else>
+                <SyncedView v-if="store.tab === 'synced'" />
+                <WatchlistView v-else-if="store.tab === 'watchlist'" />
+                <MaintenanceView v-else-if="store.tab === 'maintenance'" />
+                <SyncthingView v-else-if="store.tab === 'syncthing'" />
+            </KeepAlive>
+        </main>
 
-    <DetailDrawer v-if="store.detail" />
-    <LinkPasteModal v-if="showPaste" @close="showPaste = false" />
-    <JobToasts />
-  </div>
+        <DetailDrawer v-if="store.detail" />
+        <LinkPasteModal v-if="showPaste" @close="showPaste = false" />
+        <JobToasts />
+    </div>
 </template>
 
 <style scoped>
 .app {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: var(--bg);
 }
 .main {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;        /* allow children to scroll */
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0; /* allow children to scroll */
 }
-.loading { padding: 4rem 1rem; text-align: center; color: var(--fg-muted); }
+.loading {
+    padding: 4rem 1rem;
+    text-align: center;
+    color: var(--fg-muted);
+}
 </style>

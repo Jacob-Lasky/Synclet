@@ -1,0 +1,9 @@
+{
+    "extends": "./tsconfig.app.json",
+    "compilerOptions": {
+        "noUnusedLocals": false,
+        "noUnusedParameters": false
+    },
+    "include": ["src/**/*.ts", "src/**/*.vue", "*.ts", "*.cjs"],
+    "exclude": ["node_modules", "dist"]
+}
