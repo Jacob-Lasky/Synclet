@@ -1,16 +1,18 @@
-// eslint.config.cjs
+// Flat config. ESLint v9+ syntax.
+//
+// Curated rule set, NOT exhaustive. The goal here is the same as the backend
+// ruff config: catch real bugs and contract drift, enforce a single format,
+// avoid noise that fights idiomatic Vue 3 + TypeScript code. If a rule shows
+// up as the firehose against this codebase, the answer is to drop the rule,
+// not blanket-disable callers.
 
 const vue = require("eslint-plugin-vue")
-const ts = require("@typescript-eslint/eslint-plugin")
-const prettier = require("eslint-plugin-prettier")
-const vueRecommended = require("eslint-plugin-vue/lib/configs/vue3-recommended")
-const tsRecommended = require("@typescript-eslint/eslint-plugin").configs
-    .recommended
-const prettierRecommended = require("eslint-plugin-prettier").configs
-    .recommended
+const tsPlugin = require("@typescript-eslint/eslint-plugin")
+const tsParser = require("@typescript-eslint/parser")
+const vueParser = require("vue-eslint-parser")
+const prettierRecommended = require("eslint-plugin-prettier/recommended")
 
 const config = [
-    // Global ignores (applies to everything)
     {
         ignores: [
             "node_modules/",
@@ -18,80 +20,96 @@ const config = [
             "public/",
             "*.config.js",
             "vite.config.ts",
+            "vitest.config.ts",
         ],
     },
 
-    // TypeScript and Vue Single File Components
+    // Vue + TypeScript sources. Type-aware lint requires tsconfig.eslint.json.
+    ...vue.configs["flat/recommended"],
     {
         files: ["**/*.ts", "**/*.vue"],
         languageOptions: {
-            parser: require("vue-eslint-parser"),
+            parser: vueParser,
             parserOptions: {
-                parser: require("@typescript-eslint/parser"),
+                parser: tsParser,
                 ecmaVersion: 2021,
                 sourceType: "module",
                 project: "./tsconfig.eslint.json",
+                tsconfigRootDir: __dirname,
                 extraFileExtensions: [".vue"],
             },
         },
         plugins: {
-            vue,
-            prettier,
-            "@typescript-eslint": ts,
+            "@typescript-eslint": tsPlugin,
         },
         rules: {
-            ...vueRecommended.rules,
-            ...tsRecommended.rules,
-            ...prettierRecommended.rules,
-            "prettier/prettier": "error",
+            ...tsPlugin.configs.recommended.rules,
 
-            // TypeScript type safety rules - surface type errors as lint errors
+            // Type-safety rules that catch real footguns in TS+Vue glue code.
+            // Each chosen because it would have caught a class of bug we've
+            // hit in the surrounding codebases, not for completeness.
             "@typescript-eslint/no-unsafe-member-access": "error",
             "@typescript-eslint/no-unsafe-assignment": "warn",
             "@typescript-eslint/no-unsafe-call": "warn",
             "@typescript-eslint/no-unsafe-return": "error",
             "@typescript-eslint/no-unsafe-argument": "error",
             "@typescript-eslint/no-explicit-any": "error",
-            "@typescript-eslint/strict-boolean-expressions": "error",
             "@typescript-eslint/no-unnecessary-type-assertion": "error",
             "@typescript-eslint/prefer-as-const": "error",
             "@typescript-eslint/no-non-null-assertion": "error",
-
-            // Catch type assignment errors
             "@typescript-eslint/no-misused-new": "error",
             "@typescript-eslint/no-this-alias": "error",
             "@typescript-eslint/prefer-readonly": "error",
+
+            // unused-vars: allow `_` prefix to silence (matches Vue conventions
+            // around destructured props the template doesn't reference).
+            "@typescript-eslint/no-unused-vars": [
+                "error",
+                {
+                    argsIgnorePattern: "^_",
+                    varsIgnorePattern: "^_",
+                    caughtErrorsIgnorePattern: "^_",
+                },
+            ],
+
+            // Vue refinements that fire in idiomatic Vue 3 SFCs.
+            // The recommended set wants kebab-case events and a few component
+            // formatting rules that prettier already owns. Trim the overlap.
+            "vue/multi-word-component-names": "off",
         },
     },
 
-    // JavaScript config files (e.g., eslint.config.cjs)
+    // Test files: relax the non-null assertion ban. Vitest's idiomatic pattern
+    // is `expect(x).toBeDefined()` followed by `x!.foo` — the assertion has
+    // already narrowed runtime, the `!` just shuts up TS. Forcing a second
+    // narrowing layer (`if (!x) throw`) is noise in test code.
+    {
+        files: ["**/*.test.ts"],
+        rules: {
+            "@typescript-eslint/no-non-null-assertion": "off",
+        },
+    },
+
+    // Loose JS/CJS files (this config + any future scripts). No type-aware
+    // rules, since TS-eslint without parser metadata throws.
     {
         files: ["**/*.js", "**/*.cjs"],
         languageOptions: {
             ecmaVersion: 2021,
-            sourceType: "module",
+            sourceType: "commonjs",
             globals: {
                 console: "readonly",
                 module: "readonly",
                 require: "readonly",
                 __dirname: "readonly",
+                process: "readonly",
             },
         },
-        plugins: {
-            prettier,
-            "@typescript-eslint": ts,
-        },
-        rules: {
-            ...prettierRecommended.rules,
-            "prettier/prettier": "error",
-        },
     },
+
+    // Prettier last so it wins formatting conflicts. The /recommended bundle
+    // also turns off eslint formatting rules that overlap with prettier.
+    prettierRecommended,
 ]
 
-// Downgrade to warnings if ONLY_WARN=true (for development)
-if (process.env.ONLY_WARN === "true") {
-    const onlyWarn = require("eslint-plugin-only-warn")
-    module.exports = onlyWarn(config)
-} else {
-    module.exports = config
-}
+module.exports = config
