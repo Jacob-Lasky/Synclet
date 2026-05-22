@@ -14,6 +14,7 @@ import type {
   ScrobbleScope,
   StateBundle,
   SyncedEntry,
+  SyncthingOverview,
   TitleDetail,
   WatchedFiles,
   WatchlistEntry,
@@ -92,6 +93,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  syncthingOverview: () => json<SyncthingOverview>(`/api/syncthing/overview`),
 }
 
 export interface ScrobbleBody {

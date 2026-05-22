@@ -9,6 +9,7 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "synced",      label: "Synced" },
   { id: "watchlist",   label: "Watchlist" },
   { id: "maintenance", label: "Maintenance" },
+  { id: "syncthing",   label: "Syncthing" },
 ]
 </script>
 

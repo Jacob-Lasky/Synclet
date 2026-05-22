@@ -8,6 +8,7 @@ import DetailDrawer from "./components/DetailDrawer.vue"
 import SyncedView from "./components/SyncedView.vue"
 import WatchlistView from "./components/WatchlistView.vue"
 import MaintenanceView from "./components/MaintenanceView.vue"
+import SyncthingView from "./components/SyncthingView.vue"
 import LinkPasteModal from "./components/LinkPasteModal.vue"
 import JobToasts from "./components/JobToasts.vue"
 import { api } from "./api"
@@ -84,6 +85,7 @@ window.addEventListener("keydown", onKeydown)
         <SyncedView      v-if="store.tab === 'synced'" />
         <WatchlistView   v-else-if="store.tab === 'watchlist'" />
         <MaintenanceView v-else-if="store.tab === 'maintenance'" />
+        <SyncthingView   v-else-if="store.tab === 'syncthing'" />
       </KeepAlive>
     </main>
 
