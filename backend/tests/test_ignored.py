@@ -79,7 +79,9 @@ class TestIgnoreRef:
             {"sync_sub": "tv", "folder": "X", "season": 1, "episode": 1},
         )
         assert ok is True
-        assert PendingRef(sync_sub="tv", folder="X", season=1, episode=1) in load().pending
+        assert (
+            PendingRef(sync_sub="tv", folder="X", season=1, episode=1) in load().pending
+        )
 
     def test_watched_via_ref_dict(self, patch_paths):
         ok = ignore_ref("watched", {"lib": "movies", "folder": "X"})

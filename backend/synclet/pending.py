@@ -187,7 +187,7 @@ def load_snapshot() -> set[SnapshotKey]:
         return set()
     try:
         raw = json.loads(SNAPSHOT_FILE.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return set()
     items = raw.get("items", [])
     return {SnapshotKey.from_dict(item) for item in items if isinstance(item, dict)}
@@ -383,15 +383,11 @@ def cleanup_after_resolve(key: SnapshotKey) -> dict[str, int]:
         re.IGNORECASE,
     )
     season_dirs = [
-        d
-        for d in folder_path.iterdir()
-        if d.is_dir() and _season_num(d) == key.season
+        d for d in folder_path.iterdir() if d.is_dir() and _season_num(d) == key.season
     ]
     for season_dir in season_dirs:
         matching = [f for f in season_dir.iterdir() if ep_pat.search(f.name)]
-        videos_remaining = any(
-            f.suffix.lower() in VIDEO_EXTS for f in matching
-        )
+        videos_remaining = any(f.suffix.lower() in VIDEO_EXTS for f in matching)
         if videos_remaining:
             continue
         for f in matching:
@@ -554,7 +550,9 @@ class ResolveResult:
 
 
 def resolve(
-    keys: Iterable[SnapshotKey], *, confirm: bool,
+    keys: Iterable[SnapshotKey],
+    *,
+    confirm: bool,
 ) -> tuple[list[ResolveResult], dict[str, int]]:
     """Resolve a batch of pending keys, sweep filesystem leftovers.
 
@@ -676,11 +674,7 @@ def mark_watched_scope(
             ]
             if scope == "movie"
             else [],
-            "error": (
-                None
-                if scope != "movie"
-                else f"no Plex item for {lib}/{folder}"
-            ),
+            "error": (None if scope != "movie" else f"no Plex item for {lib}/{folder}"),
         }
 
     targets: list[tuple[str, int | None, int | None]] = []
@@ -702,7 +696,11 @@ def mark_watched_scope(
                     "scrobbled": 0,
                     "failed": 1,
                     "results": [
-                        {"season": season, "episode": episode, "status": "no_rating_key"},
+                        {
+                            "season": season,
+                            "episode": episode,
+                            "status": "no_rating_key",
+                        },
                     ],
                 }
             targets.append((rk, season, episode))
