@@ -9,6 +9,7 @@ not silently incomplete.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -62,7 +63,9 @@ def watchstate_db(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def patch_watchstate(monkeypatch: pytest.MonkeyPatch, watchstate_db: Path) -> Path:
+def patch_watchstate(
+    monkeypatch: pytest.MonkeyPatch, watchstate_db: Path
+) -> Generator[Path]:
     """Point synclet.watchstate at the fixture DB and clear its caches."""
     from synclet import watchstate as ws
 
@@ -125,7 +128,7 @@ def media_tree(tmp_path: Path) -> dict[str, Path]:
 @pytest.fixture
 def patch_paths(
     monkeypatch: pytest.MonkeyPatch, media_tree: dict[str, Path]
-) -> dict[str, Path]:
+) -> Generator[dict[str, Path]]:
     """Repoint every module's MEDIA_ROOT / SYNC_ROOT binding at the fixture tree.
 
     Each module imports the path once at module-load, so config-level patching

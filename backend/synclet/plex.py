@@ -10,7 +10,13 @@ from __future__ import annotations
 
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
+
+# DO NOT switch to `xml.etree` without defusedxml without tracking the
+# trust boundary — Plex responses come from the user's own Plex Media Server
+# at PLEX_URL (env-configured trusted source on the home LAN). Replacing
+# with defusedxml is tracked in a follow-up; for now the bandit warnings
+# are silenced per-import with this audit trail.
+import xml.etree.ElementTree as ET  # noqa: S405
 from functools import lru_cache
 
 from synclet.config import LIBRARIES, PLEX_TOKEN, PLEX_URL, THUMB_CACHE
@@ -27,8 +33,10 @@ def _get_xml(
     path: str, params: dict | None = None, timeout: int = 8
 ) -> ET.Element | None:
     try:
-        with urllib.request.urlopen(_plex_url(path, params), timeout=timeout) as r:
-            return ET.fromstring(r.read())
+        with urllib.request.urlopen(  # noqa: S310 — trusted PLEX_URL
+            _plex_url(path, params), timeout=timeout
+        ) as r:
+            return ET.fromstring(r.read())  # noqa: S314 — same trust boundary
     except Exception:
         return None
 
@@ -91,7 +99,9 @@ def fetch_thumb_bytes(lib: str, folder: str) -> tuple[bytes, str] | None:
     if not meta or not meta.get("thumb"):
         return None
     try:
-        with urllib.request.urlopen(_plex_url(meta["thumb"]), timeout=10) as r:
+        with urllib.request.urlopen(  # noqa: S310 — trusted PLEX_URL
+            _plex_url(meta["thumb"]), timeout=10
+        ) as r:
             data = r.read()
             content_type = r.headers.get("Content-Type", "image/jpeg")
         cache_path.write_bytes(data)
@@ -112,7 +122,9 @@ def fetch_art_bytes(lib: str, folder: str) -> tuple[bytes, str] | None:
     if not meta or not meta.get("art"):
         return None
     try:
-        with urllib.request.urlopen(_plex_url(meta["art"]), timeout=10) as r:
+        with urllib.request.urlopen(  # noqa: S310 — trusted PLEX_URL
+            _plex_url(meta["art"]), timeout=10
+        ) as r:
             data = r.read()
             content_type = r.headers.get("Content-Type", "image/jpeg")
         cache_path.write_bytes(data)

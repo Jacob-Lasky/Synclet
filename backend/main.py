@@ -6,6 +6,8 @@ read like a contract: every endpoint the frontend touches is listed here.
 
 from __future__ import annotations
 
+import contextlib
+
 from litestar import Litestar, MediaType, Response, get, post
 from litestar.config.cors import CORSConfig
 from litestar.exceptions import NotFoundException
@@ -272,10 +274,8 @@ async def api_synced() -> dict:
         total_bytes = 0
         for f in item.rglob("*"):
             if f.is_file():
-                try:
+                with contextlib.suppress(OSError):
                     total_bytes += f.stat().st_size
-                except OSError:
-                    pass
 
         entry = {
             "title": display,

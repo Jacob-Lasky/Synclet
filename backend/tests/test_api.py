@@ -50,11 +50,11 @@ class TestStateRoute:
         assert "disk" in body
         assert "libraries" in body, "frontend depends on this — see store.ts:loadState"
         # Library metadata wire contract
-        lib_ids = [l["id"] for l in body["libraries"]]
+        lib_ids = [lib["id"] for lib in body["libraries"]]
         assert "tv" in lib_ids
-        for l in body["libraries"]:
+        for lib in body["libraries"]:
             # Schema fields the frontend consumes
-            assert {"id", "label", "short", "kind", "sync_sub"} <= l.keys()
+            assert {"id", "label", "short", "kind", "sync_sub"} <= lib.keys()
 
     def test_title_shape(self, client):
         r = client.get("/api/state")
@@ -89,7 +89,7 @@ class TestStateRoute:
         """libraryShort() in store.ts feeds the card badge — short codes must
         be exactly two characters or the layout breaks."""
         r = client.get("/api/state")
-        shorts = [(l["id"], l["short"]) for l in r.json()["libraries"]]
+        shorts = [(lib["id"], lib["short"]) for lib in r.json()["libraries"]]
         for lib_id, short in shorts:
             assert len(short) == 2, f"{lib_id} short label is {short!r}, not 2 chars"
 
