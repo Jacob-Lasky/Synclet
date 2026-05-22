@@ -12,7 +12,6 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from functools import lru_cache
-from pathlib import Path
 
 from synclet.config import LIBRARIES, PLEX_TOKEN, PLEX_URL, THUMB_CACHE
 
@@ -146,7 +145,7 @@ def episode_rating_keys(show_rating_key: str) -> dict[tuple[int, int], str]:
         e = video.get("index")
         if rk and s is not None and e is not None:
             try:
-                out[(int(s), int(e))] = rk
+                out[int(s), int(e)] = rk
             except ValueError:
                 continue
     return out
@@ -168,7 +167,7 @@ def scrobble(rating_key: str, timeout: int = 8) -> bool:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:  # noqa: S310
             return 200 <= r.status < 300
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 

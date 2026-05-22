@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 
 from synclet.sync_ops import (
-    find_source_lib,
     _is_video,
     find_hanging_files,
+    find_source_lib,
     find_watched_synced_files,
     remove_files,
     resolve_selection,

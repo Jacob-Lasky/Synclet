@@ -13,16 +13,14 @@ import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePath
 
-from pathlib import PurePath
-
-from synclet.config import LIBRARIES, MEDIA_ROOT, SYNC_ROOT, VIDEO_EXTS
-from synclet.fs_helpers import iter_sync_subs, iter_synced_titles
-from synclet.scan import is_wanted_file, scan_title_detail
 from synclet import pending as pending_mod
 from synclet import state as state_mod
+from synclet.config import LIBRARIES, MEDIA_ROOT, SYNC_ROOT, VIDEO_EXTS
+from synclet.fs_helpers import iter_sync_subs, iter_synced_titles
 from synclet.maint_cache import invalidate as _invalidate_maint_cache
+from synclet.scan import is_wanted_file, scan_title_detail
 
 
 @dataclass
@@ -185,7 +183,7 @@ async def _run_sync(job: Job) -> None:
             if item["is_video"]
         }
         pending_mod.add_keys(k for k in added_keys if k is not None)
-    except Exception as exc:  # noqa: BLE001 — surface to client verbatim
+    except Exception as exc:
         job.error = str(exc)
         job.status = "error"
     finally:
@@ -226,7 +224,7 @@ async def _run_unsync(job: Job) -> None:
             if item["is_video"]
         }
         pending_mod.remove_keys(k for k in unsync_keys if k is not None)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         job.error = str(exc)
         job.status = "error"
     finally:
@@ -301,9 +299,9 @@ def find_source_lib(folder_name: str) -> str | None:
 
 def _find_watched_synced_files_uncached() -> list[dict]:
     """The expensive watched-files walk; callers should use the cached wrapper."""
-    from synclet.scan import clean_name, _EP_PAT, _season_num
-    from synclet.watchstate import show_watch_map, movie_watch_state
     from synclet.ignored import WatchedRef, ignored_watched_set
+    from synclet.scan import _EP_PAT, _season_num, clean_name
+    from synclet.watchstate import movie_watch_state, show_watch_map
 
     ignored = ignored_watched_set()
 
@@ -367,7 +365,7 @@ def find_watched_synced_files() -> list[dict]:
 
 def _find_hanging_files_uncached() -> list[dict]:
     """The expensive hanging-files walk; callers should use the cached wrapper."""
-    from synclet.ignored import HangingRef, ignored_hanging_set
+    from synclet.ignored import ignored_hanging_set
 
     ignored_paths = {h.path for h in ignored_hanging_set()}
 

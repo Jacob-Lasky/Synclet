@@ -7,8 +7,6 @@ synthetic tree.
 
 from pathlib import Path
 
-import pytest
-
 from synclet.scan import (
     clean_name,
     is_wanted_file,

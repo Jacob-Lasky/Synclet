@@ -17,8 +17,8 @@ from synclet.plex import fetch_art_bytes, fetch_thumb_bytes
 from synclet.resolve import resolve_url
 from synclet.scan import scan_title_detail, title_detail_to_dict
 from synclet.state import disk_usage, get_state, invalidate
-from synclet.watchstate import movie_watch_state, show_watch_map
 from synclet.watchlist import get_watchlist
+from synclet.watchstate import movie_watch_state, show_watch_map
 
 logger = get_logger(__name__)
 
