@@ -1,5 +1,8 @@
-# Project Template
-A template repo for Python + Vue.js + Docker
+# Synclet
+
+Easy syncing of media, where Plex and Jellyfin fall short. That's Synclet's mission.
+
+Synclet sits on top of your Plex library and a Syncthing-shared folder. You pick what you want available offline (a season, an episode, a movie). Synclet copies the files into the Syncthing-watched folder. Syncthing propagates them to your other devices. Synclet then tracks what's watched, what's hanging, and what to clean up.
 
 ## Access
 - Frontend: http://localhost:1313
@@ -7,18 +10,17 @@ A template repo for Python + Vue.js + Docker
 
 ## Tools
 ### Backend
-- Python 3.11
+- Python 3.14
 - [uv](https://docs.astral.sh/uv/)
 - [litestar](https://litestar.dev/)
 
 ### Frontend
-- Node.js 22
+- Node.js 24
 - [pnpm](https://pnpm.io/)
-- [vue](https://vuejs.org/)
+- [vue](https://vuejs.org/) 3
 - [vite](https://vite.dev/)
 
-### Database
-- [Meilisearch](https://www.meilisearch.com/)
+### Storage
 - SQLite
 
 ## Setup
