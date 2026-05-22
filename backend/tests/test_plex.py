@@ -5,7 +5,6 @@ attributes the parser actually consumes. If Plex changes the XML schema in
 ways that drop these attributes, the test breaks loudly.
 """
 
-
 from synclet.plex import find_in_library, section_index
 
 # Captured from live Plex `/library/sections/2/all` response, trimmed to two

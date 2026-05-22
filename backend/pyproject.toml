@@ -71,4 +71,5 @@ lint.ignore = [
     "ARG",     # pytest fixtures look like unused method args
     "PLC0415", # tests deliberately import inside functions for isolation
     "SLF001",  # tests poke at private attrs to exercise internals
+    "ASYNC240", # tests block the loop on purpose (assertion + setup)
 ]

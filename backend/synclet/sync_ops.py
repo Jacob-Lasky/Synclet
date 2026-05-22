@@ -9,11 +9,14 @@ filter, mkdir -p parents) exactly.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shutil
 import time
 import uuid
+from collections.abc import Coroutine
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
+from typing import Any
 
 from synclet import pending as pending_mod
 from synclet import state as state_mod
@@ -66,6 +69,18 @@ def _is_video(path_str: str) -> bool:
 
 _JOBS: dict[str, Job] = {}
 
+# DO NOT use `asyncio.create_task(coro)` directly without retaining the task.
+# Python only holds a weakref to the running task, so a bare create_task call
+# can be garbage-collected mid-execution, silently aborting the job. Tasks
+# stored here are discarded by the done-callback once they finish.
+_BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _spawn_background(coro: Coroutine[Any, Any, None]) -> None:
+    task = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
 
 def get_job(job_id: str) -> Job | None:
     return _JOBS.get(job_id)
@@ -85,7 +100,7 @@ def _sync_dest(src: Path, lib: str) -> Path:
 
 
 def _filter_episodes(
-    detail,
+    detail: Any,  # synclet.scan.TitleDetail — kept loose to avoid circular import
     season_filter: int | None,
     episode_keys: list[tuple[int, int]] | None,
     unwatched_only: bool,
@@ -162,12 +177,12 @@ async def _run_sync(job: Job) -> None:
             src = Path(item["src"])
             dst = Path(item["dst"])
             job.current_file = src.name
-            if dst.exists():
+            if await asyncio.to_thread(dst.exists):
                 job.processed_files += 1
                 if item["is_video"]:
                     job.processed_media_files += 1
                 continue
-            dst.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(dst.parent.mkdir, parents=True, exist_ok=True)
             await asyncio.to_thread(shutil.copy2, str(src), str(dst))
             job.processed_files += 1
             if item["is_video"]:
@@ -200,8 +215,8 @@ async def _run_unsync(job: Job) -> None:
         for item in job.items:
             dst = Path(item["dst"])
             job.current_file = dst.name
-            if dst.exists():
-                size = dst.stat().st_size
+            if await asyncio.to_thread(dst.exists):
+                size = (await asyncio.to_thread(dst.stat)).st_size
                 await asyncio.to_thread(dst.unlink)
                 job.processed_bytes += size
                 parents.add(dst.parent)
@@ -211,10 +226,8 @@ async def _run_unsync(job: Job) -> None:
                 job.processed_media_files += 1
         # Prune empty dirs
         for p in sorted(parents, key=lambda x: -len(x.parts)):
-            try:
-                p.rmdir()
-            except OSError:
-                pass
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread(p.rmdir)
         job.status = "done"
         # Explicit unsync is "I no longer want this here", not "I watched it".
         # Same shape as a reject: drop from snapshot, do not scrobble.
@@ -256,7 +269,7 @@ def start_sync(pairs: list[tuple[Path, Path]], title: str = "") -> Job:
     job.total_media_files = sum(1 for i in items if i["is_video"])
     job.total_bytes = sum(i["size"] for i in items)
     _JOBS[job.id] = job
-    asyncio.create_task(_run_sync(job))
+    _spawn_background(_run_sync(job))
     return job
 
 
@@ -282,7 +295,7 @@ def start_unsync(pairs: list[tuple[Path, Path]], title: str = "") -> Job:
     job.total_media_files = sum(1 for i in items if i["is_video"])
     job.total_bytes = sum(i["size"] for i in items)
     _JOBS[job.id] = job
-    asyncio.create_task(_run_unsync(job))
+    _spawn_background(_run_unsync(job))
     return job
 
 

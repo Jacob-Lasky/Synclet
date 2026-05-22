@@ -21,6 +21,7 @@ Cache lives in-process. Two implications:
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Any
 
 from synclet.config import STATE_CACHE_TTL
@@ -28,7 +29,7 @@ from synclet.config import STATE_CACHE_TTL
 _cache: dict[str, tuple[float, Any]] = {}
 
 
-def get_cached(key: str, build: callable) -> Any:
+def get_cached(key: str, build: Callable[[], Any]) -> Any:
     """Return cached value for `key`, recomputing via `build()` on miss/expire.
 
     The `build` callable runs synchronously and replaces the cache entry

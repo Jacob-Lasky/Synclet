@@ -165,7 +165,7 @@ def _synced_folder_index() -> dict[str, int]:
 
     One pass over the (small) synced tree — typical sync has ~20 titles, so
     this is well under a second. Replaces a per-title rglob from grid scan,
-    which would have been O(titles × per-title-walk).
+    which would have been O(titles x per-title-walk).
     """
     out: dict[str, int] = {}
     for sub_path in iter_sync_subs():

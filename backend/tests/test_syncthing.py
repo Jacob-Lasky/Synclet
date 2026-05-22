@@ -128,7 +128,7 @@ class TestOverviewHappyPath:
         folder = result[0]
         assert folder["folder_id"] == "default"
         assert folder["label"] == "Media"
-        assert folder["percent"] == 75.0
+        assert folder["percent"] == pytest.approx(75.0)
         assert folder["in_sync_bytes"] == 750
         assert folder["global_bytes"] == 1000
         assert folder["need_bytes"] == 250
@@ -139,11 +139,11 @@ class TestOverviewHappyPath:
         laptop, phone = folder["devices"]
         assert laptop["device_id"] == "DEV_LAPTOP"
         assert laptop["name"] == "Laptop"
-        assert laptop["completion"] == 100.0
+        assert laptop["completion"] == pytest.approx(100.0)
         assert laptop["connected"] is True
         assert laptop["paused"] is False
         assert phone["device_id"] == "DEV_PHONE"
-        assert phone["completion"] == 60.0
+        assert phone["completion"] == pytest.approx(60.0)
         assert phone["need_bytes"] == 400
         assert phone["connected"] is False
 
@@ -170,7 +170,7 @@ class TestOverviewEdgeCases:
         monkeypatch.setattr(syncthing, "_get", _make_mock_get(responses))
 
         result = await syncthing.overview()
-        assert result[0]["percent"] == 100.0
+        assert result[0]["percent"] == pytest.approx(100.0)
         assert result[0]["devices"] == []
 
     async def test_no_folders_returns_empty(self, configured, monkeypatch):

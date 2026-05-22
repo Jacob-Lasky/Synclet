@@ -14,11 +14,11 @@ def fuzzy_score(query: str, target: str) -> float:
     """Score how well `query` matches `target`. Higher is better.
 
     Returns:
-      2.0 — exact case-insensitive match
-      1.0+ — substring match, longer-query/shorter-target = higher
-      0.9 — all query words appear in target as substrings
-      0.5–0.85 — query word prefixes match target words
-      ≤0.4 — SequenceMatcher ratio as last-resort
+      2.0: exact case-insensitive match
+      1.0+: substring match, longer-query/shorter-target = higher
+      0.9: all query words appear in target as substrings
+      0.5 to 0.85: query word prefixes match target words
+      <=0.4: SequenceMatcher ratio as last-resort
     """
     q = query.lower()
     t = target.lower()
