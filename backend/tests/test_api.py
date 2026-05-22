@@ -470,3 +470,197 @@ class TestResolveRoute:
         ]:
             r = resolve_url(url)
             assert r["reason"] == expected_reason
+
+
+class TestTitleRouteMovie:
+    """api_title has a separate movie path (top-level watched, no episodes)."""
+
+    def test_movie_includes_watched_flag(self, client):
+        r = client.get("/api/title/movies/1917%20(2019)%20%7Btmdb-3%7D")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["kind"] == "movie"
+        # 1917 was set up as unwatched in the watchstate fixture
+        assert "watched" in body
+        assert body["watched"] is False
+
+
+class TestPosterRoutes:
+    """api_thumb / api_art both proxy bytes from Plex, falling back to a
+    404-with-empty-body when meta or bytes are unavailable."""
+
+    def test_thumb_returns_404_when_meta_missing(self, client):
+        # _get_xml is stubbed to None in the client fixture, so find_in_library
+        # returns None -> fetch_thumb_bytes returns None -> route hands back
+        # an empty 404 with image/jpeg.
+        r = client.get("/api/plex/thumb/tv/Nothing")
+        assert r.status_code == 404
+        assert r.content == b""
+        assert r.headers["content-type"].startswith("image/jpeg")
+
+    def test_art_returns_404_when_meta_missing(self, client):
+        r = client.get("/api/plex/art/tv/Nothing")
+        assert r.status_code == 404
+        assert r.content == b""
+
+    def test_thumb_returns_bytes_when_fetch_succeeds(self, client, monkeypatch):
+        # main.py imports fetch_thumb_bytes by name, so we patch the symbol
+        # in main's namespace, not the source module.
+        monkeypatch.setattr(
+            "main.fetch_thumb_bytes",
+            lambda lib, folder: (b"PNGBYTES", "image/png"),
+        )
+        r = client.get("/api/plex/thumb/tv/Anything")
+        assert r.status_code == 200
+        assert r.content == b"PNGBYTES"
+        assert r.headers["content-type"] == "image/png"
+        # Caching contract for the frontend
+        assert "max-age=86400" in r.headers["cache-control"]
+
+    def test_art_returns_bytes_when_fetch_succeeds(self, client, monkeypatch):
+        monkeypatch.setattr(
+            "main.fetch_art_bytes",
+            lambda lib, folder: (b"JPGBYTES", "image/jpeg"),
+        )
+        r = client.get("/api/plex/art/tv/Anything")
+        assert r.status_code == 200
+        assert r.content == b"JPGBYTES"
+
+
+class TestUnsyncRoute:
+    def test_no_matches_returns_error(self, client):
+        r = client.post(
+            "/api/unsync",
+            json={
+                "lib": "tv",
+                "folder": "Does Not Exist",
+                "selection_type": "all",
+            },
+        )
+        body = r.json()
+        assert body["job_id"] is None
+        assert body["error"] == "no files matched"
+
+
+class TestJobsRoutes:
+    def test_unknown_job_returns_404(self, client):
+        r = client.get("/api/jobs/nonexistent")
+        assert r.status_code == 404
+
+    def test_list_jobs_returns_array(self, client):
+        r = client.get("/api/jobs")
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body["jobs"], list)
+
+    def test_known_job_returns_state(self, client, monkeypatch):
+        # Inject a fake job into the module store so the GET succeeds.
+        from synclet import sync_ops
+        from synclet.sync_ops import Job
+
+        job = Job(id="abc123", op="sync", status="done", total_files=2)
+        monkeypatch.setitem(sync_ops._JOBS, "abc123", job)
+        r = client.get("/api/jobs/abc123")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["id"] == "abc123"
+        assert body["status"] == "done"
+
+
+class TestSyncedRoute:
+    def test_returns_synced_titles_with_new_unwatched(self, client):
+        # The conftest fixture pre-syncs After Life S01E01; the watchstate
+        # fixture marks that episode watched (so no new_unwatched for it).
+        r = client.get("/api/synced")
+        assert r.status_code == 200
+        items = r.json()["items"]
+        # At least one synced title from the fixture
+        assert items
+        folders = [it["folder"] for it in items]
+        assert any("After Life" in f for f in folders)
+        # Wire-contract fields the frontend depends on
+        for it in items:
+            assert {
+                "title",
+                "folder",
+                "lib",
+                "kind",
+                "size_bytes",
+                "new_unwatched",
+            } <= it.keys()
+
+
+class TestWatchlistRoute:
+    def test_returns_items_array(self, client, monkeypatch):
+        # The route delegates to get_watchlist which hits Plex's RSS — stub it
+        # so the test doesn't depend on network.
+        from synclet import watchlist as wl_mod
+
+        monkeypatch.setattr("main.get_watchlist", list)
+        r = client.get("/api/watchlist")
+        assert r.status_code == 200
+        assert r.json() == {"items": []}
+        # Reference wl_mod to keep import locally used:
+        assert wl_mod is not None
+
+
+class TestMaintenanceWatchedAndHanging:
+    def test_watched_returns_items_array(self, client):
+        r = client.get("/api/maintenance/watched")
+        assert r.status_code == 200
+        assert isinstance(r.json()["items"], list)
+
+    def test_hanging_returns_items_array(self, client):
+        r = client.get("/api/maintenance/hanging")
+        assert r.status_code == 200
+        assert isinstance(r.json()["items"], list)
+
+
+class TestRefreshRoute:
+    def test_invalidates_and_returns_ok(self, client):
+        r = client.post("/api/refresh", json={})
+        assert r.status_code == 201
+        assert r.json() == {"ok": True}
+
+
+class TestSyncthingOverviewRoute:
+    def test_unconfigured_returns_empty(self, client, monkeypatch):
+        from synclet import syncthing
+
+        monkeypatch.setattr(syncthing, "is_configured", lambda: False)
+        r = client.get("/api/syncthing/overview")
+        assert r.status_code == 200
+        body = r.json()
+        assert body == {"configured": False, "folders": []}
+
+    def test_configured_returns_folders(self, client, monkeypatch):
+        from synclet import syncthing
+
+        monkeypatch.setattr(syncthing, "is_configured", lambda: True)
+
+        async def _fake_overview():
+            return [{"folder_id": "default", "percent": 100.0, "devices": []}]
+
+        monkeypatch.setattr(syncthing, "overview", _fake_overview)
+        r = client.get("/api/syncthing/overview")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["configured"] is True
+        assert body["folders"][0]["folder_id"] == "default"
+
+
+class TestShortLabelHelper:
+    """Direct tests for the _short_label helper (lines 141-144 are only
+    reached for single-word and zero-word labels, which the live fixture
+    doesn't include)."""
+
+    def test_single_word_label_uses_two_char_prefix(self):
+        from main import _short_label
+
+        assert _short_label("anime", "Anime") == "AN"
+
+    def test_empty_label_returns_placeholder(self):
+        from main import _short_label
+
+        # All whitespace gets filtered to an empty word list -> "??"
+        assert _short_label("blank", "   ") == "??"

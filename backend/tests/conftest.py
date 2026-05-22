@@ -147,9 +147,13 @@ def patch_paths(
     monkeypatch.setattr("synclet.state.SYNC_ROOT", sync)
     monkeypatch.setattr("synclet.fs_helpers.SYNC_ROOT", sync)
     monkeypatch.setattr("synclet.pending.SYNC_ROOT", sync)
-    monkeypatch.setattr(
-        "synclet.config.THUMB_CACHE", media_tree["tmp"] / ".thumb-cache"
-    )
+    # plex.py imports THUMB_CACHE at module-load, so we have to patch BOTH
+    # the config binding and the per-module re-import. Without the plex.py
+    # patch, fetch_thumb_bytes mkdirs the production-default path, which
+    # raises and surfaces as a 500 on the route.
+    thumb_cache = media_tree["tmp"] / ".thumb-cache"
+    monkeypatch.setattr("synclet.config.THUMB_CACHE", thumb_cache)
+    monkeypatch.setattr("synclet.plex.THUMB_CACHE", thumb_cache)
     # Snapshot file for the pending module. Default lives under /app/data
     # which only exists inside the backend container; point at tmp so sync_ops
     # tests that mutate the snapshot don't try to write into that path.
