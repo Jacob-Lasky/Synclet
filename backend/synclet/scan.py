@@ -2,7 +2,7 @@
 
 The CLI walks the filesystem on every command; we do the same but cache the
 result so the API doesn't repeat work for back-to-back requests. The scan is
-intentionally cheap — no per-file stat for the grid view; sizes get computed
+intentionally cheap , no per-file stat for the grid view; sizes get computed
 only inside title-detail responses.
 """
 
@@ -37,7 +37,7 @@ _EP_TITLE_FROM_FILENAME = re.compile(
 class Title:
     """A show, movie, or YouTube channel as seen from disk."""
 
-    id: str  # f"{lib}/{folder}" — stable composite key
+    id: str  # f"{lib}/{folder}" , stable composite key
     lib: str
     folder: str  # raw folder name (with {tvdb-...} cruft)
     name: str  # display name (cleaned)
@@ -105,7 +105,7 @@ def clean_name(folder: str) -> str:
 
 
 def watchstate_key(folder_or_name: str) -> str:
-    """Lowercased title without {tvdb-...} or trailing (YYYY) — matches the
+    """Lowercased title without {tvdb-...} or trailing (YYYY) , matches the
     `state.title` shape that WatchState writes (Plex-side title, no year)."""
     s = _TVDB_TMDB.sub("", folder_or_name).strip()
     s = re.sub(r"\s*\(\d{4}\)\s*$", "", s).strip()
@@ -163,7 +163,7 @@ def _sync_dest(src: Path, lib: str) -> Path:
 def _synced_folder_index() -> dict[str, int]:
     """{folder_name: video_file_count} across SYNC_ROOT/* subfolders.
 
-    One pass over the (small) synced tree — typical sync has ~20 titles, so
+    One pass over the (small) synced tree , typical sync has ~20 titles, so
     this is well under a second. Replaces a per-title rglob from grid scan,
     which would have been O(titles x per-title-walk).
     """
@@ -175,7 +175,7 @@ def _synced_folder_index() -> dict[str, int]:
                     "."
                 ):
                     continue
-                # rglob over a single synced title — small (one show's worth).
+                # rglob over a single synced title , small (one show's worth).
                 n = 0
                 for f in Path(entry.path).rglob("*"):
                     if f.is_file() and f.suffix.lower() in VIDEO_EXTS:
@@ -193,7 +193,7 @@ def scan_titles() -> list[Title]:
     Designed to run in under 2 seconds across ~4000 titles on shfs FUSE: no
     recursion into season directories. Episode counts come from WatchState
     (which Plex/WatchState already indexed). Sync state comes from a single
-    pass over SYNC_ROOT — much smaller tree.
+    pass over SYNC_ROOT , much smaller tree.
     """
     from synclet.watchstate import all_watched_shows  # local to avoid cycle
 

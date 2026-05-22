@@ -1,5 +1,5 @@
 """fuzzy_score is the canonical title-matching algorithm shared by watchlist
-and resolve. Behavior is duplicated on the frontend (store.ts:fuzzyScore) —
+and resolve. Behavior is duplicated on the frontend (store.ts:fuzzyScore) ,
 if either side changes, both should change.
 """
 

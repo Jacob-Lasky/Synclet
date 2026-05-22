@@ -1,4 +1,4 @@
-"""Tests for common.log_utils — the contextual logger wrapper.
+"""Tests for common.log_utils , the contextual logger wrapper.
 
 Two surfaces under test: ContextualLogger.{debug,info,...} prefixes the
 caller's function name; get_logger wires a handler + level from env vars.

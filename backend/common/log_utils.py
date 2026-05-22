@@ -1,7 +1,7 @@
 """Module-aware logger wrapper that prefixes each record with the caller's
 function name, since logging.Formatter has no native frame-pointer access.
 
-`get_logger()` is the only public surface — modules should not instantiate
+`get_logger()` is the only public surface; modules should not instantiate
 ContextualLogger directly. The `setLoggerClass` call below makes every
 logger created via `logging.getLogger` (including those from third-party
 libs) inherit the context-prefix behavior.

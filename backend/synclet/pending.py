@@ -93,7 +93,7 @@ class SnapshotKey:
 
 
 # Minimum SYNC_ROOT-relative path depth that can identify a media item: at
-# least <sync_sub>/<folder>/... — anything shallower is a stray top-level file.
+# least <sync_sub>/<folder>/... , anything shallower is a stray top-level file.
 _MIN_REL_PARTS = 2
 
 
@@ -178,7 +178,7 @@ def _iter_videos(root: Path) -> Iterable[Path]:
 def load_snapshot() -> set[SnapshotKey]:
     """Return the persisted snapshot, or an empty set if the file is missing.
 
-    A missing file means "not bootstrapped yet" — callers should run
+    A missing file means "not bootstrapped yet" , callers should run
     bootstrap_if_missing() before computing pending, otherwise every existing
     on-disk file would erroneously appear as a deletion candidate the first
     time the feature is used.
@@ -560,7 +560,7 @@ def resolve(
     "rejected" per key. On confirm: each key is scrobbled to Plex first
     (best-effort, per-item); successful scrobbles get status "ok", failures
     get "scrobble_failed" or "no_rating_key". The snapshot drops every key
-    regardless of scrobble outcome — the user already deleted the file, so
+    regardless of scrobble outcome , the user already deleted the file, so
     putting it back in pending would be incorrect.
 
     After the snapshot mutation, runs cleanup_after_resolve for each key to

@@ -1,7 +1,7 @@
 """Fuzzy title matching shared between resolve.py (link → title) and
 watchlist.py (Plex RSS → library).
 
-Mirror of frontend store.ts:fuzzyScore — keep the two in sync if either side
+Mirror of frontend store.ts:fuzzyScore , keep the two in sync if either side
 changes, since user-visible search ranking depends on identical behavior.
 """
 

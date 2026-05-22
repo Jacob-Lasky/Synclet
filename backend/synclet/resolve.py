@@ -4,7 +4,7 @@ Supported shapes:
   - Plex web app:      https://app.plex.tv/desktop/#!/server/<uuid>/details?key=%2Flibrary%2Fmetadata%2F12345
   - Plex local web:    http://192.168.86.183:32400/web/index.html#!/server/<uuid>/details?key=%2Flibrary%2Fmetadata%2F12345
   - Plex deep metadata key: /library/metadata/12345  (bare)
-  - IMDb:              https://www.imdb.com/title/tt1234567/  (matched by title text — best-effort)
+  - IMDb:              https://www.imdb.com/title/tt1234567/  (matched by title text , best-effort)
   - Plain text:        treated as a fuzzy library search
 
 Plex URLs are the most precise: we hit /library/metadata/{ratingKey} on our
@@ -107,13 +107,13 @@ def resolve_url(url: str) -> dict:
             "ratingKey": rk,
         }
 
-    # 2. IMDb URL — fall back to title parsing from URL path (best-effort)
+    # 2. IMDb URL , fall back to title parsing from URL path (best-effort)
     m = _IMDB.search(decoded)
     if m:
         # We can't hit IMDb without an API key; treat as unknown and prompt user
         return {"found": False, "reason": "imdb_url_unsupported", "imdb_id": m.group(1)}
 
-    # 3. Jellyfin item URL — id is a server-local guid, can't resolve from outside
+    # 3. Jellyfin item URL , id is a server-local guid, can't resolve from outside
     m = _JELLYFIN_ID.search(decoded)
     if m:
         return {
@@ -122,7 +122,7 @@ def resolve_url(url: str) -> dict:
             "jellyfin_id": m.group(1),
         }
 
-    # 4. Plain text — fuzzy search the library
+    # 4. Plain text , fuzzy search the library
     by = _by_name(decoded)
     if by:
         return {"found": True, **by, "via": "text_search"}

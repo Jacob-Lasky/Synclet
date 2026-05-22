@@ -1,6 +1,6 @@
 """Synclet HTTP API.
 
-Routes are flat by design — no controllers, no DI containers. The file should
+Routes are flat by design: no controllers, no DI containers. The file should
 read like a contract: every endpoint the frontend touches is listed here.
 """
 
@@ -129,7 +129,7 @@ async def api_state(refresh: bool = False) -> dict:
 
 
 def _short_label(lib_id: str, label: str) -> str:
-    """Two-char badge code for a library — '4K' for 4K libs, 'YT' for YouTube,
+    """Two-char badge code for a library: '4K' for 4K libs, 'YT' for YouTube,
     else the first letter of the first two words, or the first two letters of
     a single-word label."""
     if "4K" in label or "4kUHD" in lib_id:

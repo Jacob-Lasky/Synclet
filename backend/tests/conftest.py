@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-# ── WatchState schema (matches v02 — keep in sync with the real DB) ────────
+# ── WatchState schema (matches v02 , keep in sync with the real DB) ────────
 
 WATCHSTATE_SCHEMA = """
 CREATE TABLE state (
@@ -133,7 +133,7 @@ def patch_paths(
 
     Each module imports the path once at module-load, so config-level patching
     alone is not enough. This fixture is the single source of truth for "all
-    the places the path leaks into" — if a new module is added, add it here.
+    the places the path leaks into" , if a new module is added, add it here.
     """
     media = media_tree["media"]
     sync = media_tree["sync"]
