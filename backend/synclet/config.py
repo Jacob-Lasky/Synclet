@@ -88,3 +88,12 @@ SNAPSHOT_FILE = Path(
 IGNORED_FILE = Path(
     os.environ.get("SYNCLET_IGNORED_FILE", "/app/data/ignored.json"),
 )
+
+# Syncthing REST API integration (read-only). See backend/synclet/syncthing.py.
+# DO NOT supply committed defaults. The integration is opt-in; unset env vars
+# degrade the Syncthing UI surface to "not configured" without affecting the
+# rest of the app. The Plex defaults above are grandfathered (legacy homelab
+# config baked into the repo before the no-committed-secrets rule landed);
+# new secrets do not get fallbacks.
+SYNCTHING_URL = os.environ.get("SYNCTHING_URL")
+SYNCTHING_API_KEY = os.environ.get("SYNCTHING_API_KEY")

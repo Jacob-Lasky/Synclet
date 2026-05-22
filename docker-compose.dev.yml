@@ -66,7 +66,20 @@ services:
       - SYNCLET_PLEX_URL=${SYNCLET_PLEX_URL:-http://192.168.86.183:32400}
       - SYNCLET_PLEX_TOKEN=${SYNCLET_PLEX_TOKEN:-7p79GK4xzWp6A_pyNJkw}
       - SYNCLET_THUMB_CACHE=/app/data/.thumb-cache
+      # Syncthing integration (read-only, opt-in). NO committed defaults;
+      # both come from .env (gitignored). Absent values degrade the
+      # Syncthing UI panel to "not configured" without affecting the rest
+      # of Synclet. See .env.example for the template.
+      - SYNCTHING_URL=${SYNCTHING_URL:-}
+      - SYNCTHING_API_KEY=${SYNCTHING_API_KEY:-}
       - LOG_LEVEL=INFO
+    # host.docker.internal is not auto-resolved on Linux Docker the way it
+    # is on Docker Desktop; the extra_hosts entry maps it to the Docker
+    # bridge gateway so SYNCTHING_URL=http://host.docker.internal:8384
+    # reaches a Syncthing running on the host. Users who prefer an explicit
+    # LAN IP can ignore this and set SYNCTHING_URL accordingly.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     mem_limit: 2g
     memswap_limit: 2g
     develop:

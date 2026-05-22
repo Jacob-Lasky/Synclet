@@ -12,7 +12,7 @@ from litestar.exceptions import NotFoundException
 from pydantic import BaseModel
 
 from common.log_utils import get_logger
-from synclet import ignored, pending, sync_ops
+from synclet import ignored, pending, sync_ops, syncthing
 from synclet.plex import fetch_art_bytes, fetch_thumb_bytes
 from synclet.resolve import resolve_url
 from synclet.scan import scan_title_detail, title_detail_to_dict
@@ -440,6 +440,20 @@ async def api_refresh() -> dict:
     return {"ok": True}
 
 
+@get("/api/syncthing/overview")
+async def api_syncthing_overview() -> dict:
+    """Read-only join of Syncthing's folder + device state.
+
+    Returns {"configured": bool, "folders": [...]}. The configured flag
+    lets the frontend distinguish "Syncthing not set up" from "Syncthing
+    set up but currently has nothing to show" without leaking env state.
+    Folders shape is documented in backend/synclet/syncthing.py.
+    """
+    if not syncthing.is_configured():
+        return {"configured": False, "folders": []}
+    return {"configured": True, "folders": await syncthing.overview()}
+
+
 app = Litestar(
     route_handlers=[
         health,
@@ -465,6 +479,7 @@ app = Litestar(
         api_scrobble,
         api_resolve,
         api_refresh,
+        api_syncthing_overview,
     ],
     cors_config=cors_config,
 )

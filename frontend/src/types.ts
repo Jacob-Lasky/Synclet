@@ -145,7 +145,32 @@ export interface ResolveResult {
   via?: string
 }
 
-export type Tab = "library" | "synced" | "watchlist" | "maintenance"
+export type Tab = "library" | "synced" | "watchlist" | "maintenance" | "syncthing"
+
+export interface SyncthingDevice {
+  device_id: string
+  name: string
+  completion: number
+  need_bytes: number
+  connected: boolean
+  paused: boolean
+}
+
+export interface SyncthingFolder {
+  folder_id: string
+  label: string
+  percent: number
+  state: string
+  need_bytes: number
+  in_sync_bytes: number
+  global_bytes: number
+  devices: SyncthingDevice[]
+}
+
+export interface SyncthingOverview {
+  configured: boolean
+  folders: SyncthingFolder[]
+}
 
 export interface PendingEpisode {
   season: number
