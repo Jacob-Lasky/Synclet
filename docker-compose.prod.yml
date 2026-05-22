@@ -1,0 +1,58 @@
+# Production compose. Single container: built Vue SPA + Litestar backend.
+# Used on Tower for the deployed Synclet instance. DO NOT use for dev —
+# docker-compose.dev.yml is the two-container hot-reload stack.
+#
+# Image is built and pushed by .github/workflows/publish.yml on push to
+# `dev` (-> :dev) or `main` (-> :latest). Pulled and redeployed by the
+# /ship skill. No `build:` directive here — production never rebuilds
+# from source on Tower.
+
+services:
+    synclet:
+        image: ghcr.io/jacob-lasky/synclet:${SYNCLET_TAG:-latest}
+        container_name: synclet
+        # The container itself listens on 1314 (Litestar serves both API and
+        # SPA from the same port). Map to host 1313 to keep the user-facing
+        # URL stable across dev and prod — dev's frontend was on host 1313.
+        ports:
+            - "1313:1314"
+        volumes:
+            # Host paths — evaluated on the Tower host. See dev compose for
+            # the path-translation rationale; the misc/ prefix matters for
+            # /coding but NOT for /data or /appdata.
+            - /mnt/user/data/media:/data/media:ro
+            - /mnt/user/data/others/synced-media:/data/others/synced-media
+            - /mnt/user/appdata/watchstate:/appdata/watchstate:ro
+            # Persistent app data: thumb cache, snapshot.json, ignored.json.
+            # Survives container recreate; lives outside the image.
+            - /mnt/user/appdata/synclet:/app/data
+        # Shared env contract lives in synclet.env (committed, no secrets).
+        # The optional .env (gitignored) layers on top for runtime secrets
+        # (Syncthing API key, rotated Plex token). DO NOT mirror SYNCLET_*
+        # into `environment:` below — duplicated lines silently override
+        # synclet.env and the two sources of truth drift.
+        env_file:
+            - synclet.env
+            - path: .env
+              required: false
+        # Same host.docker.internal mapping rationale as the dev compose:
+        # lets SYNCTHING_URL point at a Syncthing on the host without
+        # hardcoding a LAN IP.
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
+        restart: unless-stopped
+        mem_limit: 2g
+        memswap_limit: 2g
+        # Health probe — UnRAID's UI surfaces this in the container list
+        # and /ship's Step 6 cross-checks it. Python is in PATH because the
+        # uv image base ships it; no curl needed in the runtime image.
+        healthcheck:
+            test:
+                - CMD
+                - python
+                - -c
+                - "import urllib.request; urllib.request.urlopen('http://localhost:1314/api/health', timeout=5)"
+            interval: 30s
+            timeout: 5s
+            retries: 3
+            start_period: 10s

@@ -7,14 +7,16 @@ read like a contract: every endpoint the frontend touches is listed here.
 from __future__ import annotations
 
 import contextlib
+from pathlib import Path
 
 from litestar import Litestar, MediaType, Response, get, post
 from litestar.config.cors import CORSConfig
 from litestar.exceptions import NotFoundException
+from litestar.static_files import create_static_files_router
 from pydantic import BaseModel
 
 from common.log_utils import get_logger
-from synclet import ignored, pending, sync_ops, syncthing
+from synclet import config, ignored, pending, sync_ops, syncthing
 from synclet.plex import fetch_art_bytes, fetch_thumb_bytes
 from synclet.resolve import resolve_url
 from synclet.scan import scan_title_detail, title_detail_to_dict
@@ -454,8 +456,22 @@ async def api_syncthing_overview() -> dict:
     return {"configured": True, "folders": await syncthing.overview()}
 
 
-app = Litestar(
-    route_handlers=[
+def build_route_handlers(static_dir: Path | None = None) -> list:
+    """Assemble the route_handlers list for Litestar.
+
+    The API routes are listed literally; the optional static-files router is
+    appended LAST so Litestar's path specificity prefers the literal /api/...
+    matches over the static catchall rooted at /. If you reorder this list
+    so the static router comes first, /api/* requests will be poached and
+    return HTML instead of JSON — the contract test in tests/test_api.py
+    pins this ordering.
+
+    static_dir: the built Vue dist. None (dev) means no static handler is
+    added; the dev frontend runs separately on :1313. A non-None Path that
+    doesn't exist on disk is also ignored — saves a startup crash if the
+    env var points somewhere stale.
+    """
+    handlers: list = [
         health,
         api_state,
         api_title,
@@ -480,6 +496,27 @@ app = Litestar(
         api_resolve,
         api_refresh,
         api_syncthing_overview,
-    ],
+    ]
+
+    if static_dir is not None and static_dir.is_dir():
+        logger.info("Serving static frontend from %s", static_dir)
+        # html_mode=True serves index.html from / and 404.html on missing
+        # files. The production Dockerfile copies index.html -> 404.html so
+        # unknown paths still render the SPA shell (Vue mounts, default view
+        # renders). Status code on the fallback is 404, not 200; acceptable
+        # for Synclet which has no client-side URL routing today.
+        handlers.append(
+            create_static_files_router(
+                path="/",
+                directories=[static_dir],
+                html_mode=True,
+            ),
+        )
+
+    return handlers
+
+
+app = Litestar(
+    route_handlers=build_route_handlers(config.STATIC_DIR),
     cors_config=cors_config,
 )

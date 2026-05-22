@@ -1,0 +1,37 @@
+# Keep the build context small. The production Dockerfile only needs
+# frontend/ + backend/, never the dev-only stuff below.
+
+# Build/test artifacts
+**/node_modules
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/dist
+**/.pnpm-store
+**/.tmp
+
+# VCS, CI, editor noise
+.git
+.github
+.vscode
+.idea
+*.swp
+
+# Local-only data
+backend/data
+frontend/coverage
+*.log
+
+# Compose files — the production image is launched by docker-compose.prod.yml
+# OUTSIDE the image, so neither compose file belongs in the build context.
+docker-compose*.yml
+
+# Dev Dockerfile is not used by the prod build.
+Dockerfile.dev
+
+# Secrets and env files — never copy into an image layer.
+.env
+.env.*
+!.env.example

@@ -1,0 +1,99 @@
+name: publish
+
+# Builds and pushes the production Synclet image to GHCR.
+# Triggers ONLY on push to dev or main, AND only after ci.yml succeeds on
+# the same commit. We do not publish from PRs (no fork-trust story for
+# write:packages) and we do not publish from feature branches.
+#
+# Tags:
+#   - push to dev:  ghcr.io/jacob-lasky/synclet:dev    + :<sha>
+#   - push to main: ghcr.io/jacob-lasky/synclet:latest + :<sha>
+#
+# Redeploy on Tower is manual via the /ship skill — there is no auto-pull
+# (no Watchtower, no SSH webhook). See memory/project_synclet_deploy_shape.md.
+
+on:
+    workflow_run:
+        workflows: [ci]
+        types: [completed]
+        branches: [main, dev]
+
+permissions:
+    contents: read
+    packages: write
+
+jobs:
+    publish:
+        # Only publish when the upstream ci run succeeded. workflow_run fires
+        # on every completion (including failures and cancels); without this
+        # gate we'd happily ship a broken image.
+        if: ${{ github.event.workflow_run.conclusion == 'success' }}
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  # workflow_run runs against the default branch by default;
+                  # check out the SHA that ci.yml just blessed instead.
+                  ref: ${{ github.event.workflow_run.head_sha }}
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Log in to GHCR
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Resolve tags
+              id: tags
+              run: |
+                  # The branch name lives on the upstream ci event, not on
+                  # this workflow_run's own ref (which is main). head_branch
+                  # is the source-of-truth.
+                  branch="${{ github.event.workflow_run.head_branch }}"
+                  sha="${{ github.event.workflow_run.head_sha }}"
+                  short_sha="${sha:0:7}"
+
+                  case "$branch" in
+                      main) channel=latest ;;
+                      dev)  channel=dev ;;
+                      *)
+                          echo "unexpected branch '$branch' — refusing to publish"
+                          exit 1
+                          ;;
+                  esac
+
+                  image="ghcr.io/jacob-lasky/synclet"
+                  {
+                      echo "tags<<EOF"
+                      echo "${image}:${channel}"
+                      echo "${image}:${short_sha}"
+                      echo "EOF"
+                  } >> "$GITHUB_OUTPUT"
+                  echo "channel=$channel" >> "$GITHUB_OUTPUT"
+                  echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+
+            - name: Build and push
+              uses: docker/build-push-action@v6
+              with:
+                  context: .
+                  file: Dockerfile
+                  push: true
+                  tags: ${{ steps.tags.outputs.tags }}
+                  # GHA cache for buildx — speeds up subsequent builds when
+                  # only source changes, not deps.
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
+                  # amd64 only. Tower is x86_64; multi-arch buys nothing
+                  # today and doubles the build time.
+                  platforms: linux/amd64
+
+            - name: Summary
+              run: |
+                  echo "## Published" >> "$GITHUB_STEP_SUMMARY"
+                  echo "" >> "$GITHUB_STEP_SUMMARY"
+                  echo "- channel: \`${{ steps.tags.outputs.channel }}\`" >> "$GITHUB_STEP_SUMMARY"
+                  echo "- sha tag: \`${{ steps.tags.outputs.short_sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+                  echo "- pull: \`docker pull ghcr.io/jacob-lasky/synclet:${{ steps.tags.outputs.channel }}\`" >> "$GITHUB_STEP_SUMMARY"

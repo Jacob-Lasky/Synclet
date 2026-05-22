@@ -97,3 +97,10 @@ IGNORED_FILE = Path(
 # new secrets do not get fallbacks.
 SYNCTHING_URL = os.environ.get("SYNCTHING_URL")
 SYNCTHING_API_KEY = os.environ.get("SYNCTHING_API_KEY")
+
+# Production: the Vite-built frontend (vite build -> dist/) ships inside the
+# backend image and is served by the same Litestar process at /. Set via env
+# in the prod Dockerfile only. Unset in dev so the dev backend doesn't try to
+# serve a non-existent dir; dev frontend runs separately on :1313.
+_STATIC_DIR_ENV = os.environ.get("SYNCLET_STATIC_DIR")
+STATIC_DIR: Path | None = Path(_STATIC_DIR_ENV) if _STATIC_DIR_ENV else None

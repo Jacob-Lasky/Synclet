@@ -57,22 +57,20 @@ services:
       - /mnt/user/data/media:/data/media:ro
       - /mnt/user/data/others/synced-media:/data/others/synced-media
       - /mnt/user/appdata/watchstate:/appdata/watchstate:ro
+    # Shared env contract — see synclet.env for the full set. The optional
+    # .env (gitignored) layers on top for secrets (Syncthing API key, a
+    # rotated Plex token). DO NOT mirror SYNCLET_* into `environment:`
+    # below — duplicated lines silently override synclet.env and the two
+    # sources of truth drift.
+    env_file:
+      - synclet.env
+      - path: .env
+        required: false
     environment:
-      - PYTHONUNBUFFERED=1
+      # Dev-only: backend container points uv at the out-of-tree venv so the
+      # bind-mounted /app source doesn't mask it. Prod sets this in the
+      # Dockerfile's ENV so it doesn't appear here.
       - UV_PROJECT_ENVIRONMENT=/opt/venv
-      - SYNCLET_MEDIA_ROOT=/data/media
-      - SYNCLET_SYNC_ROOT=/data/others/synced-media
-      - SYNCLET_WATCHSTATE_DB=/appdata/watchstate/users/jakelasky/watchstate_v02.db
-      - SYNCLET_PLEX_URL=${SYNCLET_PLEX_URL:-http://192.168.86.183:32400}
-      - SYNCLET_PLEX_TOKEN=${SYNCLET_PLEX_TOKEN:-7p79GK4xzWp6A_pyNJkw}
-      - SYNCLET_THUMB_CACHE=/app/data/.thumb-cache
-      # Syncthing integration (read-only, opt-in). NO committed defaults;
-      # both come from .env (gitignored). Absent values degrade the
-      # Syncthing UI panel to "not configured" without affecting the rest
-      # of Synclet. See .env.example for the template.
-      - SYNCTHING_URL=${SYNCTHING_URL:-}
-      - SYNCTHING_API_KEY=${SYNCTHING_API_KEY:-}
-      - LOG_LEVEL=INFO
     # host.docker.internal is not auto-resolved on Linux Docker the way it
     # is on Docker Desktop; the extra_hosts entry maps it to the Docker
     # bridge gateway so SYNCTHING_URL=http://host.docker.internal:8384
