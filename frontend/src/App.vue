@@ -11,8 +11,10 @@ import MaintenanceView from "./components/MaintenanceView.vue"
 import SyncthingView from "./components/SyncthingView.vue"
 import LinkPasteModal from "./components/LinkPasteModal.vue"
 import JobToasts from "./components/JobToasts.vue"
+import WatchStateCoverageBanner from "./components/WatchStateCoverageBanner.vue"
 import { api } from "./api"
 import {
+    loadCoverage,
     loadMaintenanceCount,
     loadState,
     loadWatchlistCount,
@@ -31,6 +33,7 @@ onMounted(() => {
     })
     loadMaintenanceCount()
     loadWatchlistCount()
+    loadCoverage()
 })
 
 const counts = computed(() => ({
@@ -79,6 +82,7 @@ window.addEventListener("keydown", onKeydown)
             :counts="counts"
             @change="(t) => (store.tab = t)"
         />
+        <WatchStateCoverageBanner />
 
         <main class="main">
             <!-- KeepAlive preserves Synced / Watchlist / Maintenance state across

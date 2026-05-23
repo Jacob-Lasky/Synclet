@@ -74,6 +74,26 @@ export interface LibraryInfo {
     sync_sub: string
 }
 
+export interface CoverageEntry {
+    id: string
+    label: string
+    section: number
+    kind: Kind
+    // Number of WatchState SQLite rows that join to titles in this Plex
+    // section (observed).
+    watchstate_rows: number
+    // What WatchState would have if it indexed the section fully: sum of
+    // Plex's leafCount for show sections, count of Video items for movie
+    // sections. The banner triggers on a significant gap between observed
+    // and expected — that is the user-visible "Plex direct is doing real
+    // work for this library" signal.
+    expected_rows: number
+}
+
+export interface Coverage {
+    libraries: CoverageEntry[]
+}
+
 export interface StateBundle {
     titles: Title[]
     disk: DiskUsage

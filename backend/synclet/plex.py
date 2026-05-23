@@ -41,6 +41,16 @@ def _get_xml(
         return None
 
 
+def _parse_int(value: str | None, default: int = 0) -> int:
+    """Parse a Plex XML attribute as int, defaulting on missing/malformed."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
 @lru_cache(maxsize=8)
 def section_index(section_id: int) -> dict[str, dict]:
     """Return {watchstate_key: {ratingKey, thumb, art, year, ...}} for a section.
@@ -48,6 +58,11 @@ def section_index(section_id: int) -> dict[str, dict]:
     Plex's /library/sections/{id}/all does NOT include Location on Directory
     (show) entries, so we can't join by folder path. Instead we join by the
     same key WatchState uses: title with year/tvdb cruft stripped, lowercased.
+
+    view_count / viewed_leaf_count / leaf_count are Plex's authoritative watch
+    counters. They underpin the watchstate fallback for Plex sections that the
+    user's WatchState daemon does not index (notably section 6 / YouTube and
+    under-tracked 4K sections); see synclet.watchstate.
     """
     from synclet.scan import watchstate_key  # local to avoid cycle
 
@@ -70,6 +85,9 @@ def section_index(section_id: int) -> dict[str, dict]:
             "summary": item.get("summary") or "",
             "title": title,
             "tag": item.tag,
+            "view_count": _parse_int(item.get("viewCount"), 0),
+            "viewed_leaf_count": _parse_int(item.get("viewedLeafCount"), 0),
+            "leaf_count": _parse_int(item.get("leafCount"), 0),
         }
     return out
 
@@ -161,6 +179,50 @@ def episode_rating_keys(show_rating_key: str) -> dict[tuple[int, int], str]:
             except ValueError:
                 continue
     return out
+
+
+@lru_cache(maxsize=64)
+def episode_watch_map(show_rating_key: str) -> dict[tuple[int, int], bool]:
+    """Return {(season, episode): watched_bool} sourced directly from Plex.
+
+    Used as a fallback when WatchState's SQLite has not indexed this show's
+    library section (the canonical case: section 6 / YouTube). viewCount > 0
+    on a Video means Plex recorded at least one play.
+
+    The cache is invalidated by callers that mutate Plex view state (see
+    invalidate_watch_caches) so an explicit Mark-watched is reflected on the
+    next read instead of waiting for a process restart.
+    """
+    root = _get_xml(f"/library/metadata/{show_rating_key}/allLeaves", timeout=15)
+    if root is None:
+        return {}
+    out: dict[tuple[int, int], bool] = {}
+    for video in root:
+        if video.tag != "Video":
+            continue
+        s = video.get("parentIndex")
+        e = video.get("index")
+        if s is None or e is None:
+            continue
+        try:
+            key = (int(s), int(e))
+        except ValueError:
+            continue
+        out[key] = _parse_int(video.get("viewCount"), 0) > 0
+    return out
+
+
+def invalidate_watch_caches() -> None:
+    """Bust every cached Plex-side watch-state read.
+
+    Call after a successful scrobble. Without this, the section_index dict and
+    episode_watch_map still hold the pre-scrobble view counts and a follow-up
+    read (e.g. after the frontend's session-only scrobbledOverlay clears) would
+    appear to revert. section_index is also cleared because it stores the
+    show-level view_count / viewed_leaf_count / leaf_count counters.
+    """
+    section_index.cache_clear()
+    episode_watch_map.cache_clear()
 
 
 def scrobble(rating_key: str, timeout: int = 8) -> bool:

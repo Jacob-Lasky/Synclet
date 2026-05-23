@@ -351,6 +351,81 @@ class TestResolveConfirm:
         # would re-prompt the user every page load.
         assert load_snapshot() == set()
 
+    def test_successful_confirm_busts_watch_caches(
+        self, patch_snapshot, patch_paths, monkeypatch
+    ):
+        """Symmetric to TestMarkWatchedScope.test_successful_scrobble_busts_watch_caches.
+        The deletion-driven scrobble path also mutates Plex view state, so the
+        in-process caches must invalidate or the next read returns the
+        pre-scrobble value and the user sees the watched-state revert after
+        the optimistic UI overlay clears."""
+        from xml.etree import ElementTree as ET  # noqa: S405  (test-only)
+
+        from synclet import plex as plex_mod
+
+        # Prime the caches so we can observe the eviction.
+        plex_mod.section_index.cache_clear()
+        plex_mod.episode_watch_map.cache_clear()
+        monkeypatch.setattr(
+            "synclet.plex._get_xml",
+            lambda *a, **kw: ET.fromstring(  # noqa: S314 (test-only)
+                b'<MediaContainer><Video title="X" ratingKey="1"/></MediaContainer>'
+            ),
+        )
+        plex_mod.section_index(42)
+        plex_mod.episode_watch_map("rk-1")
+        assert plex_mod.section_index.cache_info().currsize == 1
+        assert plex_mod.episode_watch_map.cache_info().currsize == 1
+
+        monkeypatch.setattr("synclet.plex.scrobble", lambda *a, **kw: True)
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "9000"} if folder == "Movie X" else None,
+        )
+
+        (patch_paths["media"] / "movies" / "Movie X").mkdir(parents=True)
+        k = SnapshotKey(sync_sub="movies", folder="Movie X")
+        save_snapshot({k})
+
+        resolve([k], confirm=True)
+
+        assert plex_mod.section_index.cache_info().currsize == 0
+        assert plex_mod.episode_watch_map.cache_info().currsize == 0
+
+    def test_all_scrobbles_fail_does_not_bust_caches(
+        self, patch_snapshot, patch_paths, monkeypatch
+    ):
+        """If every scrobble attempt fails, Plex view state did not change and
+        we should not thrash the caches. Symmetric to the mark_watched_scope
+        failed-scrobble test."""
+        from xml.etree import ElementTree as ET  # noqa: S405  (test-only)
+
+        from synclet import plex as plex_mod
+
+        plex_mod.section_index.cache_clear()
+        monkeypatch.setattr(
+            "synclet.plex._get_xml",
+            lambda *a, **kw: ET.fromstring(  # noqa: S314 (test-only)
+                b'<MediaContainer><Video title="X" ratingKey="1"/></MediaContainer>'
+            ),
+        )
+        plex_mod.section_index(42)
+        assert plex_mod.section_index.cache_info().currsize == 1
+
+        monkeypatch.setattr("synclet.plex.scrobble", lambda *a, **kw: False)
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "9000"} if folder == "Movie X" else None,
+        )
+
+        (patch_paths["media"] / "movies" / "Movie X").mkdir(parents=True)
+        k = SnapshotKey(sync_sub="movies", folder="Movie X")
+        save_snapshot({k})
+
+        resolve([k], confirm=True)
+
+        assert plex_mod.section_index.cache_info().currsize == 1
+
 
 # ── grouped_pending wire shape ──────────────────────────────────────────────
 
@@ -669,3 +744,79 @@ class TestMarkWatchedScope:
         r = mark_watched_scope(lib="tv", folder="Show", scope="episode")
         assert "error" in r
         assert r["scrobbled"] == 0
+
+    def test_successful_scrobble_busts_watch_caches(self, monkeypatch):
+        """The round trip 'mark watched in Synclet -> stays watched after reload'
+        depends on these caches being cleared. Without invalidation the next
+        read returns the pre-scrobble view counts and the mark appears to revert
+        after the frontend's session-only optimistic overlay clears."""
+        from synclet import plex as plex_mod
+        from synclet import watchstate as ws_mod
+
+        # Prime the caches so we can observe the eviction.
+        plex_mod.episode_watch_map.cache_clear()
+        plex_mod.section_index.cache_clear()
+        ws_mod.all_show_aggregates.cache_clear()
+        ws_mod.all_movie_watched.cache_clear()
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            lambda *_a, **_kw: pytest.fail("urlopen should not be called in test"),
+            raising=False,
+        )
+        plex_mod.episode_watch_map.cache_clear()
+        # Manually populate caches as if previous reads happened.
+        plex_mod.section_index.cache_info()  # touch to ensure it's a real cache
+        # Directly call section_index() with a stub that returns a non-empty dict
+        # to advance currsize > 0. lru_cache only counts populated entries.
+        monkeypatch.setattr(
+            "synclet.plex._get_xml",
+            lambda *a, **kw: __import__(
+                "xml.etree.ElementTree", fromlist=["fromstring"]
+            ).fromstring(
+                b'<MediaContainer><Video title="X" ratingKey="1" viewCount="0"/></MediaContainer>'
+            ),
+        )
+        plex_mod.section_index(99)  # populates section_index cache
+        plex_mod.episode_watch_map("999")  # populates episode_watch_map cache
+        assert plex_mod.section_index.cache_info().currsize > 0
+        assert plex_mod.episode_watch_map.cache_info().currsize > 0
+
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "M-1"},
+        )
+        monkeypatch.setattr("synclet.plex.scrobble", lambda rk, **_: True)
+
+        r = mark_watched_scope(lib="movies", folder="anything", scope="movie")
+        assert r["scrobbled"] == 1
+        # Caches busted by the success path; next read fetches fresh from Plex.
+        assert plex_mod.section_index.cache_info().currsize == 0
+        assert plex_mod.episode_watch_map.cache_info().currsize == 0
+
+    def test_failed_scrobble_does_not_bust_caches(self, monkeypatch):
+        """No state change means no need to invalidate; avoids cache thrash on
+        a flaky network."""
+        from synclet import plex as plex_mod
+
+        monkeypatch.setattr(
+            "synclet.plex._get_xml",
+            lambda *a, **kw: __import__(
+                "xml.etree.ElementTree", fromlist=["fromstring"]
+            ).fromstring(
+                b'<MediaContainer><Video title="X" ratingKey="1"/></MediaContainer>'
+            ),
+        )
+        plex_mod.section_index.cache_clear()
+        plex_mod.section_index(99)
+        assert plex_mod.section_index.cache_info().currsize == 1
+
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "M-1"},
+        )
+        monkeypatch.setattr("synclet.plex.scrobble", lambda rk, **_: False)
+
+        r = mark_watched_scope(lib="movies", folder="anything", scope="movie")
+        assert r["scrobbled"] == 0
+        assert r["failed"] == 1
+        assert plex_mod.section_index.cache_info().currsize == 1

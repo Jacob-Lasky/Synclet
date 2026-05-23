@@ -1,7 +1,14 @@
 import { reactive, computed } from "vue"
 import { api } from "./api"
 import { fuzzyScore } from "./fuzzy"
-import type { DiskUsage, Job, LibraryInfo, Tab, Title } from "./types"
+import type {
+    CoverageEntry,
+    DiskUsage,
+    Job,
+    LibraryInfo,
+    Tab,
+    Title,
+} from "./types"
 
 interface State {
     // Catalog
@@ -25,6 +32,11 @@ interface State {
     maintenanceCount: number | null
     watchlistCount: number | null
 
+    // Per-library WatchState coverage. Loaded once on mount; entries with
+    // watchstate_rows === 0 surface a banner so the user knows their marks
+    // for that library round-trip via Plex direct (no Jellyfin aggregation).
+    coverage: CoverageEntry[] | null
+
     // Jobs
     jobs: Record<string, Job>
     toasts: Toast[]
@@ -38,16 +50,18 @@ export interface Toast {
 }
 
 // Session-only overlay of items the user explicitly marked watched via the
-// Mark-watched buttons. We need this because Plex's scrobble is asynchronous
-// from Synclet's perspective: the WatchState daemon polls Plex on its own
-// schedule and the local SQLite DB lags by minutes. Without this overlay,
-// any refreshInPlace after a successful scrobble would re-read the stale
-// watchstate and overwrite the optimistic update — the checkmarks would
-// appear, then revert seconds later.
+// Mark-watched buttons. The backend's WatchState SQLite lags Plex by minutes
+// (when the WatchState daemon's poll cycle hasn't fired yet) AND has zero
+// coverage for some Plex sections (notably YouTube — see /api/coverage).
+// The backend now invalidates its Plex-direct caches on every successful
+// scrobble so the next read pulls fresh viewCount data, but there is still
+// a window between the scrobble response and that next read where the
+// overlay keeps checkmarks visible without a refresh round-trip.
 //
 // Keyed by `${lib}/${folder}/${season}/${episode}` for episodes,
 // `${lib}/${folder}//` for movies. Cleared on page reload (intentional —
-// by then WatchState should have caught up).
+// by then the backend caches have refreshed and Plex's viewCount /
+// WatchState's row are authoritative again).
 const scrobbledOverlay = new Set<string>()
 
 function overlayKey(
@@ -93,6 +107,7 @@ export const store = reactive<State>({
 
     maintenanceCount: null,
     watchlistCount: null,
+    coverage: null,
 
     jobs: {},
     toasts: [],
@@ -139,6 +154,40 @@ export async function loadWatchlistCount(): Promise<void> {
         store.watchlistCount = null
     }
 }
+
+export async function loadCoverage(): Promise<void> {
+    try {
+        const r = await api.coverage()
+        store.coverage = r.libraries
+    } catch {
+        store.coverage = null
+    }
+}
+
+/** Libraries where WatchState's coverage is significantly below what Plex
+ *  advertises (observed < half of expected). These are the libraries where
+ *  Synclet's Plex-direct fallback is doing real work; the banner names them
+ *  so the user knows the round trip differs (no Jellyfin overlay).
+ *
+ *  Empty array when coverage is fully loaded and every library is well-
+ *  covered; null while loading or on fetch failure (banner stays hidden). */
+const _COVERAGE_THRESHOLD = 0.5
+
+export const uncoveredLibraries = computed<CoverageEntry[] | null>(() => {
+    if (store.coverage == null) return null
+    return store.coverage.filter((entry) => {
+        if (entry.expected_rows === 0) {
+            // Plex section is empty or unreachable; nothing to compare. Use
+            // observed-only as a fallback signal (zero rows is still useful
+            // to surface).
+            return entry.watchstate_rows === 0
+        }
+        return (
+            entry.watchstate_rows <
+            entry.expected_rows * _COVERAGE_THRESHOLD
+        )
+    })
+})
 
 // ── Filters ────────────────────────────────────────────────────────────────
 

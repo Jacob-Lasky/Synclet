@@ -14,7 +14,11 @@ from dataclasses import dataclass
 from synclet.config import STATE_CACHE_TTL, SYNC_ROOT
 from synclet.fs_helpers import iter_synced_titles
 from synclet.scan import Title, scan_titles, watchstate_key
-from synclet.watchstate import all_watched_movies, all_watched_shows, invalidate_cache
+from synclet.watchstate import (
+    all_movie_watched,
+    all_show_aggregates,
+    invalidate_cache,
+)
 
 
 @dataclass
@@ -41,8 +45,8 @@ _cache_data: list[TitleWithState] | None = None
 
 def _build() -> list[TitleWithState]:
     invalidate_cache()  # force fresh watchstate read
-    shows = all_watched_shows()
-    movies = all_watched_movies()
+    shows = all_show_aggregates()
+    movies = all_movie_watched()
 
     out: list[TitleWithState] = []
     for t in scan_titles():
@@ -50,8 +54,8 @@ def _build() -> list[TitleWithState]:
         watched = 0
         synced_pct = 0
         if t.kind in ("show", "youtube"):
-            ws_map = shows.get(ws_key, {})
-            watched = sum(1 for v in ws_map.values() if v)
+            agg = shows.get(ws_key)
+            watched = agg.watched if agg else 0
             denom = max(t.ep_count, 1)
             watched_pct = min(100, int(watched / denom * 100)) if t.ep_count else 0
             synced_pct = (

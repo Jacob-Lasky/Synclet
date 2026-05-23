@@ -471,7 +471,7 @@ def grouped_pending() -> list[dict]:
         show_rk = meta["ratingKey"] if meta else None
 
         if kind == "movie":
-            already_watched = bool(movie_watch_state(display))
+            already_watched = bool(movie_watch_state(display, lib=lib, folder=folder))
             out.append(
                 {
                     "sync_sub": sync_sub,
@@ -486,7 +486,7 @@ def grouped_pending() -> list[dict]:
             continue
 
         # show / youtube
-        ws_map = show_watch_map(display)
+        ws_map = show_watch_map(display, lib=lib, folder=folder)
         ep_rk_map = episode_rating_keys(show_rk) if show_rk else {}
 
         seasons: dict[int, list[dict]] = {}
@@ -575,9 +575,11 @@ def resolve(
     from synclet.plex import (
         episode_rating_keys,
         find_in_library,
+        invalidate_watch_caches,
         scrobble,
     )
     from synclet.sync_ops import find_source_lib
+    from synclet.watchstate import invalidate_cache as invalidate_watchstate_cache
 
     keys = list(keys)
     results: list[ResolveResult] = []
@@ -593,6 +595,7 @@ def resolve(
         invalidate_maint_cache()
         return results, cleanup
 
+    any_scrobbled = False
     for k in keys:
         lib = find_source_lib(k.folder)
         meta = find_in_library(lib, k.folder) if lib else None
@@ -612,12 +615,20 @@ def resolve(
 
         if scrobble(target_rk):
             results.append(ResolveResult(key=k, status="ok"))
+            any_scrobbled = True
         else:
             results.append(ResolveResult(key=k, status="scrobble_failed"))
 
     remove_keys(keys)
     cleanup = aggregate_cleanup(keys)
     invalidate_maint_cache()
+    if any_scrobbled:
+        # Plex view counts changed; bust the in-process caches so the next
+        # read reflects the scrobble instead of the pre-call value. Without
+        # this, the frontend's session-only optimistic overlay (store.ts) is
+        # the only thing showing the mark, and it clears on page reload.
+        invalidate_watch_caches()
+        invalidate_watchstate_cache()
     return results, cleanup
 
 
@@ -650,8 +661,10 @@ def mark_watched_scope(
     from synclet.plex import (
         episode_rating_keys,
         find_in_library,
+        invalidate_watch_caches,
         scrobble,
     )
+    from synclet.watchstate import invalidate_cache as invalidate_watchstate_cache
 
     if scope not in {"movie", "series", "season", "episode"}:
         return {
@@ -733,4 +746,12 @@ def mark_watched_scope(
             scrobbled += 1
         else:
             failed += 1
+    if scrobbled:
+        # DO NOT skip this on the Mark-watched path. Plex view counts just
+        # changed; the section_index and episode_watch_map lru_caches still
+        # hold the pre-scrobble values, which is exactly the staleness the
+        # frontend's session-only overlay was papering over. See watchstate.py
+        # docstring for the round-trip the user expects to see close here.
+        invalidate_watch_caches()
+        invalidate_watchstate_cache()
     return {"scrobbled": scrobbled, "failed": failed, "results": results}

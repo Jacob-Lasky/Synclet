@@ -668,6 +668,34 @@ class TestSyncthingOverviewRoute:
         assert body["folders"][0]["folder_id"] == "default"
 
 
+class TestCoverageRoute:
+    """The frontend uses /api/coverage to surface 'WatchState not tracking
+    section N' banners for libraries that fall through to Plex-direct reads.
+    A zero count is the signal."""
+
+    def test_returns_per_library_counts(self, client):
+        r = client.get("/api/coverage")
+        assert r.status_code == 200
+        body = r.json()
+        assert "libraries" in body
+        # One entry per LIBRARIES config key. Each entry surfaces enough for
+        # the frontend to render its 'not tracked' banner without re-deriving
+        # config.
+        by_id = {entry["id"]: entry for entry in body["libraries"]}
+        assert "YouTube" in by_id
+        yt = by_id["YouTube"]
+        assert yt["section"] == 6
+        assert yt["kind"] == "youtube"
+        assert yt["label"] == "YouTube"
+        # The two-number contract the frontend uses to decide when to render
+        # the banner: zero observed and zero expected is a Plex-unreachable
+        # test stub, but the keys must always be present.
+        assert "watchstate_rows" in yt
+        assert "expected_rows" in yt
+        assert by_id["tv"]["watchstate_rows"] >= 0
+        assert yt["watchstate_rows"] == 0
+
+
 class TestShortLabelHelper:
     """Direct tests for the _short_label helper (lines 141-144 are only
     reached for single-word and zero-word labels, which the live fixture

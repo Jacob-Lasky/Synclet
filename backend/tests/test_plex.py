@@ -13,19 +13,23 @@ from tests._http_mocks import boom_urlopen, fake_urlopen
 
 # Captured from live Plex `/library/sections/2/all` response, trimmed to two
 # items. Real responses have Image/Genre/Role/etc. children we don't parse.
+# leafCount / viewedLeafCount / viewCount are the watch counters; we exercise
+# both a partially-watched show and a fully-watched one to lock the parser.
 _FAKE_TV_SECTION_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 <MediaContainer size="2">
 <Directory ratingKey="100" title="Better Call Saul" type="show"
   thumb="/library/metadata/100/thumb/123"
   art="/library/metadata/100/art/123"
   year="2015"
+  viewCount="42" leafCount="63" viewedLeafCount="42"
   summary="Jimmy McGill becomes Saul Goodman.">
   <Image alt="x" type="coverPoster" url="/x"/>
 </Directory>
 <Directory ratingKey="200" title="After Life" type="show"
   thumb="/library/metadata/200/thumb/456"
   art="/library/metadata/200/art/456"
-  year="2019">
+  year="2019"
+  leafCount="18" viewedLeafCount="18">
 </Directory>
 </MediaContainer>
 """
@@ -56,6 +60,24 @@ class TestSectionIndex:
         assert bcs["ratingKey"] == "100"
         assert bcs["year"] == "2015"
 
+    def test_extracts_watch_counters(self, monkeypatch):
+        """Plex's view counters are captured so watchstate can fall back to them
+        for libraries the user's WatchState daemon does not index."""
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_TV_SECTION_XML),
+        )
+        idx = section_index(2)
+        bcs = idx["better call saul"]
+        assert bcs["view_count"] == 42
+        assert bcs["leaf_count"] == 63
+        assert bcs["viewed_leaf_count"] == 42
+        # After Life has no viewCount attribute on the Directory; absence → 0.
+        af = idx["after life"]
+        assert af["view_count"] == 0
+        assert af["leaf_count"] == 18
+        assert af["viewed_leaf_count"] == 18
+
     def test_handles_api_failure(self, monkeypatch):
         monkeypatch.setattr("synclet.plex.urllib.request.urlopen", boom_urlopen())
         idx = section_index(99)  # different id, cache miss
@@ -80,8 +102,10 @@ class TestSectionIndex:
 
 _FAKE_ALL_LEAVES_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 <MediaContainer size="3">
-<Video ratingKey="1001" parentIndex="1" index="1" type="episode" title="Uno"/>
-<Video ratingKey="1002" parentIndex="1" index="2" type="episode" title="Mijo"/>
+<Video ratingKey="1001" parentIndex="1" index="1" type="episode" title="Uno"
+  viewCount="2"/>
+<Video ratingKey="1002" parentIndex="1" index="2" type="episode" title="Mijo"
+  viewCount="1"/>
 <Video ratingKey="2001" parentIndex="2" index="1" type="episode" title="Switch"/>
 </MediaContainer>
 """
@@ -111,6 +135,64 @@ class TestEpisodeRatingKeys:
         monkeypatch.setattr("synclet.plex.urllib.request.urlopen", boom_urlopen())
         # Different key, cache miss, empty result.
         assert episode_rating_keys("999") == {}
+
+
+class TestEpisodeWatchMap:
+    def setup_method(self):
+        from synclet.plex import episode_watch_map
+
+        episode_watch_map.cache_clear()
+
+    def test_watched_only_when_view_count_positive(self, monkeypatch):
+        from synclet.plex import episode_watch_map
+
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_ALL_LEAVES_XML),
+        )
+        m = episode_watch_map("100")
+        # viewCount=2 and 1 → watched; missing viewCount on (2,1) → unwatched.
+        assert m[1, 1] is True
+        assert m[1, 2] is True
+        assert m[2, 1] is False
+
+    def test_handles_api_failure(self, monkeypatch):
+        from synclet.plex import episode_watch_map
+
+        monkeypatch.setattr("synclet.plex.urllib.request.urlopen", boom_urlopen())
+        assert episode_watch_map("999") == {}
+
+
+class TestInvalidateWatchCaches:
+    def test_clears_section_index_and_episode_watch_map(self, monkeypatch):
+        """After a scrobble, both caches must repopulate from Plex on the next
+        read. Without invalidation the show-level view_count counters stay stale
+        and the user's mark-watched gesture appears to revert on reload."""
+        from synclet.plex import (
+            episode_watch_map,
+            invalidate_watch_caches,
+            section_index,
+        )
+
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_TV_SECTION_XML),
+        )
+        # Prime section_index.
+        assert "better call saul" in section_index(2)
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_ALL_LEAVES_XML),
+        )
+        # Prime episode_watch_map.
+        assert episode_watch_map("100")
+
+        invalidate_watch_caches()
+
+        # cache_info()'s currsize → 0 confirms eviction; functional behavior
+        # after a re-fetch is exercised by the upstream callers' tests.
+        assert section_index.cache_info().currsize == 0
+        assert episode_watch_map.cache_info().currsize == 0
 
 
 class TestScrobble:
@@ -293,21 +375,24 @@ class TestFetchArtBytes:
 
 
 _LEAVES_WITH_NOISE_XML = b"""<?xml version="1.0"?>
-<MediaContainer size="3">
+<MediaContainer size="4">
 <!-- a non-Video element among the leaves -->
 <Directory ratingKey="9999" title="not an episode"/>
 <!-- non-numeric indexes should be skipped, not crash -->
 <Video ratingKey="bad" parentIndex="abc" index="1" type="episode"/>
 <Video ratingKey="2002" parentIndex="2" index="3" type="episode"/>
+<!-- bogus viewCount must default to 0 (unwatched) without crashing -->
+<Video ratingKey="2003" parentIndex="2" index="4" type="episode" viewCount="oops"/>
 </MediaContainer>
 """
 
 
 class TestEpisodeRatingKeysEdgeCases:
     def setup_method(self):
-        from synclet.plex import episode_rating_keys
+        from synclet.plex import episode_rating_keys, episode_watch_map
 
         episode_rating_keys.cache_clear()
+        episode_watch_map.cache_clear()
 
     def test_skips_non_video_and_unparseable_indexes(self, monkeypatch):
         from synclet.plex import episode_rating_keys
@@ -318,9 +403,21 @@ class TestEpisodeRatingKeysEdgeCases:
             fake_urlopen(_LEAVES_WITH_NOISE_XML),
         )
         m = episode_rating_keys("777")
-        # Only the well-formed Video makes it in; the Directory and the
-        # non-numeric parentIndex are skipped.
-        assert m == {(2, 3): "2002"}
+        # The Directory and the non-numeric parentIndex are skipped; the two
+        # well-formed Videos survive.
+        assert m == {(2, 3): "2002", (2, 4): "2003"}
+
+    def test_episode_watch_map_treats_bogus_view_count_as_unwatched(self, monkeypatch):
+        from synclet.plex import episode_watch_map
+
+        monkeypatch.setattr(
+            plex.urllib.request,
+            "urlopen",
+            fake_urlopen(_LEAVES_WITH_NOISE_XML),
+        )
+        m = episode_watch_map("777")
+        # Bogus viewCount → default 0 → False, without raising.
+        assert m == {(2, 3): False, (2, 4): False}
 
 
 # get_metadata

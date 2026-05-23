@@ -22,7 +22,11 @@ from synclet.resolve import resolve_url
 from synclet.scan import scan_title_detail, title_detail_to_dict
 from synclet.state import disk_usage, get_state, invalidate
 from synclet.watchlist import get_watchlist
-from synclet.watchstate import movie_watch_state, show_watch_map
+from synclet.watchstate import (
+    coverage_counts,
+    movie_watch_state,
+    show_watch_map,
+)
 
 logger = get_logger(__name__)
 
@@ -155,11 +159,14 @@ async def api_title(lib: str, folder: str) -> dict:
 
     out = title_detail_to_dict(detail)
 
-    # Join watch state into episodes (TV/YouTube) or top-level (movie)
+    # Join watch state into episodes (TV/YouTube) or top-level (movie).
+    # Passing lib/folder lets watchstate fall back to Plex directly for
+    # libraries WatchState's daemon does not index (notably YouTube), so the
+    # drawer reflects Plex's authoritative viewCount instead of "0 watched".
     if detail.kind == "movie":
-        out["watched"] = bool(movie_watch_state(detail.name))
+        out["watched"] = bool(movie_watch_state(detail.name, lib=lib, folder=folder))
     else:
-        ws_map = show_watch_map(detail.name)
+        ws_map = show_watch_map(detail.name, lib=lib, folder=folder)
         watched_total = 0
         for s in out["seasons"]:
             sw = 0
@@ -291,7 +298,7 @@ async def api_synced() -> dict:
         if source_lib and LIBRARIES[source_lib]["kind"] in ("show", "youtube"):
             detail = scan_title_detail(source_lib, item.name)
             if detail:
-                ws_map = show_watch_map(display)
+                ws_map = show_watch_map(display, lib=source_lib, folder=item.name)
                 new_eps = []
                 for s in detail.seasons:
                     for e in s.episodes:
@@ -442,6 +449,36 @@ async def api_refresh() -> dict:
     return {"ok": True}
 
 
+@get("/api/coverage")
+async def api_coverage() -> dict:
+    """Per-library WatchState coverage signal.
+
+    For each configured library, report observed vs. expected WatchState rows.
+    A significant gap (observed << expected) means WatchState's daemon is not
+    indexing that section , Synclet falls back to Plex's viewCount
+    transparently, but the frontend surfaces a banner so the user knows why
+    the section behaves differently (no cross-server aggregation, no Jellyfin
+    overlay, just Plex). See synclet.watchstate.CoverageStat for the fields.
+    """
+    from synclet.config import LIBRARIES
+
+    counts = coverage_counts()
+    out_libs: list[dict] = []
+    for lib_id, info in LIBRARIES.items():
+        stat = counts.get(lib_id)
+        out_libs.append(
+            {
+                "id": lib_id,
+                "label": info["label"],
+                "section": info["plex_section"],
+                "kind": info["kind"],
+                "watchstate_rows": stat.watchstate_rows if stat else 0,
+                "expected_rows": stat.expected_rows if stat else 0,
+            },
+        )
+    return {"libraries": out_libs}
+
+
 @get("/api/syncthing/overview")
 async def api_syncthing_overview() -> dict:
     """Read-only join of Syncthing's folder + device state.
@@ -496,6 +533,7 @@ def build_route_handlers(static_dir: Path | None = None) -> list:
         api_resolve,
         api_refresh,
         api_syncthing_overview,
+        api_coverage,
     ]
 
     if static_dir is not None and static_dir.is_dir():

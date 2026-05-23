@@ -195,10 +195,12 @@ def scan_titles() -> list[Title]:
     (which Plex/WatchState already indexed). Sync state comes from a single
     pass over SYNC_ROOT , much smaller tree.
     """
-    from synclet.watchstate import all_watched_shows  # local to avoid cycle
+    from synclet.watchstate import all_show_aggregates  # local to avoid cycle
 
-    show_eps = all_watched_shows()  # {show_title_lower: {(s,e): watched}}
-    show_ep_count = {k: len(v) for k, v in show_eps.items()}
+    # {show_title_lower: total_episode_count}, merged WatchState + Plex so YouTube
+    # (and any other section WatchState does not index) still gets a sensible
+    # denominator for the grid's watched% badge.
+    show_ep_count = {k: agg.total for k, agg in all_show_aggregates().items()}
     synced_index = _synced_folder_index()
 
     out: list[Title] = []

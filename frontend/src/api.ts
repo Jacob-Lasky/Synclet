@@ -1,4 +1,5 @@
 import type {
+    Coverage,
     HangingFile,
     IgnoredGrouped,
     IgnoreOp,
@@ -111,6 +112,8 @@ export const api = {
         }),
 
     syncthingOverview: () => json<SyncthingOverview>(`/api/syncthing/overview`),
+
+    coverage: () => json<Coverage>(`/api/coverage`),
 }
 
 export interface ScrobbleBody {

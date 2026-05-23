@@ -149,7 +149,7 @@ def resolve_selection(
     if unwatched_only:
         from synclet.watchstate import show_watch_map
 
-        watched_map = show_watch_map(detail.name)
+        watched_map = show_watch_map(detail.name, lib=lib, folder=folder)
 
     ep_keys: list[tuple[int, int]] | None = None
     if selection_type == "episodes" and episodes:
@@ -332,12 +332,12 @@ def _find_watched_synced_files_uncached() -> list[dict]:
         files_to_remove: list[Path] = []
 
         if kind == "movie":
-            if movie_watch_state(display):
+            if movie_watch_state(display, lib=source_lib, folder=item.name):
                 for f in item.iterdir():
                     if not f.is_dir():
                         files_to_remove.append(f)
         else:
-            ws_map = show_watch_map(display)
+            ws_map = show_watch_map(display, lib=source_lib, folder=item.name)
             if not ws_map:
                 continue
             for season_dir in item.iterdir():
