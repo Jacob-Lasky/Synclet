@@ -18,14 +18,9 @@ import { uncoveredLibraries } from "../store"
         <span class="msg">
             WatchState is not indexing
             <strong>
-                <template
-                    v-for="(lib, i) in uncoveredLibraries"
-                    :key="lib.id"
-                >
-                    {{ lib.label }}<span
-                        v-if="i < uncoveredLibraries.length - 1"
-                        >, </span
-                    >
+                <template v-for="(lib, i) in uncoveredLibraries" :key="lib.id">
+                    {{ lib.label
+                    }}<span v-if="i < uncoveredLibraries.length - 1">, </span>
                 </template>
             </strong>
             , Synclet reads watch state for these from Plex directly.

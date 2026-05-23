@@ -182,10 +182,7 @@ export const uncoveredLibraries = computed<CoverageEntry[] | null>(() => {
             // to surface).
             return entry.watchstate_rows === 0
         }
-        return (
-            entry.watchstate_rows <
-            entry.expected_rows * _COVERAGE_THRESHOLD
-        )
+        return entry.watchstate_rows < entry.expected_rows * _COVERAGE_THRESHOLD
     })
 })
 
