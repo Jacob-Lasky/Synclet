@@ -5,12 +5,15 @@ import type {
     CleanupSummary,
     HangingFile,
     IgnoredGrouped,
+    IgnoredPendingRef,
     IgnoreOp,
     PendingEpisode,
     PendingGroup,
     PendingItemRef,
+    PendingSeason,
     ResolveAction,
     ResolveItemResult,
+    ResolveResponse,
     WatchedFiles,
 } from "../types"
 import {
@@ -38,6 +41,31 @@ const resolving = ref(false)
 // Tracks which show / season cards are expanded. Keys: `${folder}` for shows,
 // `${folder}|${season}` for seasons.
 const expanded = ref<Set<string>>(new Set())
+
+// Session-scoped cache of entries that were ignored this session, keyed by
+// ignoreCacheKey(op). Lets unignore restore the entry into its source list
+// without a full refetch. Stale across browser reloads (the module re-inits
+// and the cache is empty); cross-session unignore falls back to a focused
+// per-list refetch, NOT the full `load()` that would gate the pane on
+// `loading.value`. See unignoreItem.
+type CachedIgnoredEntry =
+    | { kind: "watched"; entry: WatchedFiles }
+    | { kind: "hanging"; entry: HangingFile }
+    | { kind: "pending-movie"; group: PendingGroup }
+    | { kind: "pending-episode"; group: PendingGroup }
+
+const ignoredEntryCache = new Map<string, CachedIgnoredEntry>()
+
+function ignoreCacheKey(op: IgnoreOp): string {
+    if (op.kind === "watched") {
+        return `w:${op.ref.lib}/${op.ref.folder}`
+    }
+    if (op.kind === "hanging") {
+        return `h:${op.ref.path}`
+    }
+    const r = op.ref
+    return `p:${r.sync_sub}/${r.folder}/${r.season ?? ""}/${r.episode ?? ""}`
+}
 
 async function load(): Promise<void> {
     loading.value = true
@@ -71,11 +99,63 @@ const ignoredCount = computed(
         ignoredList.value.hanging.length
 )
 
-// Mutate the local lists without re-fetching from the server. The
-// server-side cache TTL (30s) means a reload would still be slow even after
-// the invalidation triggered by the ignore call. Optimistic UI keeps the
-// click snappy; on error we restore the entry and surface the error.
+// ── Optimistic-update primitive ────────────────────────────────────────────
+//
+// Snapshot-and-rollback wrapper for optimistic mutations of one-or-more refs.
+// All four action paths in this component (resolve, ignore, unignore, remove)
+// share the same shape:
+//   1. capture the pre-mutation state,
+//   2. apply a local mutation so the UI updates instantly,
+//   3. call the server,
+//   4a. on success, run a per-action onResult callback (which may toast or, in
+//       the partial-failure case, decide to partially un-do the mutation),
+//   4b. on a thrown error, restore the snapshot, re-sync the maintenance badge
+//       from the server, and let the caller toast.
+//
+// Kept local (not in a shared module) because rollback needs the component's
+// refs in scope. Lifted out only to DRY the boilerplate without leaking
+// component-internal state to a generic helper.
+//
+// The onResult callback receives a `rollback` thunk so it can also restore
+// state for logical failures (server returned `error` or `ok: false`). The
+// thunk additionally calls loadMaintenanceCount() so badge drift gets repaired
+// the same way it does for thrown errors.
+async function optimisticUpdate<TSnap, TResult>(opts: {
+    snapshot: () => TSnap
+    mutate: () => void
+    apiCall: () => Promise<TResult>
+    rollback: (snap: TSnap) => void
+    onResult: (result: TResult, rollback: () => void) => void
+    onError: (err: Error) => void
+}): Promise<void> {
+    const snap = opts.snapshot()
+    opts.mutate()
+    try {
+        const result = await opts.apiCall()
+        opts.onResult(result, () => {
+            opts.rollback(snap)
+            loadMaintenanceCount()
+        })
+    } catch (e) {
+        opts.rollback(snap)
+        loadMaintenanceCount()
+        opts.onError(e as Error)
+    }
+}
 
+// Bump the maintenance tab badge by `delta` (negative shrinks, positive
+// grows). No-op when the badge hasn't loaded yet. Authoritative refresh
+// happens via loadMaintenanceCount() on rollback / after-action; this is
+// only the optimistic delta so the badge tracks the UI instantly.
+function bumpBadge(delta: number): void {
+    if (typeof store.maintenanceCount !== "number") return
+    store.maintenanceCount = Math.max(0, store.maintenanceCount + delta)
+}
+
+// ── Local mutation helpers ─────────────────────────────────────────────────
+
+// Drop an ignored ref from its source list (watched, hanging, or pending).
+// Used during ignoreItem's optimistic mutate.
 function removePendingLocal(op: IgnoreOp): void {
     if (op.kind === "watched") {
         const r = op.ref
@@ -119,85 +199,352 @@ function removePendingLocal(op: IgnoreOp): void {
     }
 }
 
-async function ignoreItem(op: IgnoreOp, label: string): Promise<void> {
-    // Snapshot for rollback on error.
-    const snapshot = {
-        watched: watched.value,
-        hanging: hanging.value,
-        pending: pending.value,
-        ignoredList: ignoredList.value,
+// Drop a list of pending refs from pending.value, then prune empty seasons /
+// groups. Used during resolveItems' optimistic mutate. Scoped specifically to
+// PendingItemRef[] (the resolve flow never touches watched/hanging) so we
+// avoid the watched/hanging branches that removePendingLocal carries for the
+// ignore-flow.
+function removeResolvedItemsLocal(items: PendingItemRef[]): void {
+    if (items.length === 0) return
+    // Index refs by group key for O(items) lookup during the single
+    // pending.value walk below. "*" marks a movie-level drop (whole group).
+    const byGroup = new Map<string, Set<string>>()
+    for (const r of items) {
+        const groupKey = `${r.sync_sub} ${r.folder}`
+        if (r.season === null || r.season === undefined) {
+            byGroup.set(groupKey, new Set(["*"]))
+            continue
+        }
+        const epKey = `${r.season} ${r.episode}`
+        const set = byGroup.get(groupKey)
+        if (set?.has("*")) continue
+        if (set) set.add(epKey)
+        else byGroup.set(groupKey, new Set([epKey]))
     }
-    // Optimistic: drop from source list immediately.
-    removePendingLocal(op)
-    // Add to the ignored list so the Ignored section reflects it without a refetch.
+    pending.value = pending.value
+        .map((g) => {
+            const set = byGroup.get(`${g.sync_sub} ${g.folder}`)
+            if (!set) return g
+            if (set.has("*")) return null
+            const seasons = (g.seasons ?? [])
+                .map((s) => ({
+                    ...s,
+                    episodes: s.episodes.filter(
+                        (e) => !set.has(`${s.season} ${e.episode}`)
+                    ),
+                }))
+                .filter((s) => s.episodes.length > 0)
+            return { ...g, seasons }
+        })
+        .filter(
+            (g): g is PendingGroup =>
+                g !== null &&
+                (g.kind === "movie" || (g.seasons?.length ?? 0) > 0)
+        )
+}
+
+// Remove an entry from ignoredList.value matching `op`. Mirrors the wire
+// shape of api/maintenance/ignored. Used by unignoreItem's optimistic mutate.
+function removeFromIgnoredListLocal(op: IgnoreOp): void {
     if (op.kind === "watched") {
-        ignoredList.value = {
-            ...ignoredList.value,
-            watched: [...ignoredList.value.watched, op.ref],
-        }
-    } else if (op.kind === "hanging") {
-        ignoredList.value = {
-            ...ignoredList.value,
-            hanging: [...ignoredList.value.hanging, op.ref],
-        }
-    } else {
         const r = op.ref
         ignoredList.value = {
             ...ignoredList.value,
-            pending: [
-                ...ignoredList.value.pending,
-                {
-                    sync_sub: r.sync_sub,
-                    folder: r.folder,
-                    season: r.season ?? null,
-                    episode: r.episode ?? null,
-                },
-            ],
+            watched: ignoredList.value.watched.filter(
+                (w) => !(w.lib === r.lib && w.folder === r.folder)
+            ),
         }
-    }
-    // Decrement the tab badge locally so it updates instantly.
-    if (typeof store.maintenanceCount === "number") {
-        store.maintenanceCount = Math.max(0, store.maintenanceCount - 1)
-    }
-
-    try {
-        const r = await api.maintIgnore(op)
-        if (!r.ok) {
-            // Rollback
-            watched.value = snapshot.watched
-            hanging.value = snapshot.hanging
-            pending.value = snapshot.pending
-            ignoredList.value = snapshot.ignoredList
-            loadMaintenanceCount()
-            pushToast({ kind: "error", text: `Could not ignore ${label}` })
-            return
+    } else if (op.kind === "hanging") {
+        const r = op.ref
+        ignoredList.value = {
+            ...ignoredList.value,
+            hanging: ignoredList.value.hanging.filter((h) => h.path !== r.path),
         }
-        pushToast({ kind: "success", text: `Ignored ${label}` })
-    } catch (e) {
-        watched.value = snapshot.watched
-        hanging.value = snapshot.hanging
-        pending.value = snapshot.pending
-        ignoredList.value = snapshot.ignoredList
-        loadMaintenanceCount()
-        pushToast({ kind: "error", text: (e as Error).message })
+    } else {
+        const r = op.ref
+        const season = r.season ?? null
+        const episode = r.episode ?? null
+        ignoredList.value = {
+            ...ignoredList.value,
+            pending: ignoredList.value.pending.filter(
+                (p) =>
+                    !(
+                        p.sync_sub === r.sync_sub &&
+                        p.folder === r.folder &&
+                        p.season === season &&
+                        p.episode === episode
+                    )
+            ),
+        }
     }
 }
 
-async function unignoreItem(op: IgnoreOp, label: string): Promise<void> {
-    // Unignore needs a refetch because the entry has to reappear in its
-    // original source list, and we don't have all the fields (size, files)
-    // locally to reconstruct it.
-    try {
-        const r = await api.maintUnignore(op)
-        if (!r.ok) {
-            pushToast({ kind: "error", text: `Could not unignore ${label}` })
-            return
-        }
-        pushToast({ kind: "success", text: `Unignored ${label}` })
-        await load()
-    } catch (e) {
-        pushToast({ kind: "error", text: (e as Error).message })
+// Stash the entry being ignored so unignoreItem can restore it without a
+// refetch. Called from ignoreItem BEFORE the optimistic mutate runs (so the
+// entry is still in its source list and findable).
+function cacheIgnoredEntry(op: IgnoreOp): void {
+    const key = ignoreCacheKey(op)
+    if (op.kind === "watched") {
+        const r = op.ref
+        const entry = watched.value.find(
+            (w) => w.lib === r.lib && w.folder === r.folder
+        )
+        if (entry) ignoredEntryCache.set(key, { kind: "watched", entry })
+        return
     }
+    if (op.kind === "hanging") {
+        const r = op.ref
+        const entry = hanging.value.find((h) => h.path === r.path)
+        if (entry) ignoredEntryCache.set(key, { kind: "hanging", entry })
+        return
+    }
+    const r = op.ref
+    const group = pending.value.find(
+        (g) => g.sync_sub === r.sync_sub && g.folder === r.folder
+    )
+    if (!group) return
+    if (r.season === null || r.season === undefined) {
+        ignoredEntryCache.set(key, { kind: "pending-movie", group })
+    } else {
+        // Episode-level: cache the full original group so the episode shape
+        // (with its already_watched_in_plex / rating_key) can be reconstructed
+        // on unignore even if the group has since been drained.
+        ignoredEntryCache.set(key, { kind: "pending-episode", group })
+    }
+}
+
+// Inverse of cacheIgnoredEntry: re-insert a cached entry into its source list.
+// Returns true on a successful restore, false on miss OR when an internal
+// lookup fails (e.g. the cache has a pending-episode entry but the cached
+// group somehow lacks the matching season). The caller falls back to a
+// focused refetch on false.
+//
+// Intentionally does NOT delete the cache entry on success. The caller deletes
+// AFTER the server confirms the unignore so a rolled-back call leaves the
+// cache in a state where retrying still hits the fast path.
+function restoreIgnoredEntry(op: IgnoreOp): boolean {
+    const key = ignoreCacheKey(op)
+    const cached = ignoredEntryCache.get(key)
+    if (!cached) return false
+
+    if (cached.kind === "watched") {
+        watched.value = [...watched.value, cached.entry]
+    } else if (cached.kind === "hanging") {
+        hanging.value = [...hanging.value, cached.entry]
+    } else if (cached.kind === "pending-movie") {
+        pending.value = [...pending.value, cached.group]
+    } else {
+        // pending-episode: splice the specific cached episode back into the
+        // current pending.value. The group may still be present (other eps
+        // still pending) or fully drained.
+        const r = op.ref as IgnoredPendingRef
+        const cachedGroup = cached.group
+        const cachedSeason = (cachedGroup.seasons ?? []).find(
+            (s) => s.season === r.season
+        )
+        const cachedEpisode = cachedSeason?.episodes.find(
+            (e) => e.episode === r.episode
+        )
+        if (!cachedSeason || !cachedEpisode) return false
+
+        const existing = pending.value.find(
+            (g) =>
+                g.sync_sub === cachedGroup.sync_sub &&
+                g.folder === cachedGroup.folder
+        )
+        if (!existing) {
+            // Group fully drained; restore with just the cached episode.
+            pending.value = [
+                ...pending.value,
+                {
+                    ...cachedGroup,
+                    seasons: [
+                        {
+                            season: cachedSeason.season,
+                            episodes: [cachedEpisode],
+                        },
+                    ],
+                },
+            ]
+        } else {
+            const seasons = existing.seasons ?? []
+            const sIdx = seasons.findIndex((s) => s.season === r.season)
+            const updatedSeasons: PendingSeason[] =
+                sIdx === -1
+                    ? [
+                          ...seasons,
+                          {
+                              season: cachedSeason.season,
+                              episodes: [cachedEpisode],
+                          },
+                      ]
+                    : seasons.map((s, i) =>
+                          i === sIdx
+                              ? {
+                                    ...s,
+                                    episodes: [...s.episodes, cachedEpisode],
+                                }
+                              : s
+                      )
+            const updated: PendingGroup = {
+                ...existing,
+                seasons: updatedSeasons,
+            }
+            pending.value = pending.value.map((g) =>
+                g === existing ? updated : g
+            )
+        }
+    }
+    return true
+}
+
+// Refetch a single maintenance list. Cheaper than load() in two ways: only one
+// of the four endpoints fires, and loading.value stays false so the
+// maintenance pane does not collapse into "Scanning…". Used as the fallback
+// when an action's optimistic mutate can't fully reconstruct local state.
+//
+// Errors are swallowed: badge drift gets repaired by the trailing
+// loadMaintenanceCount() and the user can recover by switching tabs or
+// refreshing. A toast would over-surface a transient hiccup.
+function refetchSourceList(kind: IgnoreOp["kind"]): void {
+    const fetchAndApply: () => Promise<void> =
+        kind === "watched"
+            ? () =>
+                  api.maintWatched().then((r) => {
+                      watched.value = r.items
+                  })
+            : kind === "hanging"
+              ? () =>
+                    api.maintHanging().then((r) => {
+                        hanging.value = r.items
+                    })
+              : () =>
+                    api.maintPending().then((r) => {
+                        pending.value = r.items
+                    })
+    fetchAndApply().catch(() => {
+        /* swallow, see header comment */
+    })
+    loadMaintenanceCount()
+}
+
+// ── Action handlers ────────────────────────────────────────────────────────
+
+async function ignoreItem(op: IgnoreOp, label: string): Promise<void> {
+    // Stash the entry first so unignoreItem can restore it without a refetch.
+    cacheIgnoredEntry(op)
+
+    await optimisticUpdate({
+        snapshot: () => ({
+            watched: watched.value,
+            hanging: hanging.value,
+            pending: pending.value,
+            ignoredList: ignoredList.value,
+        }),
+        mutate: () => {
+            removePendingLocal(op)
+            if (op.kind === "watched") {
+                ignoredList.value = {
+                    ...ignoredList.value,
+                    watched: [...ignoredList.value.watched, op.ref],
+                }
+            } else if (op.kind === "hanging") {
+                ignoredList.value = {
+                    ...ignoredList.value,
+                    hanging: [...ignoredList.value.hanging, op.ref],
+                }
+            } else {
+                const r = op.ref
+                ignoredList.value = {
+                    ...ignoredList.value,
+                    pending: [
+                        ...ignoredList.value.pending,
+                        {
+                            sync_sub: r.sync_sub,
+                            folder: r.folder,
+                            season: r.season ?? null,
+                            episode: r.episode ?? null,
+                        },
+                    ],
+                }
+            }
+            bumpBadge(-1)
+        },
+        apiCall: () => api.maintIgnore(op),
+        rollback: (snap) => {
+            watched.value = snap.watched
+            hanging.value = snap.hanging
+            pending.value = snap.pending
+            ignoredList.value = snap.ignoredList
+        },
+        onResult: (r, rollback) => {
+            if (!r.ok) {
+                rollback()
+                pushToast({ kind: "error", text: `Could not ignore ${label}` })
+                return
+            }
+            pushToast({ kind: "success", text: `Ignored ${label}` })
+        },
+        onError: (e) => pushToast({ kind: "error", text: e.message }),
+    })
+}
+
+async function unignoreItem(op: IgnoreOp, label: string): Promise<void> {
+    // Compute whether the local cache can fully restore the entry BEFORE the
+    // mutate runs. Use the boolean result, not just cache.has(), because the
+    // pending-episode branch can fail an internal lookup even when the cache
+    // key is present (defensive: stale or partial cache). On false the
+    // onResult success branch falls back to a focused refetch.
+    let restored = false
+    const cacheKey = ignoreCacheKey(op)
+    await optimisticUpdate({
+        snapshot: () => ({
+            watched: watched.value,
+            hanging: hanging.value,
+            pending: pending.value,
+            ignoredList: ignoredList.value,
+        }),
+        mutate: () => {
+            restored = restoreIgnoredEntry(op)
+            if (restored) {
+                // Local restore bumped the source list; mirror that in the
+                // badge. On a non-restore the badge bump rides along with the
+                // refetch path's loadMaintenanceCount() below.
+                bumpBadge(+1)
+            }
+            removeFromIgnoredListLocal(op)
+        },
+        apiCall: () => api.maintUnignore(op),
+        rollback: (snap) => {
+            watched.value = snap.watched
+            hanging.value = snap.hanging
+            pending.value = snap.pending
+            ignoredList.value = snap.ignoredList
+        },
+        onResult: (r, rollback) => {
+            if (!r.ok) {
+                rollback()
+                pushToast({
+                    kind: "error",
+                    text: `Could not unignore ${label}`,
+                })
+                return
+            }
+            pushToast({ kind: "success", text: `Unignored ${label}` })
+            if (restored) {
+                // Server confirmed; drop the cache entry now (not in
+                // restoreIgnoredEntry) so a thrown-then-retried unignore keeps
+                // hitting the fast path.
+                ignoredEntryCache.delete(cacheKey)
+            } else {
+                // Cross-session unignore: re-fetch only the relevant source
+                // list so the entry reappears. Does NOT call load(); the
+                // maintenance pane stays mounted.
+                refetchSourceList(op.kind)
+            }
+        },
+        onError: (e) => pushToast({ kind: "error", text: e.message }),
+    })
 }
 
 onMounted(load)
@@ -301,24 +648,46 @@ async function resolveItems(
     }
     resolving.value = true
     try {
-        const res = await api.maintResolve(items, action)
-        if (res.error) {
-            pushToast({ kind: "error", text: res.error })
-        } else {
-            const anyFailed = res.results.some(
-                (r) =>
-                    r.status === "scrobble_failed" ||
-                    r.status === "no_rating_key"
-            )
-            pushToast({
-                kind: anyFailed ? "error" : "success",
-                text: `${verb}: ${summarizeResolve(res.results)}${summarizeCleanup(res.cleanup)}`,
-            })
-        }
-        await load()
-        await loadState(true)
-    } catch (e) {
-        pushToast({ kind: "error", text: (e as Error).message })
+        await optimisticUpdate<{ pending: PendingGroup[] }, ResolveResponse>({
+            snapshot: () => ({ pending: pending.value }),
+            mutate: () => {
+                removeResolvedItemsLocal(items)
+                bumpBadge(-items.length)
+            },
+            apiCall: () => api.maintResolve(items, action),
+            rollback: (snap) => {
+                pending.value = snap.pending
+            },
+            onResult: (res, rollback) => {
+                if (res.error) {
+                    rollback()
+                    pushToast({ kind: "error", text: res.error })
+                    return
+                }
+                const anyFailed = res.results.some(
+                    (r) =>
+                        r.status === "scrobble_failed" ||
+                        r.status === "no_rating_key"
+                )
+                pushToast({
+                    kind: anyFailed ? "error" : "success",
+                    text: `${verb}: ${summarizeResolve(res.results)}${summarizeCleanup(res.cleanup)}`,
+                })
+                if (anyFailed) {
+                    // Items the server failed to resolve are still pending
+                    // server-side; the optimistic mutate wrongly removed
+                    // them. Refetch just the pending list to bring them
+                    // back. Doesn't set loading.value, so the pane stays
+                    // mounted.
+                    refetchSourceList("pending")
+                }
+                // Refresh state in the background (for the library grid's
+                // synced/watched percentages); not awaited so the
+                // maintenance view stays snappy.
+                loadState(true)
+            },
+            onError: (e) => pushToast({ kind: "error", text: e.message }),
+        })
     } finally {
         resolving.value = false
     }
@@ -339,40 +708,52 @@ async function removePaths(paths: string[], label: string): Promise<void> {
         )
     )
         return
-    // Optimistic: drop the matching rows from local state immediately so the
-    // UI updates without waiting for the (cold) re-walk that follows the
-    // server-side cache invalidation. Snapshot for rollback.
     const pathSet = new Set(paths)
-    const snapshotW = watched.value
-    const snapshotH = hanging.value
-    watched.value = watched.value
-        .map((w) => ({ ...w, files: w.files.filter((p) => !pathSet.has(p)) }))
-        .filter((w) => w.files.length > 0)
-    hanging.value = hanging.value.filter((h) => !pathSet.has(h.path))
-    // Approximate badge decrement: number of titles+files dropped from view.
-    const dropped =
-        snapshotW.length -
-        watched.value.length +
-        (snapshotH.length - hanging.value.length)
-    if (typeof store.maintenanceCount === "number" && dropped > 0) {
-        store.maintenanceCount = Math.max(0, store.maintenanceCount - dropped)
-    }
     removing.value = true
     try {
-        const r = await api.maintRemove(paths)
-        pushToast({
-            kind: "success",
-            text: `Removed ${r.removed} files (${humanSize(r.bytes_freed)})${summarizeCleanup(r.cleanup)}`,
+        await optimisticUpdate({
+            snapshot: () => ({
+                watched: watched.value,
+                hanging: hanging.value,
+            }),
+            mutate: () => {
+                const snapW = watched.value
+                const snapH = hanging.value
+                watched.value = watched.value
+                    .map((w) => ({
+                        ...w,
+                        files: w.files.filter((p) => !pathSet.has(p)),
+                    }))
+                    .filter((w) => w.files.length > 0)
+                hanging.value = hanging.value.filter(
+                    (h) => !pathSet.has(h.path)
+                )
+                // Approximate badge decrement: number of titles+files dropped
+                // from view. Server-authoritative refresh happens on rollback
+                // (loadMaintenanceCount) and on the loadState(true) below.
+                const dropped =
+                    snapW.length -
+                    watched.value.length +
+                    (snapH.length - hanging.value.length)
+                if (dropped > 0) bumpBadge(-dropped)
+            },
+            apiCall: () => api.maintRemove(paths),
+            rollback: (snap) => {
+                watched.value = snap.watched
+                hanging.value = snap.hanging
+            },
+            onResult: (r) => {
+                pushToast({
+                    kind: "success",
+                    text: `Removed ${r.removed} files (${humanSize(r.bytes_freed)})${summarizeCleanup(r.cleanup)}`,
+                })
+                // Refresh state in the background (for the library grid's
+                // synced/watched percentages); not awaited so the
+                // maintenance view stays snappy.
+                loadState(true)
+            },
+            onError: (e) => pushToast({ kind: "error", text: e.message }),
         })
-        // Refresh state in the background (for the library grid's synced/watched
-        // percentages); not awaited so the maintenance view stays snappy.
-        loadState(true)
-    } catch (e) {
-        // Rollback the optimistic state and surface the error.
-        watched.value = snapshotW
-        hanging.value = snapshotH
-        loadMaintenanceCount()
-        pushToast({ kind: "error", text: (e as Error).message })
     } finally {
         removing.value = false
     }
