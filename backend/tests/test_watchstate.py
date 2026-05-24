@@ -350,3 +350,67 @@ def test_invalidate_cache_clears_aggregate_caches(patch_watchstate):
 
     assert all_show_aggregates.cache_info().currsize == 0
     assert all_movie_watched.cache_info().currsize == 0
+
+
+# ── Parallel section_index fetch ─────────────────────────────────────────────
+
+
+class TestFetchIndicesParallel:
+    """The threadpool wrapper around section_index. The aggregate functions
+    rely on the order of returned indices matching the order of input section
+    ids (zip with strict=True in coverage_counts), so the contract under test
+    is "order preserved + concurrent execution."
+    """
+
+    def test_empty_list_returns_empty(self):
+        from synclet.watchstate import _fetch_indices_parallel
+
+        assert _fetch_indices_parallel([]) == []
+
+    def test_preserves_input_order(self, monkeypatch):
+        """coverage_counts zips libraries with these indices via strict=True;
+        misordering would surface there as a wrong-library badge."""
+        from synclet import watchstate as ws_mod
+
+        # Capture the section_index calls and return distinguishable results.
+        def _fake_section_index(sec):
+            return {f"section-{sec}-title": {"tag": "Directory"}}
+
+        monkeypatch.setattr("synclet.plex.section_index", _fake_section_index)
+        out = ws_mod._fetch_indices_parallel([12, 2, 7, 6, 1])
+        # Each result's only key encodes its section id; verify order matches
+        # input order, not some thread-completion-order shuffle.
+        keys = [next(iter(d.keys())) for d in out]
+        assert keys == [
+            "section-12-title",
+            "section-2-title",
+            "section-7-title",
+            "section-6-title",
+            "section-1-title",
+        ]
+
+    def test_runs_concurrently_not_serially(self, monkeypatch):
+        """The whole reason this helper exists. Each fake section sleeps;
+        a serial fetch of N sections would take N * sleep_time, parallel
+        should be ~sleep_time."""
+        import time
+
+        from synclet import watchstate as ws_mod
+
+        sleep_s = 0.15
+
+        def _slow_section_index(sec):
+            time.sleep(sleep_s)
+            return {f"sec-{sec}": {}}
+
+        monkeypatch.setattr("synclet.plex.section_index", _slow_section_index)
+        start = time.monotonic()
+        ws_mod._fetch_indices_parallel([1, 2, 3, 4, 5])
+        elapsed = time.monotonic() - start
+        # 5 calls serial would be 5*sleep_s = 0.75s. Concurrent should be ~sleep_s
+        # plus pool overhead. 2.5x sleep_s is a generous ceiling that catches
+        # accidental re-serialization without false-positiving on CI jitter.
+        assert elapsed < 2.5 * sleep_s, (
+            f"_fetch_indices_parallel took {elapsed:.3f}s, "
+            f"suggests serial execution (5*{sleep_s}={5 * sleep_s:.3f}s expected serial)"
+        )

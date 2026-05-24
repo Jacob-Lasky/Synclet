@@ -154,6 +154,15 @@ def patch_paths(
     thumb_cache = media_tree["tmp"] / ".thumb-cache"
     monkeypatch.setattr("synclet.config.THUMB_CACHE", thumb_cache)
     monkeypatch.setattr("synclet.plex.THUMB_CACHE", thumb_cache)
+    # Disk cache for section_index. Default lives under /app/data inside the
+    # container; point at tmp so the test suite never reads or writes the
+    # production-default path. Existing tests stub _get_xml, so the write
+    # branch wasn't hit before — this patch is defensive for future tests
+    # that exercise the full section_index path.
+    monkeypatch.setattr(
+        "synclet.plex.PLEX_CACHE_FILE",
+        media_tree["tmp"] / ".plex-section-cache.json",
+    )
     # Snapshot file for the pending module. Default lives under /app/data
     # which only exists inside the backend container; point at tmp so sync_ops
     # tests that mutate the snapshot don't try to write into that path.

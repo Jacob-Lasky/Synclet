@@ -711,3 +711,104 @@ class TestShortLabelHelper:
 
         # All whitespace gets filtered to an empty word list -> "??"
         assert _short_label("blank", "   ") == "??"
+
+
+class TestWarmPlexCaches:
+    """The on_startup hook that primes section_index for every Plex-backed
+    library in parallel. Critical that:
+      - every library's section is touched (else cold first-paint stays slow),
+      - a thrown section_index doesn't abort startup (else a broken Plex auth
+        token bricks the whole app),
+      - the calls actually overlap (else this just shifts cost from request-
+        time to startup-time without buying anything).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_caches(self):
+        from synclet.plex import section_index
+
+        section_index.cache_clear()
+        yield
+        section_index.cache_clear()
+
+    @pytest.mark.asyncio
+    async def test_calls_section_index_for_every_library(self, monkeypatch):
+        from synclet.config import LIBRARIES
+
+        called: list[int] = []
+
+        def _track(sec):
+            called.append(sec)
+            return {}
+
+        monkeypatch.setattr("synclet.plex.section_index", _track)
+        # The hook imports section_index from synclet.plex inside main.py at
+        # module load, so the monkeypatch on synclet.plex.section_index has
+        # to be mirrored on the main-module ref too.
+        monkeypatch.setattr("main.section_index", _track)
+
+        from main import warm_plex_caches
+
+        await warm_plex_caches()
+
+        # Every Plex-backed library got a section_index call exactly once.
+        expected = sorted(info["plex_section"] for info in LIBRARIES.values())
+        assert sorted(called) == expected
+
+    @pytest.mark.asyncio
+    async def test_one_failing_section_does_not_abort_startup(self, monkeypatch):
+        """return_exceptions=True is the contract: a section that raises is
+        logged but does NOT propagate, so app boot is decoupled from Plex
+        availability."""
+        from synclet.config import LIBRARIES
+
+        survivors: list[int] = []
+
+        def _flaky(sec):
+            if sec == next(iter(LIBRARIES.values()))["plex_section"]:
+                raise RuntimeError("plex auth blew up")
+            survivors.append(sec)
+            return {}
+
+        monkeypatch.setattr("synclet.plex.section_index", _flaky)
+        monkeypatch.setattr("main.section_index", _flaky)
+
+        from main import warm_plex_caches
+
+        # Should NOT raise.
+        await warm_plex_caches()
+        # The other sections still ran.
+        assert len(survivors) == len(LIBRARIES) - 1
+
+    @pytest.mark.asyncio
+    async def test_runs_concurrently(self, monkeypatch):
+        """asyncio.gather + asyncio.to_thread is the load-bearing concurrency.
+        Slow synchronous section_index calls overlap in the default executor
+        so total wall-time is roughly one round-trip, not N of them."""
+        import asyncio
+        import time
+
+        from synclet.config import LIBRARIES
+
+        sleep_s = 0.15
+
+        def _slow(_sec):
+            time.sleep(sleep_s)
+            return {}
+
+        monkeypatch.setattr("synclet.plex.section_index", _slow)
+        monkeypatch.setattr("main.section_index", _slow)
+
+        from main import warm_plex_caches
+
+        start = asyncio.get_running_loop().time()
+        await warm_plex_caches()
+        elapsed = asyncio.get_running_loop().time() - start
+
+        # N=len(LIBRARIES) sections serial would be N*sleep_s. Parallel: ~sleep_s.
+        n = len(LIBRARIES)
+        ceiling = 2.5 * sleep_s
+        assert elapsed < ceiling, (
+            f"warm_plex_caches took {elapsed:.3f}s for {n} sections "
+            f"(serial would be {n * sleep_s:.3f}s, parallel ceiling {ceiling:.3f}s)"
+        )

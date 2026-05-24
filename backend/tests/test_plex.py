@@ -479,3 +479,198 @@ class TestGetMetadata:
             plex.urllib.request, "urlopen", fake_urlopen(_METADATA_EMPTY_XML)
         )
         assert plex.get_metadata("doesnt-exist") is None
+
+
+# ── Disk-cache layer for section_index ───────────────────────────────────────
+
+
+class TestSectionIndexDiskCache:
+    """The disk-cache wrapper around section_index is the load-bearing piece
+    of the cold-load fix: after a container restart, the next /api/state hit
+    has to read the section index from /data/.plex-section-cache.json instead
+    of paying the full Plex round-trip. These tests pin the contract.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_disk_cache(self, monkeypatch, tmp_path):
+        # Point the disk cache at a tmp file per-test so suites can't cross-
+        # contaminate. Also clear the in-process lru_cache so the disk layer
+        # is what's being exercised, not stale in-memory state from an earlier
+        # test in the same module.
+        monkeypatch.setattr(plex, "PLEX_CACHE_FILE", tmp_path / "plex-cache.json")
+        plex.section_index.cache_clear()
+        yield
+
+    def test_disk_hit_bypasses_plex(self, monkeypatch):
+        """Fresh disk cache → section_index returns the disk data WITHOUT
+        hitting the network. Critical for the cold-restart speedup."""
+        import json
+        import time
+
+        plex.PLEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with plex.PLEX_CACHE_FILE.open("w") as f:
+            json.dump(
+                {
+                    "ts": time.time(),
+                    "sections": {
+                        "2": {
+                            "from-disk": {
+                                "ratingKey": "999",
+                                "tag": "Directory",
+                                "leaf_count": 3,
+                                "viewed_leaf_count": 2,
+                                "view_count": 0,
+                            }
+                        }
+                    },
+                },
+                f,
+            )
+
+        # If section_index reached urllib, this would explode the test.
+        monkeypatch.setattr("synclet.plex.urllib.request.urlopen", boom_urlopen())
+
+        idx = plex.section_index(2)
+        assert "from-disk" in idx
+        assert idx["from-disk"]["ratingKey"] == "999"
+
+    def test_stale_disk_cache_triggers_refetch(self, monkeypatch):
+        """Disk file older than PLEX_CACHE_TTL_S is treated as a miss."""
+        import json
+
+        plex.PLEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with plex.PLEX_CACHE_FILE.open("w") as f:
+            # ts well outside the 1h default TTL.
+            json.dump({"ts": 0, "sections": {"2": {"stale": {}}}}, f)
+
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_TV_SECTION_XML),
+        )
+        idx = plex.section_index(2)
+        # Refetch happened: BCS is from the XML, "stale" is dropped.
+        assert "better call saul" in idx
+        assert "stale" not in idx
+
+    def test_corrupt_disk_cache_falls_through_to_plex(self, monkeypatch):
+        """Garbled JSON on disk must not block startup — _load_disk_cache
+        returns None and the network fetch repopulates."""
+        plex.PLEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        plex.PLEX_CACHE_FILE.write_text("{not json at all")
+
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_TV_SECTION_XML),
+        )
+        idx = plex.section_index(2)
+        assert "better call saul" in idx
+
+    def test_missing_disk_cache_falls_through_to_plex(self, monkeypatch):
+        """First-ever cold start has no file. Must not raise."""
+        assert not plex.PLEX_CACHE_FILE.exists()
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_TV_SECTION_XML),
+        )
+        idx = plex.section_index(2)
+        assert "better call saul" in idx
+
+    def test_plex_fetch_writes_to_disk(self, monkeypatch):
+        """A successful Plex round-trip persists to disk so the NEXT restart
+        skips the network."""
+        import json
+
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_TV_SECTION_XML),
+        )
+        plex.section_index(2)
+
+        assert plex.PLEX_CACHE_FILE.exists()
+        with plex.PLEX_CACHE_FILE.open() as f:
+            raw = json.load(f)
+        assert "2" in raw["sections"]
+        assert "better call saul" in raw["sections"]["2"]
+
+    def test_multiple_sections_merge_on_disk(self, monkeypatch):
+        """Two section_index calls for different ids share one disk file;
+        neither overwrites the other."""
+        import json
+
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_TV_SECTION_XML),
+        )
+        plex.section_index(2)
+        plex.section_index(12)  # different id; same XML for the fixture
+
+        with plex.PLEX_CACHE_FILE.open() as f:
+            raw = json.load(f)
+        assert set(raw["sections"].keys()) == {"2", "12"}
+
+    def test_empty_plex_result_skips_disk_write(self, monkeypatch):
+        """If Plex returns no data (broken section, auth failure), don't
+        persist an empty dict — that would block legitimate refetch retries
+        until TTL expiry."""
+        monkeypatch.setattr("synclet.plex.urllib.request.urlopen", boom_urlopen())
+        idx = plex.section_index(99)
+        assert idx == {}
+        assert not plex.PLEX_CACHE_FILE.exists()
+
+    def test_invalidate_watch_caches_removes_disk_file(self, monkeypatch):
+        """Scrobble invalidates lru_cache; the disk file must follow so a
+        container restart inside the TTL window doesn't resurrect the pre-
+        scrobble view counts."""
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_TV_SECTION_XML),
+        )
+        plex.section_index(2)
+        assert plex.PLEX_CACHE_FILE.exists()
+
+        plex.invalidate_watch_caches()
+        assert not plex.PLEX_CACHE_FILE.exists()
+        assert plex.section_index.cache_info().currsize == 0
+
+    def test_invalidate_when_disk_file_already_gone_is_noop(self):
+        """Don't raise FileNotFoundError when called before any cache exists."""
+        assert not plex.PLEX_CACHE_FILE.exists()
+        plex.invalidate_watch_caches()  # must not raise
+
+    def test_atomic_write_uses_tmp_then_rename(self, monkeypatch):
+        """A crash partway through the write must not leave a partial JSON
+        file. _save_disk_cache_entry writes to a .tmp suffix then renames."""
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_TV_SECTION_XML),
+        )
+        plex.section_index(2)
+        # No leftover .tmp after success.
+        tmp = plex.PLEX_CACHE_FILE.with_suffix(plex.PLEX_CACHE_FILE.suffix + ".tmp")
+        assert not tmp.exists()
+        assert plex.PLEX_CACHE_FILE.exists()
+
+    def test_parallel_writes_do_not_lose_sections(self):
+        """Two threads calling _save_disk_cache_entry concurrently for
+        different sections must both end up on disk. Without _DISK_CACHE_LOCK,
+        the read-modify-write race would cause the later writer's "merge" to
+        start from a pre-other-thread view of the file and drop the earlier
+        section."""
+        import concurrent.futures
+        import json
+
+        # Spawn many writers across many sections so the race window is wide.
+        section_ids = list(range(20))
+        payloads = {sec: {f"title-{sec}": {"sec": sec}} for sec in section_ids}
+
+        def _write(sec: int) -> None:
+            plex._save_disk_cache_entry(sec, payloads[sec])
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            # list() forces all to complete and surfaces any exception.
+            list(ex.map(_write, section_ids))
+
+        with plex.PLEX_CACHE_FILE.open() as f:
+            on_disk = json.load(f)
+        # Every section written got persisted; no losers.
+        assert set(on_disk["sections"].keys()) == {str(s) for s in section_ids}

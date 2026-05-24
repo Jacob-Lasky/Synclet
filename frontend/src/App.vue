@@ -24,13 +24,24 @@ import {
 
 const showPaste = ref(false)
 
-onMounted(() => {
-    loadState().catch((e) => {
+onMounted(async () => {
+    // Critical-path: the library grid is gated on store.loaded. Awaiting
+    // /api/state alone first means it doesn't compete with the three
+    // badge/banner endpoints for the backend's Plex section_index lru_cache
+    // and the GIL; cold load drops from ~22s (four-way race) to roughly the
+    // isolated /api/state cost (~1s with backend warm + parallel section
+    // fetch).
+    try {
+        await loadState()
+    } catch (e) {
         pushToast({
             kind: "error",
             text: `Failed to load state: ${(e as Error).message}`,
         })
-    })
+    }
+    // Badges and the WatchState coverage banner. None of these gate the grid,
+    // so they fire-and-forget AFTER the grid has rendered; user-visible delay
+    // ends at /api/state.
     loadMaintenanceCount()
     loadWatchlistCount()
     loadCoverage()
