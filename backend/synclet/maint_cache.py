@@ -36,13 +36,19 @@ def get_cached(key: str, build: Callable[[], Any]) -> Any:
     The `build` callable runs synchronously and replaces the cache entry
     on every recompute. Errors propagate so callers see them on the API
     boundary instead of silently caching empty data.
+
+    Entries are stamped with the BUILD-END time, not the build-start
+    time. For fast builds the difference is noise; for the long-running
+    builds that motivated this cache (synced ~25s, watchlist ~8s on
+    Jake's library) the start-time stamp was burning 80%+ of the TTL
+    window before the cache could even be hit — defeating the startup-
+    warm prefetch in main.warm_plex_caches.
     """
-    now = time.time()
     entry = _cache.get(key)
-    if entry is not None and now - entry[0] < STATE_CACHE_TTL:
+    if entry is not None and time.time() - entry[0] < STATE_CACHE_TTL:
         return entry[1]
     value = build()
-    _cache[key] = (now, value)
+    _cache[key] = (time.time(), value)
     return value
 
 
