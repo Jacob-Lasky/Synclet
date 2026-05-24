@@ -6,6 +6,7 @@ read like a contract: every endpoint the frontend touches is listed here.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from pydantic import BaseModel
 
 from common.log_utils import get_logger
 from synclet import config, ignored, pending, sync_ops, syncthing
-from synclet.plex import fetch_art_bytes, fetch_thumb_bytes
+from synclet.plex import fetch_art_bytes, fetch_thumb_bytes, section_index
 from synclet.resolve import resolve_url
 from synclet.scan import scan_title_detail, title_detail_to_dict
 from synclet.state import disk_usage, get_state, invalidate
@@ -554,7 +555,41 @@ def build_route_handlers(static_dir: Path | None = None) -> list:
     return handlers
 
 
+async def warm_plex_caches() -> None:
+    """Prime synclet.plex.section_index for every Plex-backed library on boot.
+
+    Cold first-paint blocks on five serial section_index calls inside
+    all_show_aggregates / all_movie_watched. Firing them in parallel here at
+    startup (asyncio.to_thread keeps the sync urlopen client off the event
+    loop) trims first-paint by several seconds — the first user request then
+    hits a fully warm in-process lru_cache.
+
+    return_exceptions=True so a single broken section (Plex offline at boot,
+    rotated token, network blip) doesn't block app startup — the failing
+    section just re-tries on first user demand. Errors are logged but not
+    re-raised; container health depends on the API being reachable, not on
+    Plex being live.
+    """
+    sections = [info["plex_section"] for info in config.LIBRARIES.values()]
+    if not sections:
+        return
+    results = await asyncio.gather(
+        *(asyncio.to_thread(section_index, sec) for sec in sections),
+        return_exceptions=True,
+    )
+    ok = sum(1 for r in results if not isinstance(r, BaseException))
+    failed = [
+        (sec, r)
+        for sec, r in zip(sections, results, strict=True)
+        if isinstance(r, BaseException)
+    ]
+    logger.info("Plex section cache warmed: %d/%d sections", ok, len(sections))
+    for sec, exc in failed:
+        logger.warning("warm_plex_caches: section %d failed: %r", sec, exc)
+
+
 app = Litestar(
     route_handlers=build_route_handlers(config.STATIC_DIR),
     cors_config=cors_config,
+    on_startup=[warm_plex_caches],
 )

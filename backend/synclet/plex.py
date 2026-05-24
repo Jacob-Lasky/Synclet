@@ -2,12 +2,25 @@
 
 Designed for batch listing per section (one HTTP call per library) since the
 section dump contains every title's poster key, ratingKey, year, and summary
-in a single response. We cache the {folder_name: metadata} map for the
-process lifetime , it's a few hundred KB and Plex updates rarely.
+in a single response. We cache the {folder_name: metadata} map across three
+layers: in-process lru_cache (hottest), a disk JSON file under
+SYNCLET_PLEX_CACHE_FILE (survives container restarts, 1h TTL by default),
+and finally a fresh Plex round-trip on full miss.
+
+The disk layer matters because the section_index calls dominate cold-load:
+five libraries fan out to five serialized Plex HTTP calls inside
+all_show_aggregates / all_movie_watched. With the disk cache, only the
+first container in the past hour pays that cost; subsequent restarts read
+the index in milliseconds.
 """
 
 from __future__ import annotations
 
+import contextlib
+import json
+import os
+import threading
+import time
 import urllib.parse
 import urllib.request
 
@@ -18,8 +31,29 @@ import urllib.request
 # are silenced per-import with this audit trail.
 import xml.etree.ElementTree as ET  # noqa: S405
 from functools import lru_cache
+from pathlib import Path
 
 from synclet.config import LIBRARIES, PLEX_TOKEN, PLEX_URL, THUMB_CACHE
+
+# Disk-cache layer for section_index. Path is configurable for tests; default
+# lives alongside snapshot.json / thumb cache under the persistent /app/data
+# mount. TTL is intentionally short relative to "Plex never changes" because
+# scrobbles invalidate the disk file as well as lru_cache (see
+# invalidate_watch_caches below) — TTL is just the upper bound for staleness
+# in the absence of mutation signals.
+PLEX_CACHE_FILE = Path(
+    os.environ.get("SYNCLET_PLEX_CACHE_FILE", "/app/data/.plex-section-cache.json")
+)
+PLEX_CACHE_TTL_S = int(os.environ.get("SYNCLET_PLEX_CACHE_TTL", "3600"))
+
+# Serialize disk-cache writes. The startup-warm and watchstate paths now fan
+# out section_index calls in parallel; without a lock, two threads can race
+# inside _save_disk_cache_entry's read-modify-write (load JSON, merge their
+# section, write back), and the later writer's "merge" would start from a
+# pre-other-thread view and silently drop the earlier section. Per-section
+# files would also work but cost a directory + N small files for one rare
+# write path — a process-local Lock is the smaller diff.
+_DISK_CACHE_LOCK = threading.Lock()
 
 
 def _plex_url(path: str, params: dict | None = None) -> str:
@@ -51,18 +85,82 @@ def _parse_int(value: str | None, default: int = 0) -> int:
         return default
 
 
-@lru_cache(maxsize=8)
-def section_index(section_id: int) -> dict[str, dict]:
-    """Return {watchstate_key: {ratingKey, thumb, art, year, ...}} for a section.
+def _load_disk_cache() -> dict[int, dict[str, dict]] | None:
+    """Return {section_id: section_index_dict} from disk if fresh, else None.
 
-    Plex's /library/sections/{id}/all does NOT include Location on Directory
-    (show) entries, so we can't join by folder path. Instead we join by the
-    same key WatchState uses: title with year/tvdb cruft stripped, lowercased.
+    Returns None on any IO error, decode error, or stale TTL — callers treat
+    that as a full miss and refetch from Plex. The disk cache is best-effort:
+    if it's corrupt for any reason, we don't surface the error, we just bypass
+    it and let the network fetch repopulate.
+    """
+    try:
+        with PLEX_CACHE_FILE.open("r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except OSError, json.JSONDecodeError, ValueError:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    ts = raw.get("ts")
+    if not isinstance(ts, (int, float)) or time.time() - ts > PLEX_CACHE_TTL_S:
+        return None
+    sections = raw.get("sections")
+    if not isinstance(sections, dict):
+        return None
+    out: dict[int, dict[str, dict]] = {}
+    for k, v in sections.items():
+        try:
+            section_id = int(k)
+        except TypeError, ValueError:
+            continue
+        if isinstance(v, dict):
+            out[section_id] = v
+    return out
 
-    view_count / viewed_leaf_count / leaf_count are Plex's authoritative watch
-    counters. They underpin the watchstate fallback for Plex sections that the
-    user's WatchState daemon does not index (notably section 6 / YouTube and
-    under-tracked 4K sections); see synclet.watchstate.
+
+def _save_disk_cache_entry(section_id: int, idx: dict[str, dict]) -> None:
+    """Persist a single section's index, merging with whatever else is on disk.
+
+    Atomic via tmp + rename so a crash partway through doesn't leave a half-
+    written JSON the next reader chokes on. _DISK_CACHE_LOCK serializes the
+    read-modify-write so parallel section_index callers (the threadpool in
+    watchstate._fetch_indices_parallel) don't lose each other's updates.
+
+    Best-effort: a swallowed OSError means the next request will refetch from
+    Plex, no correctness impact.
+    """
+    with _DISK_CACHE_LOCK:
+        try:
+            existing: dict = {}
+            if PLEX_CACHE_FILE.exists():
+                try:
+                    with PLEX_CACHE_FILE.open("r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        existing = loaded
+                except OSError, json.JSONDecodeError, ValueError:
+                    existing = {}
+            sections_raw = existing.get("sections")
+            sections: dict[str, dict] = (
+                dict(sections_raw) if isinstance(sections_raw, dict) else {}
+            )
+            sections[str(section_id)] = idx
+            payload = {"sections": sections, "ts": time.time()}
+            PLEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = PLEX_CACHE_FILE.with_suffix(PLEX_CACHE_FILE.suffix + ".tmp")
+            with tmp.open("w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            tmp.replace(PLEX_CACHE_FILE)
+        except OSError:
+            # Disk cache is best-effort. The in-memory lru_cache and the next
+            # Plex round-trip keep the system correct without it.
+            return
+
+
+def _fetch_section_index_from_plex(section_id: int) -> dict[str, dict]:
+    """Pure Plex round-trip + parse, no caching. Split out for testability.
+
+    The disk-cache and lru_cache wrappers around this live in section_index
+    below. Tests that want to assert "the network was hit" monkeypatch this.
     """
     from synclet.scan import watchstate_key  # local to avoid cycle
 
@@ -90,6 +188,33 @@ def section_index(section_id: int) -> dict[str, dict]:
             "leaf_count": _parse_int(item.get("leafCount"), 0),
         }
     return out
+
+
+@lru_cache(maxsize=8)
+def section_index(section_id: int) -> dict[str, dict]:
+    """Return {watchstate_key: {ratingKey, thumb, art, year, ...}} for a section.
+
+    Plex's /library/sections/{id}/all does NOT include Location on Directory
+    (show) entries, so we can't join by folder path. Instead we join by the
+    same key WatchState uses: title with year/tvdb cruft stripped, lowercased.
+
+    view_count / viewed_leaf_count / leaf_count are Plex's authoritative watch
+    counters. They underpin the watchstate fallback for Plex sections that the
+    user's WatchState daemon does not index (notably section 6 / YouTube and
+    under-tracked 4K sections); see synclet.watchstate.
+
+    Three-layer cache:
+      1. @lru_cache (this decorator) — in-process, lifetime of the worker.
+      2. PLEX_CACHE_FILE — disk JSON, survives container restart, 1h TTL.
+      3. Plex network — only on full miss.
+    """
+    disk = _load_disk_cache()
+    if disk is not None and section_id in disk:
+        return disk[section_id]
+    idx = _fetch_section_index_from_plex(section_id)
+    if idx:
+        _save_disk_cache_entry(section_id, idx)
+    return idx
 
 
 def find_in_library(lib: str, folder: str) -> dict | None:
@@ -213,16 +338,22 @@ def episode_watch_map(show_rating_key: str) -> dict[tuple[int, int], bool]:
 
 
 def invalidate_watch_caches() -> None:
-    """Bust every cached Plex-side watch-state read.
+    """Bust every cached Plex-side watch-state read, in-memory AND on disk.
 
     Call after a successful scrobble. Without this, the section_index dict and
     episode_watch_map still hold the pre-scrobble view counts and a follow-up
     read (e.g. after the frontend's session-only scrobbledOverlay clears) would
     appear to revert. section_index is also cleared because it stores the
     show-level view_count / viewed_leaf_count / leaf_count counters.
+
+    The disk cache file is unlinked alongside the lru_cache so the post-
+    scrobble state isn't resurrected by a container restart inside the TTL
+    window — the two layers share invalidation authority.
     """
     section_index.cache_clear()
     episode_watch_map.cache_clear()
+    with contextlib.suppress(FileNotFoundError, OSError):
+        PLEX_CACHE_FILE.unlink()
 
 
 def scrobble(rating_key: str, timeout: int = 8) -> bool:

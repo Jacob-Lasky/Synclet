@@ -22,6 +22,7 @@ despite the "immutable" promise.
 
 from __future__ import annotations
 
+import concurrent.futures
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -153,6 +154,33 @@ def _plex_movie_state(lib: str, folder: str) -> bool | None:
     return meta.get("view_count", 0) > 0
 
 
+# ── Parallel section_index fetch ─────────────────────────────────────────────
+
+
+def _fetch_indices_parallel(section_ids: list[int]) -> list[dict[str, dict]]:
+    """Call synclet.plex.section_index for each id concurrently, preserving order.
+
+    section_index is sync (it wraps urllib.request.urlopen). Running the
+    per-library fetches serially turned /api/state cold-load into N * single-
+    section-RTT. A ThreadPoolExecutor lets the network round-trips overlap
+    without pulling the whole call chain into asyncio.
+
+    The lru_cache on section_index dedupes per-id calls within a single worker
+    process; this helper just parallelizes the first-cold fills.
+    """
+    from synclet.plex import section_index
+
+    if not section_ids:
+        return []
+    # max_workers caps at the number of unique sections — 5 in production —
+    # so we don't spin up a wide pool for a tiny job. ex.map preserves input
+    # order so callers can zip against their source iterable.
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=max(1, len(section_ids))
+    ) as ex:
+        return list(ex.map(section_index, section_ids))
+
+
 # ── Bulk reads for the grid (WatchState + Plex merged) ──────────────────────
 
 
@@ -207,17 +235,17 @@ def all_show_aggregates() -> dict[str, ShowAggregate]:
     Plex, that strategy under-reports total to 2 and breaks the grid badge.
     MAX honors both sides without losing data from either.
     """
-    from synclet.plex import section_index
-
     out: dict[str, ShowAggregate] = {}
     for ws_key, ep_map in _ws_all_shows().items():
         watched = sum(1 for v in ep_map.values() if v)
         out[ws_key] = ShowAggregate(watched=watched, total=len(ep_map))
 
-    for info in LIBRARIES.values():
-        if info["kind"] not in ("show", "youtube"):
-            continue
-        idx = section_index(info["plex_section"])
+    show_sections = [
+        info["plex_section"]
+        for info in LIBRARIES.values()
+        if info["kind"] in ("show", "youtube")
+    ]
+    for idx in _fetch_indices_parallel(show_sections):
         for plex_key, item in idx.items():
             if item.get("tag") != "Directory":
                 continue
@@ -248,13 +276,11 @@ def all_movie_watched() -> dict[str, bool]:
     signal. Used by the grid to render movie watched% badges; per-title reads
     go through `movie_watch_state(..., lib=, folder=)`.
     """
-    from synclet.plex import section_index
-
     out: dict[str, bool] = dict(_ws_all_movies())
-    for info in LIBRARIES.values():
-        if info["kind"] != "movie":
-            continue
-        idx = section_index(info["plex_section"])
+    movie_sections = [
+        info["plex_section"] for info in LIBRARIES.values() if info["kind"] == "movie"
+    ]
+    for idx in _fetch_indices_parallel(movie_sections):
         for plex_key, item in idx.items():
             if item.get("tag") != "Video":
                 continue
@@ -293,8 +319,6 @@ def coverage_counts() -> dict[str, CoverageStat]:
     that misses the partial-coverage case (e.g. Jellyfin rows leaking into a
     section the Plex daemon never indexed).
     """
-    from synclet.plex import section_index
-
     c = _conn()
     ws_title_counts: dict[str, int] = {}
     if c is not None:
@@ -308,9 +332,12 @@ def coverage_counts() -> dict[str, CoverageStat]:
         finally:
             c.close()
 
+    lib_items = list(LIBRARIES.items())
+    section_ids = [info["plex_section"] for _, info in lib_items]
+    indices = _fetch_indices_parallel(section_ids)
+
     out: dict[str, CoverageStat] = {}
-    for lib_id, info in LIBRARIES.items():
-        idx = section_index(info["plex_section"])
+    for (lib_id, info), idx in zip(lib_items, indices, strict=True):
         observed = sum(ws_title_counts.get(key, 0) for key in idx)
         if info["kind"] in ("show", "youtube"):
             expected = sum(item.get("leaf_count", 0) for item in idx.values())
