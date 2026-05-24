@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from unittest.mock import patch
 
+import pytest
+
 from synclet import watchlist
 from tests._http_mocks import boom_urlopen, fake_urlopen
 
@@ -139,6 +141,18 @@ class TestFetchRss:
 
 
 class TestGetWatchlist:
+    @pytest.fixture(autouse=True)
+    def _bust_watchlist_cache(self):
+        # get_watchlist() is now backed by maint_cache, which persists across
+        # tests in-process. Without this autouse bust, the second test in
+        # the class gets the first test's cached payload instead of building
+        # against its own mock state.
+        from synclet import maint_cache
+
+        maint_cache.invalidate()
+        yield
+        maint_cache.invalidate()
+
     def test_propagates_fetch_error(self):
         # If fetch_rss returned an error sentinel, get_watchlist should pass
         # it through without trying to join against state.

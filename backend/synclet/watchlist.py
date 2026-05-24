@@ -3,6 +3,13 @@
 The CLI does a fuzzy match against folder names. We do the same here, but
 return both matched and unmatched items so the UI can show the user what's
 available vs not.
+
+Result is TTL-cached via maint_cache because:
+  - RSS fetch is a single external HTTPS call (~1-2s, variable),
+  - the fuzzy-match loop is O(watchlist_items * library_titles), which
+    is ~50 * ~4000 = 200k score calls on Jake's library, observed at
+    6-8s on warm hits even after the RSS round-trip,
+  - the watchlist doesn't change between user clicks of the same tab.
 """
 
 from __future__ import annotations
@@ -14,9 +21,12 @@ import urllib.request
 # env config (WATCHLIST_RSS); same scope.
 import xml.etree.ElementTree as ET  # noqa: S405
 
+from synclet import maint_cache
 from synclet.config import WATCHLIST_RSS
 from synclet.fuzzy import fuzzy_score
 from synclet.state import get_state
+
+_CACHE_KEY = "watchlist"
 
 
 def fetch_rss() -> list[dict]:
@@ -37,7 +47,8 @@ def fetch_rss() -> list[dict]:
     return items
 
 
-def get_watchlist() -> list[dict]:
+def _build() -> list[dict]:
+    """Compute the /api/watchlist payload. Caller-cached via maint_cache."""
     items = fetch_rss()
     if items and items[0].get("_error"):
         return items
@@ -77,3 +88,16 @@ def get_watchlist() -> list[dict]:
             )
         out.append(entry)
     return out
+
+
+def get_watchlist(*, force: bool = False) -> list[dict]:
+    """Return the cached /api/watchlist payload, recomputing on miss/expire.
+
+    `force=True` bypasses the cache for one call (and refreshes it).
+    Errored RSS fetches are intentionally cached too — the next request
+    within TTL gets the error rather than retrying the upstream RSS,
+    which prevents thundering-herd retries during a Plex.tv outage.
+    """
+    if force:
+        maint_cache.invalidate()
+    return maint_cache.get_cached(_CACHE_KEY, _build)
