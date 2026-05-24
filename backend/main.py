@@ -7,7 +7,6 @@ read like a contract: every endpoint the frontend touches is listed here.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from pathlib import Path
 
 from litestar import Litestar, MediaType, Response, get, post
@@ -17,11 +16,12 @@ from litestar.static_files import create_static_files_router
 from pydantic import BaseModel
 
 from common.log_utils import get_logger
-from synclet import config, ignored, pending, sync_ops, syncthing
+from synclet import config, ignored, maint_cache, pending, sync_ops, syncthing
 from synclet.plex import fetch_art_bytes, fetch_thumb_bytes, section_index
 from synclet.resolve import resolve_url
 from synclet.scan import scan_title_detail, title_detail_to_dict
 from synclet.state import disk_usage, get_state, invalidate
+from synclet.synced import get_synced
 from synclet.watchlist import get_watchlist
 from synclet.watchstate import (
     coverage_counts,
@@ -269,58 +269,24 @@ async def api_jobs() -> dict:
 
 @get("/api/synced")
 async def api_synced() -> dict:
-    """Return synced titles with new-unwatched-episode hints."""
-    from synclet.config import LIBRARIES
-    from synclet.fs_helpers import iter_synced_titles
-    from synclet.scan import clean_name, scan_title_detail
-    from synclet.sync_ops import find_source_lib
-    from synclet.watchstate import show_watch_map
+    """Return synced titles with new-unwatched-episode hints.
 
-    items: list[dict] = []
-    for _sub_path, item in iter_synced_titles():
-        source_lib = find_source_lib(item.name)
-
-        display = clean_name(item.name)
-        total_bytes = 0
-        for f in item.rglob("*"):
-            if f.is_file():
-                with contextlib.suppress(OSError):
-                    total_bytes += f.stat().st_size
-
-        entry = {
-            "title": display,
-            "folder": item.name,
-            "lib": source_lib,
-            "kind": LIBRARIES[source_lib]["kind"] if source_lib else "unknown",
-            "size_bytes": total_bytes,
-            "new_unwatched": [],
-        }
-
-        if source_lib and LIBRARIES[source_lib]["kind"] in ("show", "youtube"):
-            detail = scan_title_detail(source_lib, item.name)
-            if detail:
-                ws_map = show_watch_map(display, lib=source_lib, folder=item.name)
-                new_eps = []
-                for s in detail.seasons:
-                    for e in s.episodes:
-                        watched = ws_map.get((e.season, e.episode), False)
-                        if not watched and not e.is_synced:
-                            new_eps.append(
-                                {
-                                    "season": e.season,
-                                    "episode": e.episode,
-                                    "title": e.title,
-                                    "size_bytes": e.size_bytes,
-                                }
-                            )
-                entry["new_unwatched"] = new_eps
-
-        items.append(entry)
-    return {"items": items}
+    Cached via maint_cache (synclet.synced.get_synced); the build runs once
+    per STATE_CACHE_TTL window and is invalidated by sync/unsync/remove
+    mutations and by /api/refresh.
+    """
+    return {"items": get_synced()}
 
 
 @get("/api/watchlist")
 async def api_watchlist() -> dict:
+    """Plex watchlist RSS, matched against the library.
+
+    Cached via maint_cache (synclet.watchlist.get_watchlist); the build runs
+    once per STATE_CACHE_TTL window and is invalidated by /api/refresh. The
+    underlying fuzzy-match loop is O(N*M) which is the main reason caching
+    matters here, even more than the RSS round-trip.
+    """
     return {"items": get_watchlist()}
 
 
@@ -446,7 +412,17 @@ async def api_resolve(data: ResolveLinkRequest) -> dict:
 
 @post("/api/refresh")
 async def api_refresh() -> dict:
+    """Force a state rebuild on next read.
+
+    Clears BOTH the state cache and the maint_cache (which now also backs
+    /api/synced and /api/watchlist plus the existing maintenance walks).
+    Without the second invalidate(), the user clicks Refresh, sees the
+    library grid update, but the Synced/Watchlist/Maintenance tabs still
+    show pre-refresh data for up to STATE_CACHE_TTL seconds — a latent bug
+    that this consolidation surfaced.
+    """
     invalidate()
+    maint_cache.invalidate()
     return {"ok": True}
 
 
@@ -586,6 +562,23 @@ async def warm_plex_caches() -> None:
     logger.info("Plex section cache warmed: %d/%d sections", ok, len(sections))
     for sec, exc in failed:
         logger.warning("warm_plex_caches: section %d failed: %r", sec, exc)
+
+    # Now that section_index is warm, prime the two heaviest derived caches.
+    # /api/synced does a single SYNC_ROOT byte-walk per build; /api/watchlist
+    # does an external RSS fetch + fuzzy match against the whole library.
+    # Both ride on top of section_index, so they have to come after the
+    # gather above (not in parallel with it) for the prefetch to be cheap.
+    derived = await asyncio.gather(
+        asyncio.to_thread(get_synced),
+        asyncio.to_thread(get_watchlist),
+        return_exceptions=True,
+    )
+    derived_names = ("synced", "watchlist")
+    for name, result in zip(derived_names, derived, strict=True):
+        if isinstance(result, BaseException):
+            logger.warning("warm_plex_caches: %s warm failed: %r", name, result)
+        else:
+            logger.info("warm_plex_caches: %s primed", name)
 
 
 app = Litestar(

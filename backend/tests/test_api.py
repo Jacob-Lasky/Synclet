@@ -641,6 +641,25 @@ class TestRefreshRoute:
         assert r.status_code == 201
         assert r.json() == {"ok": True}
 
+    def test_clears_maint_cache_not_just_state_cache(self, client):
+        """Regression: /api/refresh used to only call state.invalidate(),
+        leaving the maint_cache (which backs the Maintenance tab AND now
+        /api/synced + /api/watchlist) holding pre-refresh data for up to
+        STATE_CACHE_TTL seconds. The fix calls maint_cache.invalidate()
+        alongside state.invalidate()."""
+        from synclet import maint_cache
+
+        # Prime a cache entry via the public API so we know the cache has
+        # at least one resident value going in.
+        maint_cache.get_cached("sentinel", lambda: {"primed": True})
+        assert "sentinel" in maint_cache._cache
+        r = client.post("/api/refresh", json={})
+        assert r.status_code == 201
+
+        # The post-refresh cache must be empty: state.invalidate() alone
+        # would NOT have cleared this; maint_cache.invalidate() does.
+        assert maint_cache._cache == {}
+
 
 class TestSyncthingOverviewRoute:
     def test_unconfigured_returns_empty(self, client, monkeypatch):
@@ -746,6 +765,12 @@ class TestWarmPlexCaches:
         # module load, so the monkeypatch on synclet.plex.section_index has
         # to be mirrored on the main-module ref too.
         monkeypatch.setattr("main.section_index", _track)
+        # The derived-cache prefetches (get_synced / get_watchlist) also call
+        # section_index transitively via watchstate aggregates. Stub them so
+        # this test is scoped to the section-warming portion of the hook;
+        # the derived prefetch has its own dedicated test.
+        monkeypatch.setattr("main.get_synced", list)
+        monkeypatch.setattr("main.get_watchlist", list)
 
         from main import warm_plex_caches
 
@@ -772,6 +797,10 @@ class TestWarmPlexCaches:
 
         monkeypatch.setattr("synclet.plex.section_index", _flaky)
         monkeypatch.setattr("main.section_index", _flaky)
+        # Scope this test to section_index error isolation; stub derived
+        # prefetches.
+        monkeypatch.setattr("main.get_synced", list)
+        monkeypatch.setattr("main.get_watchlist", list)
 
         from main import warm_plex_caches
 
@@ -798,6 +827,10 @@ class TestWarmPlexCaches:
 
         monkeypatch.setattr("synclet.plex.section_index", _slow)
         monkeypatch.setattr("main.section_index", _slow)
+        # Concurrency assertion is about the section-index gather; stub the
+        # derived prefetch so it doesn't add unrelated wall-time.
+        monkeypatch.setattr("main.get_synced", list)
+        monkeypatch.setattr("main.get_watchlist", list)
 
         from main import warm_plex_caches
 
@@ -812,3 +845,115 @@ class TestWarmPlexCaches:
             f"warm_plex_caches took {elapsed:.3f}s for {n} sections "
             f"(serial would be {n * sleep_s:.3f}s, parallel ceiling {ceiling:.3f}s)"
         )
+
+    @pytest.mark.asyncio
+    async def test_also_primes_synced_and_watchlist(self, monkeypatch):
+        """After section_index warms, the hook prefetches get_synced and
+        get_watchlist so the first user click on either tab hits a warm
+        maint_cache instead of paying the full build cost."""
+        # Stub section_index away so we focus on the derived prefetch.
+        monkeypatch.setattr("synclet.plex.section_index", lambda _sec: {})
+        monkeypatch.setattr("main.section_index", lambda _sec: {})
+
+        synced_calls: list[int] = []
+        watchlist_calls: list[int] = []
+
+        def _fake_synced():
+            synced_calls.append(1)
+            return [{"title": "fake"}]
+
+        def _fake_watchlist():
+            watchlist_calls.append(1)
+            return [{"title": "fake"}]
+
+        monkeypatch.setattr("main.get_synced", _fake_synced)
+        monkeypatch.setattr("main.get_watchlist", _fake_watchlist)
+
+        from main import warm_plex_caches
+
+        await warm_plex_caches()
+        assert len(synced_calls) == 1
+        assert len(watchlist_calls) == 1
+
+
+class TestSyncedAndWatchlistCacheBehavior:
+    """The /api/synced + /api/watchlist routes are now served by maint_cache.
+    These tests pin the cache contract end-to-end so a future refactor that
+    removes the caching surfaces here, not as a 12-second tab click in
+    production.
+
+    No autouse cache-bust fixture: the `client` fixture's lifespan fires
+    warm_plex_caches which itself populates the cache via the REAL _build.
+    We invalidate after that runs and then monkeypatch _build so the
+    counting wrapper sees the next request.
+    """
+
+    def test_synced_second_request_does_not_rebuild(self, client, monkeypatch):
+        from synclet import maint_cache
+        from synclet import synced as synced_mod
+
+        build_count = {"n": 0}
+        original_build = synced_mod._build
+
+        def _counting_build():
+            build_count["n"] += 1
+            return original_build()
+
+        # Clear the warm-hook's cached entry, THEN patch _build, so the next
+        # request rebuilds via the counting wrapper.
+        maint_cache.invalidate()
+        monkeypatch.setattr(synced_mod, "_build", _counting_build)
+
+        r1 = client.get("/api/synced")
+        r2 = client.get("/api/synced")
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert r1.json() == r2.json()
+        # Cache hit on second request: build ran exactly once.
+        assert build_count["n"] == 1
+
+    def test_synced_force_rebuilds_via_invalidate(self, client, monkeypatch):
+        """Mutation seams use maint_cache.invalidate() to force a rebuild;
+        confirming the contract works from the consumer side."""
+        from synclet import maint_cache
+        from synclet import synced as synced_mod
+
+        build_count = {"n": 0}
+        original_build = synced_mod._build
+
+        def _counting_build():
+            build_count["n"] += 1
+            return original_build()
+
+        maint_cache.invalidate()
+        monkeypatch.setattr(synced_mod, "_build", _counting_build)
+
+        client.get("/api/synced")
+        maint_cache.invalidate()
+        client.get("/api/synced")
+        assert build_count["n"] == 2
+
+    def test_watchlist_second_request_does_not_rebuild(self, client, monkeypatch):
+        from synclet import maint_cache
+        from synclet import watchlist as watchlist_mod
+
+        build_count = {"n": 0}
+        original_build = watchlist_mod._build
+
+        def _counting_build():
+            build_count["n"] += 1
+            return original_build()
+
+        maint_cache.invalidate()
+        monkeypatch.setattr(watchlist_mod, "_build", _counting_build)
+        # Stub the RSS fetch so the build does not hit Plex.tv in tests.
+        monkeypatch.setattr(
+            watchlist_mod, "fetch_rss", lambda: [{"_error": "no network in tests"}]
+        )
+
+        r1 = client.get("/api/watchlist")
+        r2 = client.get("/api/watchlist")
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        # Cache hit: build ran exactly once across both reads.
+        assert build_count["n"] == 1

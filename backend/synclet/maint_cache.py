@@ -1,19 +1,20 @@
-"""TTL cache for expensive maintenance filesystem walks.
+"""TTL cache for expensive backend reads.
 
-`find_watched_synced_files`, `find_hanging_files`, and `compute_pending`
-each iterate SYNC_ROOT, which is shfs FUSE on the deploy target and ~10x
-slower than native ext4 for rglob-style ops. The Maintenance tab hits
-all three on every render (via the four producer endpoints AND the
-counts endpoint), so a tab switch can take noticeable seconds.
+Started life as a Maintenance-tab-only cache (find_watched_synced_files,
+find_hanging_files, compute_pending — all heavy SYNC_ROOT walks on shfs
+FUSE). Since broadened to back the /api/synced and /api/watchlist
+caches too — they share the same TTL discipline and the same
+"mutations invalidate" pattern via the existing sync_ops seams. Module
+kept named maint_cache to avoid churn; the key namespace inside is what
+disambiguates callers.
 
-This module wraps each producer with a TTL cache that mirrors the
-state-grid pattern in `synclet/state.py`. Mutating actions
-(sync/unsync/remove/resolve/ignore/unignore) call `invalidate()` to
-clear the cache; the next read recomputes once and serves subsequent
-reads from memory for STATE_CACHE_TTL seconds.
+Mutating actions (sync/unsync/remove/resolve/ignore/unignore) call
+`invalidate()` to clear the cache; the next read recomputes once and
+serves subsequent reads from memory for STATE_CACHE_TTL seconds.
 
 Cache lives in-process. Two implications:
-- A uvicorn restart cold-starts the cache. Acceptable.
+- A uvicorn restart cold-starts the cache. The on_startup hook in
+  main.warm_plex_caches pre-primes the heaviest entries to hide this.
 - A multi-worker uvicorn would have per-worker caches that drift. Not
   a concern today (single-worker config); flagged here for future.
 """
