@@ -442,6 +442,35 @@ class TestScrobbleRoute:
         assert "error" in body
         assert body["scrobbled"] == 0
 
+    def test_watched_false_routes_to_unscrobble(self, client, monkeypatch):
+        """watched=False over the wire must reach plex.unscrobble, not scrobble."""
+        unscrobbled: list[str] = []
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "M-9"},
+        )
+        monkeypatch.setattr(
+            "synclet.plex.scrobble",
+            lambda *a, **kw: pytest.fail("scrobble must not run when watched=False"),
+        )
+        monkeypatch.setattr(
+            "synclet.plex.unscrobble",
+            lambda rk, **_: unscrobbled.append(rk) or True,
+        )
+        r = client.post(
+            "/api/scrobble",
+            json={
+                "lib": "movies",
+                "folder": "M",
+                "scope": "movie",
+                "watched": False,
+            },
+        )
+        assert r.status_code == 201
+        body = r.json()
+        assert body["scrobbled"] == 1
+        assert unscrobbled == ["M-9"]
+
 
 class TestResolveRoute:
     def test_text_match(self, client):

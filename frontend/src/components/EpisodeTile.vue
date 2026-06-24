@@ -6,6 +6,7 @@ defineProps<{ ep: Episode; selected: boolean }>()
 defineEmits<{
     (e: "toggle", season: number, episode: number, shift: boolean): void
     (e: "mark-watched", season: number, episode: number): void
+    (e: "mark-unwatched", season: number, episode: number): void
 }>()
 
 function onKey(e: KeyboardEvent): void {
@@ -80,6 +81,15 @@ function onKey(e: KeyboardEvent): void {
             @click.stop="$emit('mark-watched', ep.season, ep.episode)"
         >
             ✓
+        </button>
+        <button
+            v-else
+            class="mark-watched-btn"
+            title="Mark unwatched"
+            data-testid="mark-episode-unwatched"
+            @click.stop="$emit('mark-unwatched', ep.season, ep.episode)"
+        >
+            ↺
         </button>
     </div>
 </template>

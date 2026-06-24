@@ -234,6 +234,50 @@ class TestScrobble:
         assert scrobble("4242") is False
 
 
+class TestUnscrobble:
+    """Mirror of TestScrobble for the mark-unwatched direction. The only wire
+    difference is the endpoint: /:/unscrobble instead of /:/scrobble."""
+
+    def test_calls_plex_unscrobble_endpoint(self, monkeypatch):
+        from synclet.plex import unscrobble
+
+        captured: list[str] = []
+
+        def _capture(url, timeout=8):
+            captured.append(url)
+            from tests._http_mocks import FakeUrlopenResponse
+
+            return FakeUrlopenResponse(b"", status=200)
+
+        monkeypatch.setattr("synclet.plex.urllib.request.urlopen", _capture)
+        ok = unscrobble("4242")
+        assert ok is True
+        assert len(captured) == 1
+        u = captured[0]
+        assert "/:/unscrobble" in u
+        # Must NOT hit the watched endpoint. "/:/scrobble" is a substring of
+        # "/:/unscrobble", so guard on the leading slash to avoid a false pass.
+        assert "/:/scrobble" not in u
+        assert "identifier=com.plexapp.plugins.library" in u
+        assert "key=4242" in u
+        assert "X-Plex-Token=" in u
+
+    def test_returns_false_on_network_error(self, monkeypatch):
+        from synclet.plex import unscrobble
+
+        monkeypatch.setattr("synclet.plex.urllib.request.urlopen", boom_urlopen())
+        assert unscrobble("4242") is False
+
+    def test_returns_false_on_non_2xx(self, monkeypatch):
+        from synclet.plex import unscrobble
+
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(b"", status=404),
+        )
+        assert unscrobble("4242") is False
+
+
 # ── section_index edge cases ─────────────────────────────────────────────────
 
 

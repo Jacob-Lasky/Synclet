@@ -356,17 +356,21 @@ def invalidate_watch_caches() -> None:
         PLEX_CACHE_FILE.unlink()
 
 
-def scrobble(rating_key: str, timeout: int = 8) -> bool:
-    """Mark a Plex item watched. Returns True on success.
+def _set_watched(rating_key: str, *, watched: bool, timeout: int = 8) -> bool:
+    """Set a Plex item's watch state. Returns True on success.
 
-    `PUT /:/scrobble?identifier=com.plexapp.plugins.library&key=<ratingKey>`
-    is idempotent. Plex returns 200 even if the item was already watched, so
-    callers don't need to pre-check. Network errors and non-2xx responses
-    return False so callers can report per-item status without aborting a
-    batch resolve.
+    `watched=True`  -> `PUT /:/scrobble`   (mark watched)
+    `watched=False` -> `PUT /:/unscrobble` (mark unwatched)
+
+    Both take `?identifier=com.plexapp.plugins.library&key=<ratingKey>` and are
+    idempotent: Plex returns 200 even if the item was already in the target
+    state, so callers don't need to pre-check. Network errors and non-2xx
+    responses return False so callers can report per-item status without
+    aborting a batch.
     """
+    endpoint = "/:/scrobble" if watched else "/:/unscrobble"
     url = _plex_url(
-        "/:/scrobble",
+        endpoint,
         {"identifier": "com.plexapp.plugins.library", "key": rating_key},
     )
     try:
@@ -374,6 +378,16 @@ def scrobble(rating_key: str, timeout: int = 8) -> bool:
             return 200 <= r.status < 300
     except Exception:
         return False
+
+
+def scrobble(rating_key: str, timeout: int = 8) -> bool:
+    """Mark a Plex item watched. Thin wrapper over _set_watched."""
+    return _set_watched(rating_key, watched=True, timeout=timeout)
+
+
+def unscrobble(rating_key: str, timeout: int = 8) -> bool:
+    """Mark a Plex item unwatched. Thin wrapper over _set_watched."""
+    return _set_watched(rating_key, watched=False, timeout=timeout)
 
 
 def get_metadata(rating_key: str) -> dict | None:

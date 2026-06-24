@@ -122,6 +122,9 @@ export interface ScrobbleBody {
     scope: ScrobbleScope
     season?: number
     episode?: number
+    // Defaults to true (mark watched) server-side when omitted; set false to
+    // mark unwatched.
+    watched?: boolean
 }
 
 export interface SyncBody {
