@@ -235,17 +235,20 @@ async def api_sync(data: SyncRequest) -> dict:
 
 @post("/api/unsync")
 async def api_unsync(data: SyncRequest) -> dict:
-    pairs = sync_ops.resolve_selection(
+    # Unsync resolves the ACTUAL synced files by identity, not source→dest
+    # name mapping (see sync_ops.resolve_unsync_selection). A source re-encode
+    # renames the file, so name-based resolution would remove 0 and orphan the
+    # synced copy.
+    targets = sync_ops.resolve_unsync_selection(
         data.lib,
         data.folder,
         selection_type=data.selection_type,
         season=data.season,
         episodes=data.episodes,
-        unwatched_only=False,
     )
-    if not pairs:
+    if not targets:
         return {"error": "no files matched", "job_id": None}
-    job = sync_ops.start_unsync(pairs, title=f"{data.lib}/{data.folder}")
+    job = sync_ops.start_unsync(targets, title=f"{data.lib}/{data.folder}")
     return {
         "job_id": job.id,
         "total_files": job.total_files,

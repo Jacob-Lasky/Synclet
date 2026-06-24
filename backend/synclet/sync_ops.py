@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import shutil
 import time
 import uuid
@@ -166,6 +167,82 @@ def resolve_selection(
     return [(f, _sync_dest(f, lib)) for f in selected_files]
 
 
+# ── Unsync selector (identity-based, NOT source→dest name mapping) ──────────
+
+_EP_RE = re.compile(r"[Ss](\d+)[Ee](\d+)")
+
+
+def _synced_title_files(lib: str, folder: str) -> list[Path]:
+    """Every real synced file under a title's synced dir.
+
+    Excludes dot-prefixed paths so Syncthing internals (`.stfolder`,
+    `.stversions`) and dotfiles are NEVER candidates for deletion , this is a
+    load-bearing blast-radius guard, do not drop it.
+    """
+    synced_dir = SYNC_ROOT / LIBRARIES[lib]["sync_sub"] / folder
+    if not synced_dir.is_dir():
+        return []
+    out: list[Path] = []
+    for f in synced_dir.rglob("*"):
+        rel = f.relative_to(synced_dir)
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        if f.is_file():
+            out.append(f)
+    return out
+
+
+def _file_se(f: Path) -> tuple[int, int] | None:
+    m = _EP_RE.search(f.name)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _file_season(f: Path) -> int | None:
+    se = _file_se(f)
+    if se is not None:
+        return se[0]
+    m = re.search(r"\d+", f.parent.name)
+    return int(m.group()) if m else None
+
+
+def resolve_unsync_selection(
+    lib: str,
+    folder: str,
+    *,
+    selection_type: str,  # "all" | "season" | "episodes" | "movie"
+    season: int | None = None,
+    episodes: list[list[int]] | None = None,
+) -> list[Path]:
+    """Synced files to remove for an unsync, matched by IDENTITY not filename.
+
+    DO NOT resolve unsync through `resolve_selection` (source→dest name
+    mapping). That is correct for COPY but wrong for REMOVE: a source-side
+    re-encode renames the file (e.g. x264 -> h265), so the source's computed
+    dest no longer exists in the synced folder and the real synced file is
+    orphaned and never removed , the "Unsynced … 0 items" bug. Instead, scan
+    the actual synced title dir and select what is THERE, by SxxExx
+    (episodes/season) or the whole title (movie/all).
+    """
+    if lib not in LIBRARIES:
+        return []
+    files = _synced_title_files(lib, folder)
+    if not files:
+        return []
+
+    if LIBRARIES[lib]["kind"] == "movie" or selection_type in ("all", "movie"):
+        return files
+
+    if selection_type == "season" and season is not None:
+        return [f for f in files if _file_season(f) == season]
+
+    if selection_type == "episodes" and episodes:
+        keys = {(int(s), int(e)) for s, e in episodes}
+        return [f for f in files if _file_se(f) in keys]
+
+    # Unscoped show selection (e.g. "all" episodes): the whole title.
+    return files
+
+
 # ── Job execution ─────────────────────────────────────────────────────────────
 
 
@@ -273,10 +350,13 @@ def start_sync(pairs: list[tuple[Path, Path]], title: str = "") -> Job:
     return job
 
 
-def start_unsync(pairs: list[tuple[Path, Path]], title: str = "") -> Job:
+def start_unsync(targets: list[Path], title: str = "") -> Job:
+    """Remove the given synced files. `targets` are actual synced paths
+    (from resolve_unsync_selection), not source→dest pairs , see that
+    function for why unsync must not key off source filenames."""
     job = Job(id=uuid.uuid4().hex[:12], op="unsync", status="queued", title=title)
     items = []
-    for src, dst in pairs:
+    for dst in targets:
         if dst.exists():
             try:
                 size = dst.stat().st_size
@@ -284,7 +364,6 @@ def start_unsync(pairs: list[tuple[Path, Path]], title: str = "") -> Job:
                 size = 0
             items.append(
                 {
-                    "src": str(src),
                     "dst": str(dst),
                     "size": size,
                     "is_video": _is_video(str(dst)),

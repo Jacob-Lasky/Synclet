@@ -14,6 +14,7 @@ from synclet.sync_ops import (
     find_watched_synced_files,
     remove_files,
     resolve_selection,
+    resolve_unsync_selection,
     start_sync,
     start_unsync,
 )
@@ -130,20 +131,84 @@ class TestSyncJob:
         assert job.total_media_files == 1, f"items: {job.items}"
         assert job.total_files >= job.total_media_files
 
-        # Now unsync the same episode
-        unsync_pairs = resolve_selection(
+        # Now unsync the same episode (identity-based: targets the actual
+        # synced files, not source→dest names)
+        unsync_targets = resolve_unsync_selection(
             "tv",
             "Better Call Saul (2015) {tvdb-1}",
             selection_type="episodes",
             episodes=[[1, 1]],
         )
-        ujob = start_unsync(unsync_pairs, title="bcs s01e01")
+        assert unsync_targets
+        ujob = start_unsync(unsync_targets, title="bcs s01e01")
         for _ in range(50):
             if ujob.status in ("done", "error"):
                 break
             await asyncio.sleep(0.05)
         assert ujob.status == "done"
         assert not first_dst.exists()
+
+
+class TestResolveUnsyncSelection:
+    """Unsync targets the ACTUAL synced files by identity, surviving a
+    source-side re-encode that renames the file (the 'Unsynced … 0 items' bug).
+    """
+
+    def test_episode_unsync_survives_reencode_rename(self, patch_paths):
+        media = patch_paths["media"]
+        sync = patch_paths["sync"]
+        folder = "Reencode Show (2020) {tvdb-9}"
+        # Source got upgraded to h265 after the sync happened.
+        src = media / "tv" / folder / "Season 01"
+        src.mkdir(parents=True)
+        (src / "Reencode Show - S01E01 - Pilot [h265].mkv").write_bytes(b"\0" * 1024)
+        # Synced copy is the old x264 encode , different filename, same episode.
+        syn = sync / "tv" / folder / "Season 01"
+        syn.mkdir(parents=True)
+        x264 = syn / "Reencode Show - S01E01 - Pilot [x264].mkv"
+        x264.write_bytes(b"\0" * 1024)
+
+        # The old source→dest name mapping computes a dest that does not exist
+        # (this is the bug: start_unsync would filter it out → 0 items).
+        pairs = resolve_selection(
+            "tv", folder, selection_type="episodes", episodes=[[1, 1]]
+        )
+        assert pairs and all(not dst.exists() for _src, dst in pairs)
+
+        # Identity-based unsync finds the real synced file.
+        targets = resolve_unsync_selection(
+            "tv", folder, selection_type="episodes", episodes=[[1, 1]]
+        )
+        assert x264 in targets
+
+    def test_never_targets_syncthing_internals(self, patch_paths):
+        sync = patch_paths["sync"]
+        folder = "Guarded Show (2020) {tvdb-8}"
+        syn = sync / "tv" / folder / "Season 01"
+        syn.mkdir(parents=True)
+        vid = syn / "Guarded Show - S01E01 [x264].mkv"
+        vid.write_bytes(b"\0" * 512)
+        # Syncthing internals that must NEVER be deletion candidates.
+        stfolder = sync / "tv" / folder / ".stfolder"
+        stfolder.mkdir(parents=True)
+        (stfolder / "marker").write_bytes(b"x")
+
+        targets = resolve_unsync_selection("tv", folder, selection_type="all")
+        assert vid in targets
+        assert all(".stfolder" not in t.parts for t in targets)
+
+    def test_movie_unsync_returns_whole_synced_title(self, patch_paths):
+        sync = patch_paths["sync"]
+        folder = "Reencode Movie (2018) {tmdb-9}"
+        syn = sync / "movies" / folder
+        syn.mkdir(parents=True)
+        (syn / "Reencode Movie [x264].mkv").write_bytes(b"\0" * 2048)
+        (syn / "Reencode Movie [x264].en.srt").write_bytes(b"en")
+
+        targets = resolve_unsync_selection("movies", folder, selection_type="movie")
+        names = {t.name for t in targets}
+        assert "Reencode Movie [x264].mkv" in names
+        assert "Reencode Movie [x264].en.srt" in names
 
 
 class TestMaintenance:
@@ -263,13 +328,13 @@ class TestSyncOpsSnapshotIntegration:
         assert target_key in load_snapshot()
 
         # Now unsync that episode , explicit user gesture, not a watched-confirm.
-        upairs = resolve_selection(
+        utargets = resolve_unsync_selection(
             "tv",
             "Better Call Saul (2015) {tvdb-1}",
             selection_type="episodes",
             episodes=[[1, 1]],
         )
-        ujob = start_unsync(upairs, title="unsync")
+        ujob = start_unsync(utargets, title="unsync")
         for _ in range(50):
             if ujob.status in ("done", "error"):
                 break
