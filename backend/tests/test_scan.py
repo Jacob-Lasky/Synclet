@@ -127,6 +127,75 @@ class TestScanTitleDetail:
             f"French subtitle leaked through filter: {e1.files}"
         )
 
+    def test_episode_synced_despite_reencode_rename(self, patch_paths):
+        """A source-side re-encode renames the file but keeps the same SxxExx.
+
+        Regression: the detail view used to check the exact synced path, so an
+        x264 -> h265 source upgrade made every episode read as un-synced even
+        though the synced folder still held it. Match on SxxExx instead.
+        """
+        media = patch_paths["media"]
+        sync = patch_paths["sync"]
+
+        src = media / "tv" / "Reencode Show (2020) {tvdb-9}" / "Season 01"
+        src.mkdir(parents=True)
+        # Source got upgraded to h265 after the sync happened.
+        (src / "Reencode Show - S01E01 - Pilot [WEBDL-1080p][h265].mkv").write_bytes(
+            b"\0" * 1024
+        )
+        # S01E02 exists in source but was never synced.
+        (src / "Reencode Show - S01E02 - Two [WEBDL-1080p][h265].mkv").write_bytes(
+            b"\0" * 1024
+        )
+
+        syn = sync / "tv" / "Reencode Show (2020) {tvdb-9}" / "Season 01"
+        syn.mkdir(parents=True)
+        # Synced copy is the old x264 encode , different filename, same episode.
+        (syn / "Reencode Show - S01E01 - Pilot [WEBDL-1080p][x264].mkv").write_bytes(
+            b"\0" * 1024
+        )
+
+        d = scan_title_detail("tv", "Reencode Show (2020) {tvdb-9}")
+        assert d is not None
+        eps = {e.episode: e for e in d.seasons[0].episodes}
+        assert eps[1].is_synced is True, "re-encoded episode should match on SxxExx"
+        assert eps[2].is_synced is False, "un-synced episode must not be marked synced"
+
+    def test_movie_synced_despite_reencode_rename(self, patch_paths):
+        """A re-encoded movie keeps its title folder but renames the video.
+
+        Regression: the movie detail used to mark each file by exact synced
+        path, so an x264 -> h265 source upgrade showed the movie as un-synced.
+        Match on the title folder holding a video instead.
+        """
+        media = patch_paths["media"]
+        sync = patch_paths["sync"]
+
+        src = media / "movies" / "Reencode Movie (2018) {tmdb-9}"
+        src.mkdir(parents=True)
+        (src / "Reencode Movie (2018) [Bluray-1080p][h265].mkv").write_bytes(
+            b"\0" * 2048
+        )
+
+        syn = sync / "movies" / "Reencode Movie (2018) {tmdb-9}"
+        syn.mkdir(parents=True)
+        # Synced copy is the old x264 encode , different filename, same movie.
+        (syn / "Reencode Movie (2018) [Bluray-1080p][x264].mkv").write_bytes(
+            b"\0" * 2048
+        )
+
+        d = scan_title_detail("movies", "Reencode Movie (2018) {tmdb-9}")
+        assert d is not None
+        assert d.synced_bytes > 0, "re-encoded movie should read as synced"
+        assert all(f["is_synced"] for f in d.files)
+
+    def test_movie_unsynced_when_no_synced_video(self, patch_paths):
+        """1917 has a source video but no synced copy , must read un-synced."""
+        d = scan_title_detail("movies", "1917 (2019) {tmdb-3}")
+        assert d is not None
+        assert d.synced_bytes == 0
+        assert not any(f["is_synced"] for f in d.files)
+
     def test_movie_detail(self, patch_paths):
         d = scan_title_detail("movies", "1917 (2019) {tmdb-3}")
         assert d is not None
