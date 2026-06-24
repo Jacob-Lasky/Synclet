@@ -60,6 +60,25 @@ describe("SyncedView unsync button", () => {
         })
     })
 
+    it("hides the Unsync button for stray folders with no library (lib=null)", async () => {
+        const { api } = await import("./api")
+        vi.mocked(api.synced).mockResolvedValueOnce({
+            items: [
+                {
+                    title: "tailscale-cert",
+                    folder: "tailscale-cert",
+                    lib: null,
+                    kind: "unknown",
+                    size_bytes: 100,
+                    new_unwatched: [],
+                },
+            ],
+        })
+        const w = mount(SyncedView)
+        await flushPromises()
+        expect(w.find('[data-testid="unsync-title"]').exists()).toBe(false)
+    })
+
     it("does nothing when the user cancels the confirm", async () => {
         window.confirm = () => false
         const { api } = await import("./api")

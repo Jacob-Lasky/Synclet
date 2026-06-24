@@ -158,6 +158,7 @@ async function unsyncTitle(entry: SyncedEntry): Promise<void> {
                             Sync all {{ item.new_unwatched.length }}
                         </button>
                         <button
+                            v-if="item.lib"
                             class="danger"
                             data-testid="unsync-title"
                             :disabled="submitting[item.folder]"
