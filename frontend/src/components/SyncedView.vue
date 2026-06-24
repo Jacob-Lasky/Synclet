@@ -53,6 +53,40 @@ async function syncNew(entry: SyncedEntry, n: number): Promise<void> {
 function newBytes(entry: SyncedEntry, n: number): number {
     return entry.new_unwatched.slice(0, n).reduce((s, e) => s + e.size_bytes, 0)
 }
+
+async function unsyncTitle(entry: SyncedEntry): Promise<void> {
+    if (!entry.lib) return
+    // Destructive: removes the title from synced-media and Syncthing propagates
+    // the deletion to paired devices. Guard with an explicit confirm.
+    if (
+        !confirm(
+            `Unsync (delete) all of ${entry.title}?\n\n` +
+                `This removes its files from synced-media (${humanSize(entry.size_bytes)}) ` +
+                `and Syncthing will propagate the deletion to your other devices. ` +
+                `The source library is untouched.`
+        )
+    ) {
+        return
+    }
+    submitting.value[entry.folder] = true
+    try {
+        const r = await api.unsync({
+            lib: entry.lib,
+            folder: entry.folder,
+            selection_type: "all",
+        })
+        if (r.job_id) {
+            trackJob(r.job_id, {
+                action: "Unsync",
+                name: entry.title,
+                totalMediaFiles: r.total_media_files,
+            })
+            setTimeout(load, 1500)
+        }
+    } finally {
+        submitting.value[entry.folder] = false
+    }
+}
 </script>
 
 <template>
@@ -122,6 +156,14 @@ function newBytes(entry: SyncedEntry, n: number): number {
                             @click="syncNew(item, item.new_unwatched.length)"
                         >
                             Sync all {{ item.new_unwatched.length }}
+                        </button>
+                        <button
+                            class="danger"
+                            data-testid="unsync-title"
+                            :disabled="submitting[item.folder]"
+                            @click="unsyncTitle(item)"
+                        >
+                            Unsync
                         </button>
                     </div>
                 </div>
