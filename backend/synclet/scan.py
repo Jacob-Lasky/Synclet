@@ -145,19 +145,17 @@ def _season_num(p: Path) -> int:
     return int(m.group()) if m else 0
 
 
+def _is_video(f: Path) -> bool:
+    return f.suffix.lower() in VIDEO_EXTS
+
+
 def _ep_title_from_files(files: list[Path]) -> str:
     for f in files:
-        if f.suffix.lower() in VIDEO_EXTS:
+        if _is_video(f):
             m = _EP_TITLE_FROM_FILENAME.search(f.name)
             if m:
                 return m.group(1).strip()
     return ""
-
-
-def _sync_dest(src: Path, lib: str) -> Path:
-    sync_sub = LIBRARIES[lib]["sync_sub"]
-    rel = src.relative_to(MEDIA_ROOT / lib)
-    return SYNC_ROOT / sync_sub / rel
 
 
 def _synced_folder_index() -> dict[str, int]:
@@ -178,7 +176,7 @@ def _synced_folder_index() -> dict[str, int]:
                 # rglob over a single synced title , small (one show's worth).
                 n = 0
                 for f in Path(entry.path).rglob("*"):
-                    if f.is_file() and f.suffix.lower() in VIDEO_EXTS:
+                    if f.is_file() and _is_video(f):
                         n += 1
                 out[entry.name] = n
     return out
@@ -270,6 +268,58 @@ def _episodes_in_season(season_dir: Path) -> dict[int, list[Path]]:
     return {k: sorted(v) for k, v in sorted(eps.items())}
 
 
+def _synced_dir(lib: str, folder: str) -> Path:
+    """Path to a title's synced copy: SYNC_ROOT / <sync-sub> / <folder>.
+
+    The synced tree mirrors the source folder name under the library's sync-sub
+    (see config.LIBRARIES). Single source of truth for the synced title location
+    so the episode-index and movie-presence reads stay in agreement.
+    """
+    return SYNC_ROOT / LIBRARIES[lib]["sync_sub"] / folder
+
+
+def _synced_episode_index(lib: str, folder: str) -> set[tuple[int, int]]:
+    """{(season, episode)} for which a video file exists in the synced copy.
+
+    DO NOT match synced episodes by exact filename. The source library gets
+    re-encoded in place (e.g. x264 -> h265), which renames the file while it
+    stays the same episode; an exact synced-path `.exists()` check then reads
+    every episode as un-synced even though the synced folder holds it under the
+    old name. Match on the SxxExx tag instead. We mirror the source-side walk
+    exactly , dir-derived season number + filename-derived episode number, and
+    require at least one video , so the index lines up with the eps_map keys
+    the detail builder compares against.
+    """
+    synced_dir = _synced_dir(lib, folder)
+    out: set[tuple[int, int]] = set()
+    if not synced_dir.is_dir():
+        return out
+    for sd in synced_dir.iterdir():
+        if not sd.is_dir() or not re.search(r"\d", sd.name):
+            continue
+        s_num = _season_num(sd)
+        for e_num, files in _episodes_in_season(sd).items():
+            if any(_is_video(f) for f in files):
+                out.add((s_num, e_num))
+    return out
+
+
+def _synced_has_video(lib: str, folder: str) -> bool:
+    """True if the synced copy of this movie holds at least one video file.
+
+    Movie identity is the title folder (name + {tmdb/imdb-id}); the synced copy
+    mirrors it under SYNC_ROOT. Same rationale as _synced_episode_index: a
+    source-side re-encode renames the video (and its stem-matched sidecars), so
+    an exact filename check reads the movie as un-synced even though it is
+    present. A movie's wanted files are synced/unsynced together, so this
+    folder-level signal is the right granularity.
+    """
+    synced_dir = _synced_dir(lib, folder)
+    if not synced_dir.is_dir():
+        return False
+    return any(_is_video(f) for f in synced_dir.rglob("*") if f.is_file())
+
+
 def scan_title_detail(lib: str, folder: str) -> TitleDetail | None:
     if lib not in LIBRARIES:
         return None
@@ -291,22 +341,24 @@ def scan_title_detail(lib: str, folder: str) -> TitleDetail | None:
         files = sorted(
             f for f in path.iterdir() if not f.is_dir() and is_wanted_file(f)
         )
+        # Sync state is a folder-level fact: a movie's wanted files are copied
+        # and removed together, so all rows share the title's synced state.
+        movie_synced = _synced_has_video(lib, folder)
         total = 0
         synced = 0
         for f in files:
             size = f.stat().st_size
             total += size
-            dest = _sync_dest(f, lib)
-            is_synced = dest.exists()
-            if is_synced and f.suffix.lower() in VIDEO_EXTS:
+            is_video = _is_video(f)
+            if movie_synced and is_video:
                 synced += size
             detail.files.append(
                 {
                     "path": str(f),
                     "name": f.name,
                     "size_bytes": size,
-                    "is_video": f.suffix.lower() in VIDEO_EXTS,
-                    "is_synced": is_synced,
+                    "is_video": is_video,
+                    "is_synced": movie_synced,
                 }
             )
         detail.total_bytes = total
@@ -318,6 +370,10 @@ def scan_title_detail(lib: str, folder: str) -> TitleDetail | None:
         (d for d in path.iterdir() if d.is_dir() and re.search(r"\d", d.name)),
         key=_season_num,
     )
+
+    # SxxExx presence in the synced copy, resilient to source-side re-encodes
+    # that rename the file (see _synced_episode_index).
+    synced_eps = _synced_episode_index(lib, folder)
 
     grand_total = 0
     grand_synced = 0
@@ -331,11 +387,9 @@ def scan_title_detail(lib: str, folder: str) -> TitleDetail | None:
 
         for e_num, files in eps_map.items():
             wanted = [f for f in files if is_wanted_file(f)]
-            videos = [f for f in wanted if f.suffix.lower() in VIDEO_EXTS]
+            videos = [f for f in wanted if _is_video(f)]
             size = sum(f.stat().st_size for f in wanted)
-            is_synced = bool(videos) and all(
-                _sync_dest(v, lib).exists() for v in videos
-            )
+            is_synced = bool(videos) and (s_num, e_num) in synced_eps
             ep = Episode(
                 season=s_num,
                 episode=e_num,
