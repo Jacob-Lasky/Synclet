@@ -25,6 +25,8 @@ function onKey(e: KeyboardEvent): void {
     <div
         role="button"
         tabindex="0"
+        data-testid="episode-tile"
+        :data-ep-code="epCode(ep.season, ep.episode)"
         :class="[
             'tile',
             {
@@ -59,7 +61,11 @@ function onKey(e: KeyboardEvent): void {
                     >◐</span
                 >
                 <span v-else class="ico unw" title="Unwatched">○</span>
-                <span v-if="ep.is_synced" class="ico synced" title="Synced"
+                <span
+                    v-if="ep.is_synced"
+                    class="ico synced"
+                    title="Synced"
+                    data-testid="episode-synced-indicator"
                     >⬇</span
                 >
             </span>

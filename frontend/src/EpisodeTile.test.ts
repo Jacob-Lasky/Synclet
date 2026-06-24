@@ -95,3 +95,34 @@ describe("EpisodeTile keyboard activation", () => {
         expect(preventDefault).toHaveBeenCalled()
     })
 })
+
+// Probe anchors consumed by /test-ux's Synclet UI probe. These data-testids
+// are a contract: the post-deploy probe selects the tile and its synced
+// indicator by them, so a rename here must update the skill's selector list.
+describe("EpisodeTile probe anchors", () => {
+    it("exposes episode-tile testid and a SxxExx data-ep-code", () => {
+        const ep = makeEpisode({ season: 2, episode: 6 })
+        const tile = mount(EpisodeTile, {
+            props: { ep, selected: false },
+        }).find('[data-testid="episode-tile"]')
+
+        expect(tile.exists()).toBe(true)
+        expect(tile.attributes("data-ep-code")).toBe("S02E06")
+    })
+
+    it("renders the synced indicator only when is_synced", () => {
+        const synced = mount(EpisodeTile, {
+            props: { ep: makeEpisode({ is_synced: true }), selected: false },
+        })
+        expect(
+            synced.find('[data-testid="episode-synced-indicator"]').exists()
+        ).toBe(true)
+
+        const unsynced = mount(EpisodeTile, {
+            props: { ep: makeEpisode({ is_synced: false }), selected: false },
+        })
+        expect(
+            unsynced.find('[data-testid="episode-synced-indicator"]').exists()
+        ).toBe(false)
+    })
+})
