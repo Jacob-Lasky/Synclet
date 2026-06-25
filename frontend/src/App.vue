@@ -96,17 +96,29 @@ window.addEventListener("keydown", onKeydown)
         <WatchStateCoverageBanner />
 
         <main class="main">
-            <!-- KeepAlive preserves Synced / Watchlist / Maintenance state across
-           tab switches so leaving and returning is instant. Once loaded,
-           these views stay mounted and re-show without re-fetching. Library
-           is excluded because its TitleGrid is already store-backed and
-           cheap to remount. -->
+            <!-- KeepAlive preserves Synced / Watchlist / Maintenance / Syncthing
+           state across tab switches so leaving and returning is instant.
+           Synced / Watchlist / Maintenance fetch in onMounted only, so for them
+           a remount = a refetch; KeepAlive is what turns a return into a cheap
+           re-show. (Syncthing is KeepAlive-aware via onActivated/onDeactivated,
+           but it still loses accumulated state if the instance is destroyed.)
+
+           DO NOT put `v-else` (or any other v-if) on this KeepAlive. It MUST
+           stay mounted unconditionally. A KeepAlive that leaves the vtree is
+           destroyed along with its entire cache, so gating it behind
+           `store.tab !== 'library'` made every Library visit silently dump the
+           cache and forced the whole group to refetch on the next entry. With
+           the KeepAlive always mounted, switching to Library simply resolves
+           its slot to nothing (no inner v-if matches) while the cache survives.
+
+           Library is rendered as a sibling, NOT inside the KeepAlive, because
+           its TitleGrid is already store-backed and cheap to remount. -->
             <template v-if="store.tab === 'library'">
                 <FilterBar />
                 <TitleGrid v-if="store.loaded" />
                 <div v-else class="loading">Loading library…</div>
             </template>
-            <KeepAlive v-else>
+            <KeepAlive>
                 <SyncedView v-if="store.tab === 'synced'" />
                 <WatchlistView v-else-if="store.tab === 'watchlist'" />
                 <MaintenanceView v-else-if="store.tab === 'maintenance'" />

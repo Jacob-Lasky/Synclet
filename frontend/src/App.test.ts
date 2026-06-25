@@ -1,6 +1,24 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
-import { mount } from "@vue/test-utils"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { mount, type VueWrapper } from "@vue/test-utils"
 import { nextTick } from "vue"
+
+// App.vue subscribes to a shared reactive store singleton. A mounted-and-never-
+// unmounted App from a prior test stays subscribed, so a later test that flips
+// store.tab would drive that zombie instance too (e.g. an extra api.synced()
+// call from its SyncedView). Track every wrapper and unmount in afterEach so
+// each test starts from a clean DOM with no leaked subscribers.
+const mounted: VueWrapper[] = []
+function track(wrapper: VueWrapper): VueWrapper {
+    mounted.push(wrapper)
+    return wrapper
+}
+afterEach(async () => {
+    while (mounted.length) mounted.pop()?.unmount()
+    // store.tab is a shared singleton; reset so a test that ends on a group
+    // tab can't seed the next test's fresh App with a non-default tab.
+    const { store } = await import("./store")
+    store.tab = "library"
+})
 
 // App.vue's onMounted is the load-bearing piece of the cold-load fix. The
 // grid is gated on store.loaded which loadState() sets; firing the three
@@ -19,12 +37,14 @@ const {
     watchlistMock,
     coverageMock,
     syncthingOverviewMock,
+    syncedMock,
 } = vi.hoisted(() => ({
     stateMock: vi.fn(),
     countsMock: vi.fn(),
     watchlistMock: vi.fn(),
     coverageMock: vi.fn(),
     syncthingOverviewMock: vi.fn(),
+    syncedMock: vi.fn(),
 }))
 
 vi.mock("./api", () => ({
@@ -39,7 +59,7 @@ vi.mock("./api", () => ({
         artUrl: () => "",
         thumbUrl: () => "",
         refresh: vi.fn().mockResolvedValue({ ok: true }),
-        synced: vi.fn().mockResolvedValue({ items: [] }),
+        synced: syncedMock,
         title: vi.fn().mockResolvedValue(null),
         maintWatched: vi.fn().mockResolvedValue({ items: [] }),
         maintHanging: vi.fn().mockResolvedValue({ items: [] }),
@@ -59,6 +79,8 @@ beforeEach(() => {
     watchlistMock.mockReset()
     coverageMock.mockReset()
     syncthingOverviewMock.mockReset()
+    syncedMock.mockReset()
+    syncedMock.mockResolvedValue({ items: [] })
 })
 
 interface Deferred<T> {
@@ -96,7 +118,7 @@ describe("App.vue onMounted staging", () => {
 
         // Lazy import so the vi.mock hoist is applied before the SUT loads.
         const { default: App } = await import("./App.vue")
-        mount(App)
+        track(mount(App))
 
         // Microtask flush — onMounted is synchronous up to the first await.
         await nextTick()
@@ -134,7 +156,7 @@ describe("App.vue onMounted staging", () => {
         coverageMock.mockResolvedValue({ libraries: [] })
 
         const { default: App } = await import("./App.vue")
-        mount(App)
+        track(mount(App))
 
         // Drain the promise queue.
         await nextTick()
@@ -145,5 +167,52 @@ describe("App.vue onMounted staging", () => {
         expect(countsMock).toHaveBeenCalledTimes(1)
         expect(watchlistMock).toHaveBeenCalledTimes(1)
         expect(coverageMock).toHaveBeenCalledTimes(1)
+    })
+})
+
+describe("App.vue KeepAlive cache survives a Library visit", () => {
+    // Regression for the bug where the group views (Synced / Watchlist /
+    // Maintenance / Syncthing) refetched every time the user went Library ->
+    // group. SyncedView fetches in onMounted with no onActivated, so a remount
+    // is observable as a second api.synced() call. The cache only survives if
+    // the KeepAlive stays mounted while the Library tab is active; the old
+    // `v-else` on the KeepAlive tore it (and its cache) out of the vtree on
+    // every Library visit. Switching synced -> library -> synced must therefore
+    // leave api.synced() called exactly once.
+    it("does not refetch a group view after a round trip through Library", async () => {
+        stateMock.mockResolvedValue({ titles: [], disk: null, libraries: [] })
+        countsMock.mockResolvedValue({
+            watched_titles: 0,
+            hanging_files: 0,
+            pending_items: 0,
+            total: 0,
+        })
+        watchlistMock.mockResolvedValue({ items: [] })
+        coverageMock.mockResolvedValue({ libraries: [] })
+
+        const { store } = await import("./store")
+        const { default: App } = await import("./App.vue")
+        track(mount(App))
+
+        // Drain onMounted (loadState + badges).
+        await nextTick()
+        await new Promise((r) => setTimeout(r, 10))
+        await nextTick()
+
+        // First visit to Synced mounts SyncedView -> one fetch.
+        store.tab = "synced"
+        await nextTick()
+        await nextTick()
+        expect(syncedMock).toHaveBeenCalledTimes(1)
+
+        // Round trip through Library, then back to Synced. The cache must hold,
+        // so SyncedView is re-shown, not remounted -> still exactly one fetch.
+        store.tab = "library"
+        await nextTick()
+        await nextTick()
+        store.tab = "synced"
+        await nextTick()
+        await nextTick()
+        expect(syncedMock).toHaveBeenCalledTimes(1)
     })
 })
