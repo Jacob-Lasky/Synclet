@@ -126,3 +126,58 @@ describe("EpisodeTile probe anchors", () => {
         ).toBe(false)
     })
 })
+
+describe("EpisodeTile mark watched/unwatched toggle", () => {
+    it("shows mark-watched (not unwatched) on an unwatched episode and emits it", async () => {
+        const w = mount(EpisodeTile, {
+            props: {
+                ep: makeEpisode({ watch_state: "unwatched" }),
+                selected: false,
+            },
+        })
+        expect(w.find('[data-testid="mark-episode-watched"]').exists()).toBe(
+            true
+        )
+        expect(w.find('[data-testid="mark-episode-unwatched"]').exists()).toBe(
+            false
+        )
+        await w.find('[data-testid="mark-episode-watched"]').trigger("click")
+        expect(w.emitted("mark-watched")?.[0]).toEqual([2, 5])
+    })
+
+    it("shows mark-unwatched (not watched) on a watched episode and emits it", async () => {
+        const w = mount(EpisodeTile, {
+            props: {
+                ep: makeEpisode({
+                    season: 4,
+                    episode: 2,
+                    watch_state: "watched",
+                }),
+                selected: false,
+            },
+        })
+        expect(w.find('[data-testid="mark-episode-unwatched"]').exists()).toBe(
+            true
+        )
+        expect(w.find('[data-testid="mark-episode-watched"]').exists()).toBe(
+            false
+        )
+        await w.find('[data-testid="mark-episode-unwatched"]').trigger("click")
+        expect(w.emitted("mark-unwatched")?.[0]).toEqual([4, 2])
+    })
+
+    it("treats in-progress as not-yet-watched (offers mark-watched)", () => {
+        const w = mount(EpisodeTile, {
+            props: {
+                ep: makeEpisode({ watch_state: "progress" }),
+                selected: false,
+            },
+        })
+        expect(w.find('[data-testid="mark-episode-watched"]').exists()).toBe(
+            true
+        )
+        expect(w.find('[data-testid="mark-episode-unwatched"]').exists()).toBe(
+            false
+        )
+    })
+})

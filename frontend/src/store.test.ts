@@ -7,7 +7,16 @@
  */
 import { describe, expect, it } from "vitest"
 import { store } from "./store"
-import { humanSize, epCode, libraryShort, libraryLabel } from "./store"
+import {
+    humanSize,
+    epCode,
+    libraryShort,
+    libraryLabel,
+    recordScrobbled,
+    recordUnwatched,
+    isScrobbledThisSession,
+    isUnwatchedThisSession,
+} from "./store"
 
 // fuzzyScore is module-private (not exported). We re-import the file and
 // poke at the implementation via an exported re-export. Add export when needed.
@@ -97,5 +106,34 @@ describe("libraryShort / libraryLabel", () => {
             },
         ]
         expect(libraryShort("nonexistent")).toBe("??")
+    })
+})
+
+describe("session watch-state overlay (scrobbled vs unwatched)", () => {
+    // Distinct keys per case so the module-level overlay Sets don't leak
+    // between assertions (there is no reset hook; the overlay clears on reload).
+    it("records each direction independently for separate items", () => {
+        recordScrobbled("tv", "A", 1, 1)
+        recordUnwatched("tv", "B", 1, 1)
+        expect(isScrobbledThisSession("tv", "A", 1, 1)).toBe(true)
+        expect(isUnwatchedThisSession("tv", "A", 1, 1)).toBe(false)
+        expect(isUnwatchedThisSession("tv", "B", 1, 1)).toBe(true)
+        expect(isScrobbledThisSession("tv", "B", 1, 1)).toBe(false)
+    })
+
+    it("is last-write-wins: marking unwatched clears a prior scrobble", () => {
+        recordScrobbled("tv", "C", 2, 3)
+        expect(isScrobbledThisSession("tv", "C", 2, 3)).toBe(true)
+        recordUnwatched("tv", "C", 2, 3)
+        expect(isUnwatchedThisSession("tv", "C", 2, 3)).toBe(true)
+        expect(isScrobbledThisSession("tv", "C", 2, 3)).toBe(false)
+    })
+
+    it("is last-write-wins in the other direction too", () => {
+        recordUnwatched("movies", "D")
+        expect(isUnwatchedThisSession("movies", "D")).toBe(true)
+        recordScrobbled("movies", "D")
+        expect(isScrobbledThisSession("movies", "D")).toBe(true)
+        expect(isUnwatchedThisSession("movies", "D")).toBe(false)
     })
 })

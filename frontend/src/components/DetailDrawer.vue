@@ -6,8 +6,10 @@ import {
     closeDetail,
     humanSize,
     isScrobbledThisSession,
+    isUnwatchedThisSession,
     pushToast,
     recordScrobbled,
+    recordUnwatched,
     store,
     trackJob,
 } from "../store"
@@ -48,29 +50,36 @@ function parseKey(k: string): [number, number] {
     return [s, e]
 }
 
-// Apply the session scrobble overlay to fresh title-detail data. Plex's
-// scrobble lands instantly but the WatchState daemon polls Plex on a slow
-// schedule (minutes), so api.title() can return watched=false for an episode
-// we successfully scrobbled seconds ago. Without this overlay, the UI would
-// flicker watched -> unwatched as refreshInPlace fires.
+// Apply the session watch-state overlay to fresh title-detail data. Plex's
+// scrobble/unscrobble lands instantly but the WatchState daemon polls Plex on
+// a slow schedule (minutes), so api.title() can return the stale pre-gesture
+// state seconds after we successfully changed it. Without this overlay, the UI
+// would flicker as refreshInPlace fires. Both directions are applied; the
+// store keeps the two overlays mutually exclusive, so per item at most one of
+// the two checks below is true.
 function applyScrobbleOverlay(d: TitleDetail): TitleDetail {
     if (d.kind === "movie") {
-        if (isScrobbledThisSession(d.lib, d.folder)) d.watched = true
+        if (isUnwatchedThisSession(d.lib, d.folder)) d.watched = false
+        else if (isScrobbledThisSession(d.lib, d.folder)) d.watched = true
         return d
     }
     for (const s of d.seasons) {
-        let extraWatched = 0
         for (const e of s.episodes) {
-            if (
-                isScrobbledThisSession(d.lib, d.folder, e.season, e.episode) &&
-                e.watch_state !== "watched"
+            if (isUnwatchedThisSession(d.lib, d.folder, e.season, e.episode)) {
+                e.watch_state = "unwatched"
+                e.watch_pct = 0
+            } else if (
+                isScrobbledThisSession(d.lib, d.folder, e.season, e.episode)
             ) {
                 e.watch_state = "watched"
                 e.watch_pct = 100
-                extraWatched++
             }
         }
-        s.watched_episodes += extraWatched
+        // Recompute from the (possibly overlaid) episode states so the season
+        // count stays consistent whichever direction the overlay pushed.
+        s.watched_episodes = s.episodes.filter(
+            (e) => e.watch_state === "watched"
+        ).length
     }
     return d
 }
@@ -362,17 +371,19 @@ function toggleSeasonExpand(s: number): void {
     else expandedSeasons.value.add(s)
 }
 
-// ── Mark watched (explicit gesture, no file deletion) ──────────────────────
+// ── Set watch state (explicit gesture, no file deletion) ───────────────────
 
-async function markWatched(
+async function setWatched(
     scope: "movie" | "series" | "season" | "episode",
+    watched: boolean,
     season?: number,
     episode?: number,
     confirmLabel?: string
 ): Promise<void> {
     if (!detail.value) return
+    const verb = watched ? "Mark watched" : "Mark unwatched"
     if (confirmLabel) {
-        if (!confirm(`Mark watched: ${confirmLabel}?`)) return
+        if (!confirm(`${verb}: ${confirmLabel}?`)) return
     }
     submitting.value = true
     try {
@@ -382,14 +393,17 @@ async function markWatched(
             scope,
             season,
             episode,
+            watched,
         })
-        // Record successful scrobbles in the session overlay, then funnel the
+        // Record successful gestures in the session overlay, then funnel the
         // optimistic update through the same applyScrobbleOverlay helper that
         // refreshInPlace uses. One code path = no drift between "fresh-mark
-        // optimistic update" and "post-refresh re-apply."
+        // optimistic update" and "post-refresh re-apply." record() picks the
+        // right overlay; the store keeps the two mutually exclusive.
+        const record = watched ? recordScrobbled : recordUnwatched
         if (detail.value.kind === "movie") {
             if (r.scrobbled > 0) {
-                recordScrobbled(detail.value.lib, detail.value.folder)
+                record(detail.value.lib, detail.value.folder)
             }
         } else {
             for (const it of r.results) {
@@ -398,7 +412,7 @@ async function markWatched(
                     it.season !== null &&
                     it.episode !== null
                 ) {
-                    recordScrobbled(
+                    record(
                         detail.value.lib,
                         detail.value.folder,
                         it.season,
@@ -408,17 +422,18 @@ async function markWatched(
             }
         }
         applyScrobbleOverlay(detail.value)
+        const past = watched ? "watched" : "unwatched"
         if (r.error) {
             pushToast({ kind: "error", text: r.error })
         } else if (r.failed > 0) {
             pushToast({
                 kind: "error",
-                text: `Marked ${r.scrobbled} watched, ${r.failed} failed`,
+                text: `Marked ${r.scrobbled} ${past}, ${r.failed} failed`,
             })
         } else {
             pushToast({
                 kind: "success",
-                text: `Marked ${r.scrobbled} watched`,
+                text: `Marked ${r.scrobbled} ${past}`,
             })
         }
         // Let WatchState catch up; this picks up any drift between optimistic and
@@ -550,8 +565,9 @@ const movieSynced = computed(
                                 :disabled="submitting"
                                 data-testid="mark-movie-watched"
                                 @click="
-                                    markWatched(
+                                    setWatched(
                                         'movie',
+                                        true,
                                         undefined,
                                         undefined,
                                         detail.name
@@ -559,6 +575,23 @@ const movieSynced = computed(
                                 "
                             >
                                 Mark watched
+                            </button>
+                            <button
+                                v-else
+                                class="ghost"
+                                :disabled="submitting"
+                                data-testid="mark-movie-unwatched"
+                                @click="
+                                    setWatched(
+                                        'movie',
+                                        false,
+                                        undefined,
+                                        undefined,
+                                        detail.name
+                                    )
+                                "
+                            >
+                                Mark unwatched
                             </button>
                         </div>
                     </div>
@@ -584,8 +617,9 @@ const movieSynced = computed(
                             :disabled="submitting"
                             data-testid="mark-series-watched"
                             @click="
-                                markWatched(
+                                setWatched(
                                     'series',
+                                    true,
                                     undefined,
                                     undefined,
                                     `entire series ${detail.name}`
@@ -593,6 +627,22 @@ const movieSynced = computed(
                             "
                         >
                             Mark series watched
+                        </button>
+                        <button
+                            class="ghost"
+                            :disabled="submitting"
+                            data-testid="mark-series-unwatched"
+                            @click="
+                                setWatched(
+                                    'series',
+                                    false,
+                                    undefined,
+                                    undefined,
+                                    `entire series ${detail.name}`
+                                )
+                            "
+                        >
+                            Mark series unwatched
                         </button>
                     </div>
 
@@ -641,8 +691,9 @@ const movieSynced = computed(
                                     :disabled="submitting"
                                     data-testid="mark-season-watched"
                                     @click.stop="
-                                        markWatched(
+                                        setWatched(
                                             'season',
+                                            true,
                                             s.season,
                                             undefined,
                                             `Season ${s.season}`
@@ -650,6 +701,22 @@ const movieSynced = computed(
                                     "
                                 >
                                     ✓ season
+                                </button>
+                                <button
+                                    class="ghost mini"
+                                    :disabled="submitting"
+                                    data-testid="mark-season-unwatched"
+                                    @click.stop="
+                                        setWatched(
+                                            'season',
+                                            false,
+                                            s.season,
+                                            undefined,
+                                            `Season ${s.season}`
+                                        )
+                                    "
+                                >
+                                    ✗ season
                                 </button>
                             </header>
                             <div
@@ -666,8 +733,18 @@ const movieSynced = computed(
                                     @toggle="toggle"
                                     @mark-watched="
                                         (season, episode) =>
-                                            markWatched(
+                                            setWatched(
                                                 'episode',
+                                                true,
+                                                season,
+                                                episode
+                                            )
+                                    "
+                                    @mark-unwatched="
+                                        (season, episode) =>
+                                            setWatched(
+                                                'episode',
+                                                false,
                                                 season,
                                                 episode
                                             )

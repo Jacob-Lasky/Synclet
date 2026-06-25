@@ -249,3 +249,189 @@ describe("DetailDrawer mark-watched affordances", () => {
         store.detail = null
     })
 })
+
+describe("DetailDrawer mark-unwatched affordances", () => {
+    it("renders Mark series unwatched + Mark season unwatched + per-episode unwatch on a watched episode", async () => {
+        const { api } = await import("./api")
+        // A show whose one episode is already watched, so the per-episode tile
+        // offers unwatch rather than watch.
+        ;(api.title as ReturnType<typeof vi.fn>).mockResolvedValue({
+            ...SHOW_FIXTURE,
+            folder: "Watched Show",
+            seasons: [
+                {
+                    season: 1,
+                    total_bytes: 0,
+                    synced_episodes: 0,
+                    watched_episodes: 1,
+                    episodes: [
+                        {
+                            season: 1,
+                            episode: 1,
+                            title: "Pilot",
+                            size_bytes: 0,
+                            files: [],
+                            is_synced: false,
+                            watch_state: "watched" as const,
+                            watch_pct: 100,
+                        },
+                    ],
+                },
+            ],
+        })
+        store.detail = { lib: "tv", folder: "Watched Show" }
+
+        const wrapper = mount(DetailDrawer)
+        await new Promise((r) => setTimeout(r, 50))
+        await nextTick()
+        await nextTick()
+
+        const html = wrapper.html()
+        expect(html).toContain('data-testid="mark-series-unwatched"')
+        expect(html).toContain('data-testid="mark-season-unwatched"')
+        expect(html).toContain('data-testid="mark-episode-unwatched"')
+        expect(html).toContain("Mark series unwatched")
+
+        store.detail = null
+    })
+
+    it("renders Mark unwatched on the movie pane when the movie is watched", async () => {
+        const { api } = await import("./api")
+        ;(api.title as ReturnType<typeof vi.fn>).mockResolvedValue({
+            ...MOVIE_FIXTURE,
+            folder: "Watched Movie",
+            watched: true,
+        })
+        store.detail = { lib: "movies", folder: "Watched Movie" }
+
+        const wrapper = mount(DetailDrawer)
+        await new Promise((r) => setTimeout(r, 50))
+        await nextTick()
+        await nextTick()
+
+        const html = wrapper.html()
+        expect(html).toContain('data-testid="mark-movie-unwatched"')
+        expect(html).toContain("Mark unwatched")
+
+        store.detail = null
+    })
+
+    it("posts watched:false when Mark series unwatched is clicked", async () => {
+        const { api } = await import("./api")
+        ;(api.scrobble as ReturnType<typeof vi.fn>).mockClear()
+        ;(api.title as ReturnType<typeof vi.fn>).mockResolvedValue({
+            ...SHOW_FIXTURE,
+            folder: "Click Show",
+        })
+        store.detail = { lib: "tv", folder: "Click Show" }
+
+        const wrapper = mount(DetailDrawer)
+        await new Promise((r) => setTimeout(r, 50))
+        await nextTick()
+        await nextTick()
+
+        await wrapper
+            .find('[data-testid="mark-series-unwatched"]')
+            .trigger("click")
+        await nextTick()
+
+        expect(api.scrobble).toHaveBeenCalledWith(
+            expect.objectContaining({
+                lib: "tv",
+                folder: "Click Show",
+                scope: "series",
+                watched: false,
+            })
+        )
+
+        store.detail = null
+    })
+
+    it("keeps season-level mark-unwatched sticky against a stale refresh (inverse Unsettled bug)", async () => {
+        // Symmetric to the mark-watched Unsettled bug: unscrobble lands at Plex,
+        // we optimistically flip to unwatched, then refreshInPlace fires and
+        // api.title() returns the STALE watched state (WatchState daemon hasn't
+        // caught up). The unwatch overlay must re-apply so the episodes don't
+        // flicker back to watched.
+        const { api } = await import("./api")
+        const WATCHED_FIXTURE = {
+            ...SHOW_FIXTURE,
+            folder: "Sticky Unwatch Show",
+            seasons: [
+                {
+                    season: 1,
+                    total_bytes: 0,
+                    synced_episodes: 0,
+                    watched_episodes: 2,
+                    episodes: [
+                        {
+                            season: 1,
+                            episode: 1,
+                            title: "Pilot",
+                            size_bytes: 0,
+                            files: [],
+                            is_synced: false,
+                            watch_state: "watched" as const,
+                            watch_pct: 100,
+                        },
+                        {
+                            season: 1,
+                            episode: 2,
+                            title: "Ep Two",
+                            size_bytes: 0,
+                            files: [],
+                            is_synced: false,
+                            watch_state: "watched" as const,
+                            watch_pct: 100,
+                        },
+                    ],
+                },
+            ],
+        }
+        // Every load (initial + stale refresh) returns a fresh watched copy, so
+        // the only thing that can keep the episodes unwatched is the overlay.
+        ;(api.title as ReturnType<typeof vi.fn>).mockImplementation(() =>
+            Promise.resolve(JSON.parse(JSON.stringify(WATCHED_FIXTURE)))
+        )
+        ;(api.scrobble as ReturnType<typeof vi.fn>).mockResolvedValue({
+            scrobbled: 2,
+            failed: 0,
+            results: [
+                { season: 1, episode: 1, status: "ok" },
+                { season: 1, episode: 2, status: "ok" },
+            ],
+        })
+        window.confirm = () => true
+
+        store.detail = { lib: "tv", folder: "Sticky Unwatch Show" }
+        const wrapper = mount(DetailDrawer)
+        await new Promise((r) => setTimeout(r, 50))
+        await nextTick()
+
+        // Sanity: both episodes start watched.
+        expect(
+            (wrapper.html().match(/class="ico watched"/g) ?? []).length
+        ).toBe(2)
+
+        await wrapper
+            .find('[data-testid="mark-season-unwatched"]')
+            .trigger("click")
+        await nextTick()
+        await new Promise((r) => setTimeout(r, 50))
+        await nextTick()
+
+        // Wait for the stale refreshInPlace timer to fire (returns watched).
+        await new Promise((r) => setTimeout(r, 1200))
+        await nextTick()
+        await nextTick()
+
+        const html = wrapper.html()
+        // The overlay forced both episodes unwatched and re-applied on the
+        // stale refresh, so NO watched dots remain.
+        expect((html.match(/class="ico watched"/g) ?? []).length).toBe(0)
+        // And the season "N ✓" watched tag is gone (recomputed count = 0).
+        expect(html).not.toContain("2 ✓")
+
+        store.detail = null
+    })
+})

@@ -641,30 +641,39 @@ def mark_watched_scope(
     scope: str,
     season: int | None = None,
     episode: int | None = None,
+    watched: bool = True,
 ) -> dict:
-    """Scrobble Plex for an explicit user gesture, no filesystem mutation.
+    """Set Plex watch state for an explicit user gesture, no filesystem mutation.
+
+    `watched=True` scrobbles (mark watched); `watched=False` unscrobbles (mark
+    unwatched). The two directions are otherwise identical: same scope -> target
+    expansion, same cache invalidation, same result shape.
 
     Distinct from `resolve(confirm=True)`:
     - The file is still on disk; this is "Plex's watch state drifted, sync it
       up." The snapshot is NOT mutated, no orphan cleanup runs.
-    - Scope determines how the lib/folder pair expands to individual scrobble
-      targets:
-        "movie"   -> scrobble the movie's ratingKey
-        "episode" -> scrobble (season, episode)
-        "season"  -> scrobble every episode where parentIndex == season
-        "series"  -> scrobble every episode in the show
+    - Scope determines how the lib/folder pair expands to individual targets:
+        "movie"   -> the movie's ratingKey
+        "episode" -> (season, episode)
+        "season"  -> every episode where parentIndex == season
+        "series"  -> every episode in the show
 
     Returns {"scrobbled": N, "failed": N, "results": [...]} where each result
-    has the per-item scrobble status. A no_rating_key result means Plex's
-    library doesn't have the item (folder mismatch or library scanning).
+    has the per-item status. The "scrobbled" key counts items acted on in
+    either direction (kept stable for the frontend regardless of direction).
+    A no_rating_key result means Plex's library doesn't have the item (folder
+    mismatch or library scanning).
     """
     from synclet.plex import (
         episode_rating_keys,
         find_in_library,
         invalidate_watch_caches,
         scrobble,
+        unscrobble,
     )
     from synclet.watchstate import invalidate_cache as invalidate_watchstate_cache
+
+    set_state = scrobble if watched else unscrobble
 
     if scope not in {"movie", "series", "season", "episode"}:
         return {
@@ -738,7 +747,7 @@ def mark_watched_scope(
     scrobbled = 0
     failed = 0
     for rk, s, e in targets:
-        ok = scrobble(rk)
+        ok = set_state(rk)
         results.append(
             {"season": s, "episode": e, "status": "ok" if ok else "scrobble_failed"},
         )

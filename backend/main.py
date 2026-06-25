@@ -91,10 +91,12 @@ class IgnoreRequest(BaseModel):
 
 
 class ScrobbleRequest(BaseModel):
-    """Explicit mark-watched gesture.
+    """Explicit mark-watched / mark-unwatched gesture.
 
     The file is still on disk; this is "Plex's watch state drifted, sync it
     up." Distinct from /api/maintenance/resolve which is post-deletion.
+    `watched` defaults to True (mark watched) so existing callers are
+    unaffected; set it False to mark unwatched.
     """
 
     lib: str
@@ -102,6 +104,7 @@ class ScrobbleRequest(BaseModel):
     scope: str  # "movie" | "series" | "season" | "episode"
     season: int | None = None
     episode: int | None = None
+    watched: bool = True
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -392,12 +395,12 @@ async def api_maint_resolve(data: ResolvePendingRequest) -> dict:
 
 @post("/api/scrobble")
 async def api_scrobble(data: ScrobbleRequest) -> dict:
-    """Mark Plex items watched explicitly (no file deletion required).
+    """Set Plex watch state explicitly (no file deletion required).
 
-    Surfaced in DetailDrawer as Mark-watched buttons at the movie / series /
-    season / episode levels. The file stays on disk; only Plex's watch state
-    is updated. WatchState's daemon picks up the change on its next poll, so
-    Synclet's grid view will reflect the new watched state shortly after.
+    Surfaced in DetailDrawer as Mark-watched / Mark-unwatched buttons at the
+    movie / series / season / episode levels. The file stays on disk; only
+    Plex's watch state is updated. WatchState's daemon picks up the change on
+    its next poll, so Synclet's grid view reflects it shortly after.
     """
     return pending.mark_watched_scope(
         lib=data.lib,
@@ -405,6 +408,7 @@ async def api_scrobble(data: ScrobbleRequest) -> dict:
         scope=data.scope,
         season=data.season,
         episode=data.episode,
+        watched=data.watched,
     )
 
 

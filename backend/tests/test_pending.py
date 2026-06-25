@@ -712,6 +712,71 @@ class TestMarkWatchedScope:
         assert r["scrobbled"] == 3
         assert set(called) == {"A", "B", "C"}
 
+    def test_watched_false_calls_unscrobble_not_scrobble(self, monkeypatch):
+        """watched=False must route to plex.unscrobble and leave scrobble
+        untouched. Same target expansion as the watched path."""
+        unscrobbled: list[str] = []
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "M-300"},
+        )
+        monkeypatch.setattr(
+            "synclet.plex.scrobble",
+            lambda *a, **kw: pytest.fail(
+                "scrobble must not be called when watched=False"
+            ),
+        )
+        monkeypatch.setattr(
+            "synclet.plex.unscrobble",
+            lambda rk, **_: unscrobbled.append(rk) or True,
+        )
+        r = mark_watched_scope(
+            lib="movies", folder="Movie", scope="movie", watched=False
+        )
+        assert r["scrobbled"] == 1
+        assert r["failed"] == 0
+        assert unscrobbled == ["M-300"]
+
+    def test_watched_false_season_unscrobbles_only_that_season(self, monkeypatch):
+        unscrobbled: list[str] = []
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "SHOW100"},
+        )
+        monkeypatch.setattr(
+            "synclet.plex.episode_rating_keys",
+            lambda show_rk: {(1, 1): "E-1-1", (1, 2): "E-1-2", (2, 1): "E-2-1"},
+        )
+        monkeypatch.setattr(
+            "synclet.plex.unscrobble",
+            lambda rk, **_: unscrobbled.append(rk) or True,
+        )
+        r = mark_watched_scope(
+            lib="tv", folder="Show", scope="season", season=1, watched=False
+        )
+        assert r["scrobbled"] == 2
+        assert set(unscrobbled) == {"E-1-1", "E-1-2"}
+
+    def test_watched_defaults_to_true(self, monkeypatch):
+        """Omitting watched keeps the existing scrobble (mark-watched) behavior,
+        so pre-existing callers are unaffected."""
+        scrobbled: list[str] = []
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "M-1"},
+        )
+        monkeypatch.setattr(
+            "synclet.plex.scrobble",
+            lambda rk, **_: scrobbled.append(rk) or True,
+        )
+        monkeypatch.setattr(
+            "synclet.plex.unscrobble",
+            lambda *a, **kw: pytest.fail("unscrobble must not be called by default"),
+        )
+        r = mark_watched_scope(lib="movies", folder="Movie", scope="movie")
+        assert r["scrobbled"] == 1
+        assert scrobbled == ["M-1"]
+
     def test_partial_failure_does_not_abort_batch(self, monkeypatch):
         """If one scrobble fails (network/timeout), the rest still run."""
         monkeypatch.setattr(

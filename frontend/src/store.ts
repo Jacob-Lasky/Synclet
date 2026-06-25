@@ -64,6 +64,13 @@ export interface Toast {
 // WatchState's row are authoritative again).
 const scrobbledOverlay = new Set<string>()
 
+// The inverse overlay: items the user explicitly marked UNwatched this session.
+// Same staleness window as scrobbledOverlay (WatchState lags Plex), just the
+// other direction. The two are kept mutually exclusive — recording one drops
+// the key from the other — so the most recent gesture always wins (last-write-
+// wins) and an item is never simultaneously "watched" and "unwatched" overlaid.
+const unwatchedOverlay = new Set<string>()
+
 function overlayKey(
     lib: string,
     folder: string,
@@ -79,7 +86,20 @@ export function recordScrobbled(
     season: number | null = null,
     episode: number | null = null
 ): void {
-    scrobbledOverlay.add(overlayKey(lib, folder, season, episode))
+    const k = overlayKey(lib, folder, season, episode)
+    unwatchedOverlay.delete(k)
+    scrobbledOverlay.add(k)
+}
+
+export function recordUnwatched(
+    lib: string,
+    folder: string,
+    season: number | null = null,
+    episode: number | null = null
+): void {
+    const k = overlayKey(lib, folder, season, episode)
+    scrobbledOverlay.delete(k)
+    unwatchedOverlay.add(k)
 }
 
 /** True if (lib, folder, season?, episode?) was scrobbled in this session. */
@@ -90,6 +110,16 @@ export function isScrobbledThisSession(
     episode: number | null = null
 ): boolean {
     return scrobbledOverlay.has(overlayKey(lib, folder, season, episode))
+}
+
+/** True if (lib, folder, season?, episode?) was marked unwatched this session. */
+export function isUnwatchedThisSession(
+    lib: string,
+    folder: string,
+    season: number | null = null,
+    episode: number | null = null
+): boolean {
+    return unwatchedOverlay.has(overlayKey(lib, folder, season, episode))
 }
 
 export const store = reactive<State>({
