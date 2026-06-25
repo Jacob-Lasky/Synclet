@@ -986,3 +986,100 @@ class TestSyncedAndWatchlistCacheBehavior:
         assert r2.status_code == 200
         # Cache hit: build ran exactly once across both reads.
         assert build_count["n"] == 1
+
+
+class TestEventLoopNotBlockedByHandlers:
+    """Regression for the production hang: a blocking handler froze uvicorn's
+    single event loop, so one slow/stuck call (e.g. a stalled FUSE walk that no
+    socket timeout can interrupt) made every request — including /api/health —
+    hang, flipping the container unhealthy and presenting as "isn't loading".
+
+    The fix offloads blocking handler work via asyncio.to_thread. This test
+    pins that contract against a REAL uvicorn server on a socket (an in-process
+    AsyncTestClient cannot detect loop-blocking — issuing the concurrent probe
+    also needs the very loop that's blocked). While /api/synced is stuck in its
+    blocking body, /api/health must still answer promptly over a second
+    connection. If a future refactor drops the to_thread (running the blocking
+    call directly on the loop), the health probe blocks behind the stuck
+    handler until the 30s release and the assertion below fails.
+    """
+
+    def test_health_responds_while_synced_handler_is_stuck(
+        self, patch_paths, patch_watchstate, monkeypatch
+    ):
+        import socket
+        import threading
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        import httpx
+        import uvicorn
+
+        monkeypatch.setattr("synclet.plex._get_xml", lambda *a, **kw: None)
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _stuck_synced():
+            # Simulate a stalled shfs walk: signal we're running, then block.
+            entered.set()
+            release.wait(timeout=30)
+            return []
+
+        # Free port for the throwaway server.
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+
+        from main import app
+
+        server = uvicorn.Server(
+            uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+        )
+        server_thread = threading.Thread(target=server.run, daemon=True)
+        server_thread.start()
+        base = f"http://127.0.0.1:{port}"
+        try:
+            # Wait until the server (and its on_startup warm, which uses the
+            # REAL get_synced) is accepting requests.
+            for _ in range(100):
+                try:
+                    if httpx.get(f"{base}/api/health", timeout=1).status_code == 200:
+                        break
+                except httpx.HTTPError:
+                    time.sleep(0.1)
+            else:
+                raise AssertionError("server did not come up")
+
+            # NOW swap in the stuck builder. Handlers resolve main.get_synced at
+            # call time, so this affects the next /api/synced request only.
+            monkeypatch.setattr("main.get_synced", _stuck_synced)
+
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                synced_fut = ex.submit(
+                    lambda: httpx.get(f"{base}/api/synced", timeout=30)
+                )
+                assert entered.wait(5), "stuck /api/synced handler never ran"
+
+                # The smoking gun: with /api/synced stuck, health must still
+                # answer over a second connection within a couple seconds. If
+                # the loop were blocked, this would hang until the 30s release
+                # and raise ReadTimeout.
+                t0 = time.monotonic()
+                health = httpx.get(f"{base}/api/health", timeout=5)
+                elapsed = time.monotonic() - t0
+                assert health.status_code == 200
+                assert health.text == "OK"
+                assert elapsed < 3, (
+                    f"health blocked behind stuck handler ({elapsed:.1f}s)"
+                )
+
+                release.set()
+                synced = synced_fut.result(timeout=10)
+                assert synced.status_code == 200
+                assert synced.json() == {"items": []}
+        finally:
+            release.set()
+            server.should_exit = True
+            server_thread.join(timeout=10)
