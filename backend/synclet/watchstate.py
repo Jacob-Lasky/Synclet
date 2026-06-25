@@ -8,10 +8,16 @@ fallback, Synclet's Mark-watched gesture lands in Plex but never re-surfaces
 in Synclet's grid, so checkmarks appear and then revert after the frontend's
 session-only optimistic overlay clears on page reload.
 
-WatchState wins when it has any rows for a title; Plex fills the gap. We do
-not merge per-episode for shows where WatchState has partial coverage , both
-sources are read at the show aggregate level for the grid, and at per-episode
-level only for the detail drawer (where we have lib/folder to disambiguate).
+Both sources are OR-merged, never "WatchState wins entirely." An episode or
+movie counts as watched if WatchState OR Plex reports it watched. This is the
+same rule the grid's bulk reads use (all_show_aggregates MAX-merge,
+all_movie_watched OR-merge), and it has to hold at the per-episode level too.
+WatchState's rows for section 6 / YouTube come from Jellyfin and are never
+updated by a Synclet Plex scrobble (WatchState's Plex backend does not index
+that section), so any episode WatchState happens to record as watched=0 would
+otherwise stay unwatched in the drawer forever no matter how often the user
+marks it watched. The Plex side is keyword-only (lib/folder); legacy title-only
+calls stay WatchState-only.
 
 The DB is opened with `immutable=1` because the file lives on a read-only bind
 mount, sqlite's WAL mode wants to create -wal/-shm sidecars even for mode=ro
@@ -99,17 +105,26 @@ def show_watch_map(
 ) -> dict[tuple[int, int], bool]:
     """{(season, episode): watched_bool} for a TV/YouTube show.
 
-    WatchState is authoritative when it has rows. When WatchState returns
-    nothing AND lib/folder are provided, fall back to Plex's per-episode
-    viewCount (synclet.plex.episode_watch_map). The fallback is keyword-only
-    so legacy call sites that pass only `title` keep their existing behavior.
+    Both sources are OR-merged per episode when lib/folder are provided: an
+    episode is watched if WatchState OR Plex's per-episode viewCount
+    (synclet.plex.episode_watch_map) says so, and the key set is the union of
+    both. The merge is keyword-only so legacy call sites that pass only `title`
+    keep their WatchState-only behavior.
+
+    DO NOT switch back to "WatchState wins when it has any rows." That pins any
+    YouTube episode WatchState records as watched=0 to unwatched forever: a
+    Mark-watched on the series scrobbles Plex, but WatchState's section-6 rows
+    (Jellyfin-sourced, never updated by a Plex scrobble) win the read, so the
+    just-watched episodes revert in the drawer on reload. OR-merge mirrors the
+    grid's bulk reads and lets the fresh Plex signal through.
     """
     ws = _ws_show_map(title)
-    if ws:
-        return ws
     if lib is None or folder is None:
-        return {}
-    return _plex_show_watch_map(lib, folder)
+        return ws
+    merged = dict(_plex_show_watch_map(lib, folder))
+    for key, watched in ws.items():
+        merged[key] = merged.get(key, False) or watched
+    return merged
 
 
 def movie_watch_state(
@@ -118,17 +133,25 @@ def movie_watch_state(
     lib: str | None = None,
     folder: str | None = None,
 ) -> bool | None:
-    """True if watched, False if known unwatched, None if not in WatchState.
+    """True if watched, False if known unwatched, None if unknown to both.
 
-    Falls back to Plex section_index's viewCount when WatchState has no row
-    AND lib/folder are provided.
+    OR-merged across sources when lib/folder are provided: watched if WatchState
+    OR Plex's section_index viewCount says so, None only when neither source has
+    a row. The merge is keyword-only so legacy title-only calls stay
+    WatchState-only.
+
+    DO NOT short-circuit on a WatchState `False`. Same trap as show_watch_map:
+    a movie WatchState recorded as unwatched (Jellyfin-only aggregation, or a
+    section its Plex backend does not index) would mask a fresh Plex view from
+    a just-scrobbled Mark-watched. OR-merge keeps the Plex signal.
     """
     ws = _ws_movie_state(title)
-    if ws is not None:
-        return ws
     if lib is None or folder is None:
+        return ws
+    plex = _plex_movie_state(lib, folder)
+    if ws is None and plex is None:
         return None
-    return _plex_movie_state(lib, folder)
+    return bool(ws) or bool(plex)
 
 
 def _plex_show_watch_map(lib: str, folder: str) -> dict[tuple[int, int], bool]:

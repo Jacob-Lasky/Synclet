@@ -74,6 +74,46 @@ class TestShowWatchMap:
         assert show_watch_map("Does Not Exist") == {}
         assert called["plex"] == 0
 
+    def test_plex_watched_lifts_watchstate_false_episode(
+        self, patch_watchstate, monkeypatch
+    ):
+        """Regression: the YouTube Mark-watched bug. WatchState records BCS
+        (1, 3) as watched=0; the user marks the series watched, which scrobbles
+        Plex but never reaches WatchState (its Plex backend does not index that
+        section). The OR-merge must surface (1, 3) as watched from Plex instead
+        of letting WatchState's stale 0 revert it on the next read."""
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "999"},
+        )
+        monkeypatch.setattr(
+            "synclet.plex.episode_watch_map",
+            lambda rk: {(1, 1): True, (1, 2): True, (1, 3): True},
+        )
+        m = show_watch_map("Better Call Saul", lib="tv", folder="Better Call Saul")
+        assert m[1, 1] is True
+        assert m[1, 2] is True
+        assert m[1, 3] is True
+
+    def test_watchstate_watched_survives_plex_unwatched_episode(
+        self, patch_watchstate, monkeypatch
+    ):
+        """Inverse: WatchState saw (1, 1) on Jellyfin (watched=1); Plex never
+        recorded that play. OR-merge keeps it watched, and Plex-only episodes
+        join the union so the drawer shows the full episode list."""
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "999"},
+        )
+        monkeypatch.setattr(
+            "synclet.plex.episode_watch_map",
+            lambda rk: {(1, 1): False, (1, 4): False},
+        )
+        m = show_watch_map("Better Call Saul", lib="tv", folder="Better Call Saul")
+        assert m[1, 1] is True  # WatchState's Jellyfin view not lost to Plex 0
+        assert m[1, 3] is False  # WatchState-only, still unwatched
+        assert m[1, 4] is False  # Plex-only episode joins the union
+
 
 class TestMovieWatchState:
     def test_watched_movie(self, patch_watchstate):
@@ -114,6 +154,30 @@ class TestMovieWatchState:
         assert (
             movie_watch_state("Missing Movie", lib="movies", folder="missing") is None
         )
+
+    def test_plex_watched_lifts_watchstate_false_movie(
+        self, patch_watchstate, monkeypatch
+    ):
+        """Regression: WatchState has 1917=watched=0, but Plex now records a
+        play (just-scrobbled Mark-watched, or a section WatchState does not
+        index). OR-merge must surface watched instead of returning WatchState's
+        stale False."""
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"view_count": 1},
+        )
+        assert movie_watch_state("1917", lib="movies", folder="1917") is True
+
+    def test_watchstate_watched_survives_plex_zero_movie(
+        self, patch_watchstate, monkeypatch
+    ):
+        """Inverse: WatchState saw The Boys on Jellyfin (watched=1); Plex never
+        registered the view. OR-merge keeps True."""
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"view_count": 0},
+        )
+        assert movie_watch_state("The Boys", lib="movies", folder="the-boys") is True
 
 
 class TestBulkAggregates:
