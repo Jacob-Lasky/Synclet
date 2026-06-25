@@ -274,7 +274,11 @@ async def _run_sync(job: Job) -> None:
             for item in job.items
             if item["is_video"]
         }
-        pending_mod.add_keys(k for k in added_keys if k is not None)
+        # add_keys loads+saves snapshot.json (blocking FS); offload it so a
+        # stalled shfs write can't freeze the event loop (see main.py note).
+        await asyncio.to_thread(
+            pending_mod.add_keys, (k for k in added_keys if k is not None)
+        )
     except Exception as exc:
         job.error = str(exc)
         job.status = "error"
@@ -313,7 +317,11 @@ async def _run_unsync(job: Job) -> None:
             for item in job.items
             if item["is_video"]
         }
-        pending_mod.remove_keys(k for k in unsync_keys if k is not None)
+        # remove_keys loads+saves snapshot.json (blocking FS); offload it so a
+        # stalled shfs write can't freeze the event loop (see main.py note).
+        await asyncio.to_thread(
+            pending_mod.remove_keys, (k for k in unsync_keys if k is not None)
+        )
     except Exception as exc:
         job.error = str(exc)
         job.status = "error"

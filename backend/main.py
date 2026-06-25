@@ -2,6 +2,18 @@
 
 Routes are flat by design: no controllers, no DI containers. The file should
 read like a contract: every endpoint the frontend touches is listed here.
+
+Concurrency rule: handlers are `async def`, but the work they do (Plex HTTP,
+SYNC_ROOT/MEDIA_ROOT walks over shfs FUSE) is BLOCKING and synchronous. Any
+such call MUST be offloaded with `await asyncio.to_thread(...)`. Calling it
+directly on the event loop freezes the entire server — a single slow or stuck
+call (e.g. a stalled FUSE walk, which no socket timeout can interrupt) made
+every request, including /api/health, hang, flipping the container unhealthy
+and presenting as "isn't loading". Handlers that touch only in-memory state
+(health, jobs registry, cache invalidation) stay on the loop; the genuinely
+async syncthing handler awaits its own coroutine. The two job-spawning
+handlers (sync/unsync) keep their asyncio.create_task call on the loop and
+offload only the blocking pre-scan.
 """
 
 from __future__ import annotations
@@ -119,10 +131,15 @@ async def health() -> str:
 async def api_state(refresh: bool = False) -> dict:
     from synclet.config import LIBRARIES
 
-    state = get_state(force=refresh)
+    # get_state walks the filesystem and hits Plex; disk_usage stats the
+    # mounts. Both are blocking and must run off the event loop or a single
+    # slow/stuck call freezes every other request (see module note on
+    # to_thread offloading).
+    state = await asyncio.to_thread(get_state, force=refresh)
+    disk = await asyncio.to_thread(disk_usage)
     return {
         "titles": [t.to_dict() for t in state],
-        "disk": disk_usage(),
+        "disk": disk,
         # Surface library metadata so the frontend doesn't hardcode labels or
         # short tags. `short` is the 2-char badge used on cards.
         "libraries": [
@@ -157,7 +174,7 @@ def _short_label(lib_id: str, label: str) -> str:
 @get("/api/title/{lib:str}/{folder:path}")
 async def api_title(lib: str, folder: str) -> dict:
     folder = folder.lstrip("/")
-    detail = scan_title_detail(lib, folder)
+    detail = await asyncio.to_thread(scan_title_detail, lib, folder)
     if detail is None:
         raise NotFoundException(f"{lib}/{folder} not found")
 
@@ -168,9 +185,15 @@ async def api_title(lib: str, folder: str) -> dict:
     # libraries WatchState's daemon does not index (notably YouTube), so the
     # drawer reflects Plex's authoritative viewCount instead of "0 watched".
     if detail.kind == "movie":
-        out["watched"] = bool(movie_watch_state(detail.name, lib=lib, folder=folder))
+        out["watched"] = bool(
+            await asyncio.to_thread(
+                movie_watch_state, detail.name, lib=lib, folder=folder
+            )
+        )
     else:
-        ws_map = show_watch_map(detail.name, lib=lib, folder=folder)
+        ws_map = await asyncio.to_thread(
+            show_watch_map, detail.name, lib=lib, folder=folder
+        )
         watched_total = 0
         for s in out["seasons"]:
             sw = 0
@@ -190,7 +213,7 @@ async def api_title(lib: str, folder: str) -> dict:
 @get("/api/plex/thumb/{lib:str}/{folder:path}")
 async def api_thumb(lib: str, folder: str) -> Response:
     folder = folder.lstrip("/")
-    result = fetch_thumb_bytes(lib, folder)
+    result = await asyncio.to_thread(fetch_thumb_bytes, lib, folder)
     if result is None:
         return Response(content=b"", status_code=404, media_type="image/jpeg")
     data, content_type = result
@@ -204,7 +227,7 @@ async def api_thumb(lib: str, folder: str) -> Response:
 @get("/api/plex/art/{lib:str}/{folder:path}")
 async def api_art(lib: str, folder: str) -> Response:
     folder = folder.lstrip("/")
-    result = fetch_art_bytes(lib, folder)
+    result = await asyncio.to_thread(fetch_art_bytes, lib, folder)
     if result is None:
         return Response(content=b"", status_code=404, media_type="image/jpeg")
     data, content_type = result
@@ -217,7 +240,11 @@ async def api_art(lib: str, folder: str) -> Response:
 
 @post("/api/sync")
 async def api_sync(data: SyncRequest) -> dict:
-    pairs = sync_ops.resolve_selection(
+    # resolve_selection does a full title scan (FS walk); offload it. start_sync
+    # stays on the event loop because it calls asyncio.create_task to spawn the
+    # background job, which requires a running loop in the current thread.
+    pairs = await asyncio.to_thread(
+        sync_ops.resolve_selection,
         data.lib,
         data.folder,
         selection_type=data.selection_type,
@@ -242,7 +269,8 @@ async def api_unsync(data: SyncRequest) -> dict:
     # name mapping (see sync_ops.resolve_unsync_selection). A source re-encode
     # renames the file, so name-based resolution would remove 0 and orphan the
     # synced copy.
-    targets = sync_ops.resolve_unsync_selection(
+    targets = await asyncio.to_thread(
+        sync_ops.resolve_unsync_selection,
         data.lib,
         data.folder,
         selection_type=data.selection_type,
@@ -281,7 +309,7 @@ async def api_synced() -> dict:
     per STATE_CACHE_TTL window and is invalidated by sync/unsync/remove
     mutations and by /api/refresh.
     """
-    return {"items": get_synced()}
+    return {"items": await asyncio.to_thread(get_synced)}
 
 
 @get("/api/watchlist")
@@ -293,41 +321,41 @@ async def api_watchlist() -> dict:
     underlying fuzzy-match loop is O(N*M) which is the main reason caching
     matters here, even more than the RSS round-trip.
     """
-    return {"items": get_watchlist()}
+    return {"items": await asyncio.to_thread(get_watchlist)}
 
 
 @get("/api/maintenance/watched")
 async def api_maint_watched() -> dict:
-    return {"items": sync_ops.find_watched_synced_files()}
+    return {"items": await asyncio.to_thread(sync_ops.find_watched_synced_files)}
 
 
 @get("/api/maintenance/hanging")
 async def api_maint_hanging() -> dict:
-    return {"items": sync_ops.find_hanging_files()}
+    return {"items": await asyncio.to_thread(sync_ops.find_hanging_files)}
 
 
 @post("/api/maintenance/remove")
 async def api_maint_remove(data: RemoveFilesRequest) -> dict:
-    return sync_ops.remove_files(data.paths)
+    return await asyncio.to_thread(sync_ops.remove_files, data.paths)
 
 
 @get("/api/maintenance/ignored")
 async def api_maint_ignored() -> dict:
     """Return the user's muted entries, grouped by kind, for the Ignored UI."""
-    return ignored.list_grouped()
+    return await asyncio.to_thread(ignored.list_grouped)
 
 
 @post("/api/maintenance/ignore")
 async def api_maint_ignore(data: IgnoreRequest) -> dict:
     """Mute a maintenance entry. Idempotent. Returns ok=False on malformed ref."""
-    ok = ignored.ignore_ref(data.kind, data.ref)
+    ok = await asyncio.to_thread(ignored.ignore_ref, data.kind, data.ref)
     return {"ok": ok}
 
 
 @post("/api/maintenance/unignore")
 async def api_maint_unignore(data: IgnoreRequest) -> dict:
     """Un-mute a maintenance entry. Idempotent. Returns ok=False on malformed ref."""
-    ok = ignored.unignore_ref(data.kind, data.ref)
+    ok = await asyncio.to_thread(ignored.unignore_ref, data.kind, data.ref)
     return {"ok": ok}
 
 
@@ -340,9 +368,13 @@ async def api_maint_counts() -> dict:
     Walks the filesystem (cheap at homelab scale, <1s for ~hundreds of files);
     callers should debounce or fetch on tab focus rather than every render.
     """
-    watched = sync_ops.find_watched_synced_files()
-    hanging = sync_ops.find_hanging_files()
-    pending_items = pending.compute_pending()
+    # Three independent FS walks; run them concurrently in worker threads so
+    # the badge fetch neither blocks the event loop nor serializes the walks.
+    watched, hanging, pending_items = await asyncio.gather(
+        asyncio.to_thread(sync_ops.find_watched_synced_files),
+        asyncio.to_thread(sync_ops.find_hanging_files),
+        asyncio.to_thread(pending.compute_pending),
+    )
     return {
         "watched_titles": len(watched),
         "hanging_files": len(hanging),
@@ -359,7 +391,7 @@ async def api_maint_pending() -> dict:
     under seasons for shows). The frontend (MaintenanceView pending pane)
     renders this directly.
     """
-    return {"items": pending.grouped_pending()}
+    return {"items": await asyncio.to_thread(pending.grouped_pending)}
 
 
 @post("/api/maintenance/resolve")
@@ -389,7 +421,9 @@ async def api_maint_resolve(data: ResolvePendingRequest) -> dict:
         )
         for item in data.items
     ]
-    results, cleanup = pending.resolve(keys, confirm=(data.action == "confirm"))
+    results, cleanup = await asyncio.to_thread(
+        pending.resolve, keys, confirm=(data.action == "confirm")
+    )
     return {"results": [r.to_dict() for r in results], "cleanup": cleanup}
 
 
@@ -402,7 +436,8 @@ async def api_scrobble(data: ScrobbleRequest) -> dict:
     Plex's watch state is updated. WatchState's daemon picks up the change on
     its next poll, so Synclet's grid view reflects it shortly after.
     """
-    return pending.mark_watched_scope(
+    return await asyncio.to_thread(
+        pending.mark_watched_scope,
         lib=data.lib,
         folder=data.folder,
         scope=data.scope,
@@ -414,7 +449,7 @@ async def api_scrobble(data: ScrobbleRequest) -> dict:
 
 @post("/api/resolve-link")
 async def api_resolve(data: ResolveLinkRequest) -> dict:
-    return resolve_url(data.url)
+    return await asyncio.to_thread(resolve_url, data.url)
 
 
 @post("/api/refresh")
@@ -446,7 +481,7 @@ async def api_coverage() -> dict:
     """
     from synclet.config import LIBRARIES
 
-    counts = coverage_counts()
+    counts = await asyncio.to_thread(coverage_counts)
     out_libs: list[dict] = []
     for lib_id, info in LIBRARIES.items():
         stat = counts.get(lib_id)
