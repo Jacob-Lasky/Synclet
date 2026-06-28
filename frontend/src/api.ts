@@ -66,7 +66,12 @@ export const api = {
     job: (id: string) => json<Job>(`/api/jobs/${id}`),
     jobs: () => json<{ jobs: Job[] }>(`/api/jobs`),
 
-    synced: () => json<{ items: SyncedEntry[] }>(`/api/synced`),
+    // Two-phase: `items` (the synced list + sizes) is always present; the
+    // per-title new_unwatched badges are filled once the backend's background
+    // enrichment pass has run. `enriched` is false until then, signalling the
+    // UI to re-poll so the badges appear without a manual refresh.
+    synced: () =>
+        json<{ items: SyncedEntry[]; enriched: boolean }>(`/api/synced`),
     watchlist: () => json<{ items: WatchlistEntry[] }>(`/api/watchlist`),
     maintWatched: () =>
         json<{ items: WatchedFiles[] }>(`/api/maintenance/watched`),

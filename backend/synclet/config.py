@@ -67,10 +67,24 @@ SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".sub", ".vtt"}
 ENGLISH_CODES = {"en", "eng"}
 SUBTITLE_QUALIFIERS = {"forced", "sdh", "hi", "cc", "default", "full"}
 
-# State cache TTL (seconds). Filesystem scans are cheap enough to refresh often,
-# but holding the result for ~30s avoids re-scanning on every API call during
-# rapid UI navigation.
-STATE_CACHE_TTL = int(os.environ.get("SYNCLET_STATE_TTL", "30"))
+# Background cache refresh cadence (seconds). Reads never build (see
+# synclet.maint_cache); the background loop in main.cache_refresh_loop owns all
+# rebuilding. It wakes every CACHE_DIRTY_REFRESH to rebuild keys a mutation
+# flagged dirty (prompt reflection of sync/unsync/remove), and does a full
+# all-keys refresh every CACHE_FULL_REFRESH to pick up external changes
+# (WatchState's own import poll, Syncthing propagation). These intervals trade
+# staleness for background load, NOT user-facing latency, because no read ever
+# blocks on a build.
+CACHE_DIRTY_REFRESH = int(os.environ.get("SYNCLET_CACHE_DIRTY_REFRESH", "3"))
+CACHE_FULL_REFRESH = int(os.environ.get("SYNCLET_CACHE_FULL_REFRESH", "300"))
+
+# Whether to run the background refresh loop + startup prewarm. On in
+# production. Tests set SYNCLET_CACHE_BACKGROUND_REFRESH=0 so no live timer
+# mutates the in-process cache mid-test; they drive run_refresh_cycle directly
+# and rely on the cold-miss build for read-your-writes.
+CACHE_BACKGROUND_REFRESH = (
+    os.environ.get("SYNCLET_CACHE_BACKGROUND_REFRESH", "1") != "0"
+)
 
 # Where to cache Plex poster bytes. Lives under /app/data inside the backend
 # container; persistent across restarts via docker-compose bind mount.

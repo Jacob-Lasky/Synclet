@@ -118,41 +118,41 @@ class TestListGrouped:
 
 
 class TestCacheInvalidation:
-    """Mutating actions must clear maint_cache so the next read recomputes."""
+    """Mutating actions flag maint_cache dirty so the background loop rebuilds.
 
-    def test_ignore_invalidates_cache(self, patch_paths):
+    The last-good value keeps serving until then (it is NOT dropped), so the
+    assertions check the dirty flag plus value preservation, not a cleared cache.
+    """
+
+    def test_ignore_flags_cache_dirty(self, patch_paths):
         from synclet import maint_cache
 
-        # Prime the cache with a sentinel value.
-        maint_cache._cache["pending"] = (0.0, "stale")
-        # Just calling time.time() picks up the stale-since-epoch entry, so
-        # we use the actual cache helper to set a fresh-but-known value.
-        import time
-
-        maint_cache._cache["pending"] = (time.time(), "stale")
-        assert maint_cache._cache.get("pending", (0, None))[1] == "stale"
+        # Prime a known value for the pending key.
+        maint_cache.get_cached("pending", lambda: "fresh")
 
         ignore_pending(PendingRef(sync_sub="tv", folder="X", season=1, episode=1))
-        # invalidate() should have cleared the cache entry.
-        assert "pending" not in maint_cache._cache
+        # invalidate() flagged the key dirty without dropping its value.
+        assert "pending" in maint_cache._dirty
+        assert maint_cache._cache["pending"] == "fresh"
 
-    def test_unignore_invalidates_cache(self, patch_paths):
-        import time
-
+    def test_unignore_flags_cache_dirty(self, patch_paths):
         from synclet import maint_cache
 
         ignore_pending(PendingRef(sync_sub="tv", folder="Y", season=1, episode=1))
-        # Re-prime after the previous invalidation.
-        maint_cache._cache["pending"] = (time.time(), "stale")
+        # Prime + clear the dirty flag the previous ignore set.
+        maint_cache.get_cached("pending", lambda: "fresh")
+        maint_cache.run_refresh_cycle(full=False)
+        assert "pending" not in maint_cache._dirty
 
         unignore_pending(PendingRef(sync_sub="tv", folder="Y", season=1, episode=1))
-        assert "pending" not in maint_cache._cache
+        assert "pending" in maint_cache._dirty
 
 
 class TestPendingFilters:
     def test_ignored_pending_disappears_from_compute_pending(
         self, patch_paths, patch_snapshot_for_pending
     ):
+        from synclet import maint_cache
         from synclet.pending import SnapshotKey, compute_pending, save_snapshot
 
         ghost = SnapshotKey(sync_sub="tv", folder="Ghost", season=1, episode=1)
@@ -160,6 +160,9 @@ class TestPendingFilters:
         assert ghost in compute_pending()
 
         ignore_pending(PendingRef(sync_sub="tv", folder="Ghost", season=1, episode=1))
+        # The ignore flags the cache dirty; drive a background cycle (what the
+        # loop does in production) so the rebuilt value reflects the mute.
+        maint_cache.run_refresh_cycle(full=True)
         assert ghost not in compute_pending()
 
 
@@ -197,10 +200,13 @@ class TestWatchedFilters:
         m_dir.mkdir(parents=True)
         (m_dir / "movie.mkv").write_bytes(b"\0" * 50)
 
+        from synclet import maint_cache
+
         before = [w["folder"] for w in find_watched_synced_files()]
         assert "The Boys (2019)" in before
 
         ignore_watched(WatchedRef(lib="movies", folder="The Boys (2019)"))
+        maint_cache.run_refresh_cycle(full=True)
         after = [w["folder"] for w in find_watched_synced_files()]
         assert "The Boys (2019)" not in after
 
@@ -216,10 +222,13 @@ class TestHangingFilters:
         orphan_srt.write_text("subs")
         # No video in the dir -> hanging.
 
+        from synclet import maint_cache
+
         before = [h["path"] for h in find_hanging_files()]
         assert str(orphan_srt) in before
 
         ignore_hanging(HangingRef(path=str(orphan_srt)))
+        maint_cache.run_refresh_cycle(full=True)
         after = [h["path"] for h in find_hanging_files()]
         assert str(orphan_srt) not in after
 

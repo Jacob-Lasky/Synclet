@@ -19,6 +19,7 @@ offload only the blocking pre-scan.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 
 from litestar import Litestar, MediaType, Response, get, post
@@ -28,7 +29,17 @@ from litestar.static_files import create_static_files_router
 from pydantic import BaseModel
 
 from common.log_utils import get_logger
-from synclet import config, ignored, maint_cache, pending, sync_ops, syncthing
+from synclet import (
+    config,
+    ignored,
+    maint_cache,
+    pending,
+    state,
+    sync_ops,
+    synced,
+    syncthing,
+    watchlist,
+)
 from synclet.plex import fetch_art_bytes, fetch_thumb_bytes, section_index
 from synclet.resolve import resolve_url
 from synclet.scan import scan_title_detail, title_detail_to_dict
@@ -303,23 +314,25 @@ async def api_jobs() -> dict:
 
 @get("/api/synced")
 async def api_synced() -> dict:
-    """Return synced titles with new-unwatched-episode hints.
+    """Return synced titles, two-phase: {"items": [...], "enriched": bool}.
 
-    Cached via maint_cache (synclet.synced.get_synced); the build runs once
-    per STATE_CACHE_TTL window and is invalidated by sync/unsync/remove
-    mutations and by /api/refresh.
+    The list (what's synced + sizes) is served instantly from the background
+    cache. The per-title new-unwatched badges are layered on only once the
+    background loop has built the enrichment phase; until then items carry empty
+    new_unwatched and `enriched` is False, signalling the frontend to re-poll.
+    Both phases are kept warm by the background loop and flagged for rebuild by
+    sync/unsync/remove mutations and /api/refresh.
     """
-    return {"items": await asyncio.to_thread(get_synced)}
+    return await asyncio.to_thread(get_synced)
 
 
 @get("/api/watchlist")
 async def api_watchlist() -> dict:
     """Plex watchlist RSS, matched against the library.
 
-    Cached via maint_cache (synclet.watchlist.get_watchlist); the build runs
-    once per STATE_CACHE_TTL window and is invalidated by /api/refresh. The
-    underlying fuzzy-match loop is O(N*M) which is the main reason caching
-    matters here, even more than the RSS round-trip.
+    Served from the background cache (synclet.watchlist.get_watchlist); the
+    RSS fetch + O(N*M) fuzzy match runs in the background loop, never on this
+    read, and is flagged for rebuild by /api/refresh.
     """
     return {"items": await asyncio.to_thread(get_watchlist)}
 
@@ -454,14 +467,13 @@ async def api_resolve(data: ResolveLinkRequest) -> dict:
 
 @post("/api/refresh")
 async def api_refresh() -> dict:
-    """Force a state rebuild on next read.
+    """Flag every cache for background rebuild. Returns immediately.
 
-    Clears BOTH the state cache and the maint_cache (which now also backs
-    /api/synced and /api/watchlist plus the existing maintenance walks).
-    Without the second invalidate(), the user clicks Refresh, sees the
-    library grid update, but the Synced/Watchlist/Maintenance tabs still
-    show pre-refresh data for up to STATE_CACHE_TTL seconds — a latent bug
-    that this consolidation surfaced.
+    Non-blocking by design: invalidate() marks all entries dirty (keeping the
+    last-good values serving) and the background loop rebuilds them on its next
+    pass, within CACHE_DIRTY_REFRESH seconds. The frontend re-polls and the
+    fresh data lands shortly after; no read ever blocks on the rebuild. The
+    extra invalidate() covers the watchstate lru caches behind the grid.
     """
     invalidate()
     maint_cache.invalidate()
@@ -573,20 +585,16 @@ def build_route_handlers(static_dir: Path | None = None) -> list:
     return handlers
 
 
-async def warm_plex_caches() -> None:
+async def _warm_sections() -> None:
     """Prime synclet.plex.section_index for every Plex-backed library on boot.
 
-    Cold first-paint blocks on five serial section_index calls inside
-    all_show_aggregates / all_movie_watched. Firing them in parallel here at
-    startup (asyncio.to_thread keeps the sync urlopen client off the event
-    loop) trims first-paint by several seconds — the first user request then
-    hits a fully warm in-process lru_cache.
-
-    return_exceptions=True so a single broken section (Plex offline at boot,
-    rotated token, network blip) doesn't block app startup — the failing
-    section just re-tries on first user demand. Errors are logged but not
-    re-raised; container health depends on the API being reachable, not on
-    Plex being live.
+    The grid and synced builds each hit section_index; firing the section
+    fetches in parallel up front (asyncio.to_thread keeps the sync urlopen
+    client off the event loop) means the first builds don't each pay a cold
+    section RTT. return_exceptions=True so a single broken section (Plex offline
+    at boot, rotated token, network blip) doesn't block startup — that section
+    just rebuilds on demand. Container health depends on the API being
+    reachable, not on Plex being live.
     """
     sections = [info["plex_section"] for info in config.LIBRARIES.values()]
     if not sections:
@@ -596,35 +604,90 @@ async def warm_plex_caches() -> None:
         return_exceptions=True,
     )
     ok = sum(1 for r in results if not isinstance(r, BaseException))
-    failed = [
-        (sec, r)
-        for sec, r in zip(sections, results, strict=True)
-        if isinstance(r, BaseException)
-    ]
     logger.info("Plex section cache warmed: %d/%d sections", ok, len(sections))
-    for sec, exc in failed:
-        logger.warning("warm_plex_caches: section %d failed: %r", sec, exc)
+    for sec, r in zip(sections, results, strict=True):
+        if isinstance(r, BaseException):
+            logger.warning("warm sections: section %d failed: %r", sec, r)
 
-    # Now that section_index is warm, prime the two heaviest derived caches.
-    # /api/synced does a single SYNC_ROOT byte-walk per build; /api/watchlist
-    # does an external RSS fetch + fuzzy match against the whole library.
-    # Both ride on top of section_index, so they have to come after the
-    # gather above (not in parallel with it) for the prefetch to be cheap.
-    derived = await asyncio.gather(
+
+async def _cache_refresh_loop() -> None:
+    """Keep every registered cache warm off the request path, forever.
+
+    Each wake rebuilds keys a mutation flagged dirty (prompt reflection of
+    sync/unsync/remove). Every CACHE_FULL_REFRESH it also rebuilds every
+    registered key, which is how external changes get picked up: WatchState's
+    own import poll for watch state, and Syncthing propagation for the synced
+    file set. Builds run in worker threads so the blocking FS/Plex work never
+    touches the event loop, and reads never wait on any of it. A build that
+    raises keeps its last-good value (see maint_cache._rebuild); the loop logs
+    and continues so one bad section can't kill the refresher.
+    """
+    loop = asyncio.get_running_loop()
+    last_full = 0.0
+    first = True
+    while True:
+        try:
+            now = loop.time()
+            full = first or (now - last_full) >= config.CACHE_FULL_REFRESH
+            rebuilt = await asyncio.to_thread(maint_cache.run_refresh_cycle, full=full)
+            if full:
+                last_full = now
+                first = False
+            if rebuilt:
+                logger.info(
+                    "cache refresh (%s): %s",
+                    "full" if full else "dirty",
+                    ", ".join(rebuilt),
+                )
+        except Exception:
+            logger.exception("cache refresh cycle failed; continuing")
+        await asyncio.sleep(config.CACHE_DIRTY_REFRESH)
+
+
+async def on_startup(app: Litestar) -> None:
+    """Register cache builders, warm the cheap caches, start the refresh loop.
+
+    Registering every builder up front lets the loop's first (full) pass build
+    even keys no request has touched yet. We prime only the cheap, above-the-
+    fold caches synchronously (grid state, disk usage, the synced LIST) so the
+    first request is instant; the expensive synced enrichment, watchlist, and
+    maintenance walks are left to the loop's first pass so startup stays fast
+    (~seconds, not the ~30s the old serial prefetch took).
+    """
+    state.register_builders()
+    synced.register_builders()
+    watchlist.register_builders()
+    sync_ops.register_builders()
+    pending.register_builders()
+
+    if not config.CACHE_BACKGROUND_REFRESH:
+        # Tests disable the live loop and prewarm: no timer mutates the cache
+        # mid-test, and reads fall through to the cold-miss build.
+        return
+
+    await _warm_sections()
+    await asyncio.gather(
+        asyncio.to_thread(get_state),
+        asyncio.to_thread(disk_usage),
         asyncio.to_thread(get_synced),
-        asyncio.to_thread(get_watchlist),
         return_exceptions=True,
     )
-    derived_names = ("synced", "watchlist")
-    for name, result in zip(derived_names, derived, strict=True):
-        if isinstance(result, BaseException):
-            logger.warning("warm_plex_caches: %s warm failed: %r", name, result)
-        else:
-            logger.info("warm_plex_caches: %s primed", name)
+
+    app.state.cache_task = asyncio.create_task(_cache_refresh_loop())
+
+
+async def on_shutdown(app: Litestar) -> None:
+    """Cancel the background refresh loop cleanly on shutdown."""
+    task = getattr(app.state, "cache_task", None)
+    if task is not None:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 app = Litestar(
     route_handlers=build_route_handlers(config.STATIC_DIR),
     cors_config=cors_config,
-    on_startup=[warm_plex_caches],
+    on_startup=[on_startup],
+    on_shutdown=[on_shutdown],
 )

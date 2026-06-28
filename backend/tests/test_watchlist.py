@@ -13,8 +13,18 @@ from unittest.mock import patch
 
 import pytest
 
-from synclet import watchlist
+from synclet import maint_cache, watchlist
 from tests._http_mocks import boom_urlopen, fake_urlopen
+
+
+@pytest.fixture(autouse=True)
+def _clean_cache():
+    """get_watchlist is served from the shared cache, which now persists across
+    reads (invalidate only flags dirty). Fully reset it between tests so a
+    cached error/result from one test does not leak into the next."""
+    maint_cache.clear()
+    yield
+    maint_cache.clear()
 
 
 @dataclass

@@ -5,7 +5,10 @@ renamed or its shape changes, the contract breaks here loudly instead of
 in the user's browser silently.
 """
 
+from typing import cast
+
 import pytest
+from litestar import Litestar
 from litestar.testing import TestClient
 
 
@@ -198,6 +201,12 @@ class TestMaintenanceIgnoreRoutes:
             },
         )
 
+        # The ignore flags the cache dirty; reads never rebuild on the request
+        # path, so drive one background refresh cycle (what the loop does in
+        # production) before re-reading.
+        from synclet import maint_cache
+
+        maint_cache.run_refresh_cycle(full=True)
         after = client.get("/api/maintenance/counts").json()
         assert after["pending_items"] == baseline - 1
 
@@ -670,24 +679,24 @@ class TestRefreshRoute:
         assert r.status_code == 201
         assert r.json() == {"ok": True}
 
-    def test_clears_maint_cache_not_just_state_cache(self, client):
-        """Regression: /api/refresh used to only call state.invalidate(),
-        leaving the maint_cache (which backs the Maintenance tab AND now
-        /api/synced + /api/watchlist) holding pre-refresh data for up to
-        STATE_CACHE_TTL seconds. The fix calls maint_cache.invalidate()
-        alongside state.invalidate()."""
+    def test_flags_all_caches_dirty_keeping_last_good(self, client):
+        """/api/refresh flags every cache for background rebuild without
+        dropping the values (reads keep serving last-good until the loop
+        rebuilds). The state + maint caches both get flagged so the grid AND
+        the Synced/Watchlist/Maintenance tabs refresh together."""
         from synclet import maint_cache
 
-        # Prime a cache entry via the public API so we know the cache has
-        # at least one resident value going in.
+        # Prime two cache entries via the public API.
         maint_cache.get_cached("sentinel", lambda: {"primed": True})
-        assert "sentinel" in maint_cache._cache
+        maint_cache.get_cached("state", lambda: ["s"])
         r = client.post("/api/refresh", json={})
         assert r.status_code == 201
 
-        # The post-refresh cache must be empty: state.invalidate() alone
-        # would NOT have cleared this; maint_cache.invalidate() does.
-        assert maint_cache._cache == {}
+        # Values are preserved (last-good), and every registered key is flagged
+        # dirty for the next background pass.
+        assert maint_cache._cache["sentinel"] == {"primed": True}
+        assert "sentinel" in maint_cache._dirty
+        assert "state" in maint_cache._dirty
 
 
 class TestSyncthingOverviewRoute:
@@ -761,14 +770,14 @@ class TestShortLabelHelper:
         assert _short_label("blank", "   ") == "??"
 
 
-class TestWarmPlexCaches:
-    """The on_startup hook that primes section_index for every Plex-backed
-    library in parallel. Critical that:
-      - every library's section is touched (else cold first-paint stays slow),
+class TestWarmSections:
+    """_warm_sections primes section_index for every Plex-backed library in
+    parallel at startup. Critical that:
+      - every library's section is touched (else the first builds stay slow),
       - a thrown section_index doesn't abort startup (else a broken Plex auth
         token bricks the whole app),
-      - the calls actually overlap (else this just shifts cost from request-
-        time to startup-time without buying anything).
+      - the calls actually overlap (else this just shifts cost without buying
+        anything).
     """
 
     @pytest.fixture(autouse=True)
@@ -790,22 +799,14 @@ class TestWarmPlexCaches:
             return {}
 
         monkeypatch.setattr("synclet.plex.section_index", _track)
-        # The hook imports section_index from synclet.plex inside main.py at
-        # module load, so the monkeypatch on synclet.plex.section_index has
-        # to be mirrored on the main-module ref too.
+        # main.py imports section_index at module load, so mirror the patch on
+        # the main-module ref too.
         monkeypatch.setattr("main.section_index", _track)
-        # The derived-cache prefetches (get_synced / get_watchlist) also call
-        # section_index transitively via watchstate aggregates. Stub them so
-        # this test is scoped to the section-warming portion of the hook;
-        # the derived prefetch has its own dedicated test.
-        monkeypatch.setattr("main.get_synced", list)
-        monkeypatch.setattr("main.get_watchlist", list)
 
-        from main import warm_plex_caches
+        from main import _warm_sections
 
-        await warm_plex_caches()
+        await _warm_sections()
 
-        # Every Plex-backed library got a section_index call exactly once.
         expected = sorted(info["plex_section"] for info in LIBRARIES.values())
         assert sorted(called) == expected
 
@@ -826,16 +827,11 @@ class TestWarmPlexCaches:
 
         monkeypatch.setattr("synclet.plex.section_index", _flaky)
         monkeypatch.setattr("main.section_index", _flaky)
-        # Scope this test to section_index error isolation; stub derived
-        # prefetches.
-        monkeypatch.setattr("main.get_synced", list)
-        monkeypatch.setattr("main.get_watchlist", list)
 
-        from main import warm_plex_caches
+        from main import _warm_sections
 
         # Should NOT raise.
-        await warm_plex_caches()
-        # The other sections still ran.
+        await _warm_sections()
         assert len(survivors) == len(LIBRARIES) - 1
 
     @pytest.mark.asyncio
@@ -856,110 +852,235 @@ class TestWarmPlexCaches:
 
         monkeypatch.setattr("synclet.plex.section_index", _slow)
         monkeypatch.setattr("main.section_index", _slow)
-        # Concurrency assertion is about the section-index gather; stub the
-        # derived prefetch so it doesn't add unrelated wall-time.
-        monkeypatch.setattr("main.get_synced", list)
-        monkeypatch.setattr("main.get_watchlist", list)
 
-        from main import warm_plex_caches
+        from main import _warm_sections
 
         start = asyncio.get_running_loop().time()
-        await warm_plex_caches()
+        await _warm_sections()
         elapsed = asyncio.get_running_loop().time() - start
 
-        # N=len(LIBRARIES) sections serial would be N*sleep_s. Parallel: ~sleep_s.
         n = len(LIBRARIES)
         ceiling = 2.5 * sleep_s
         assert elapsed < ceiling, (
-            f"warm_plex_caches took {elapsed:.3f}s for {n} sections "
+            f"_warm_sections took {elapsed:.3f}s for {n} sections "
             f"(serial would be {n * sleep_s:.3f}s, parallel ceiling {ceiling:.3f}s)"
         )
 
+
+class TestStartupWiring:
+    """on_startup registers every cache builder and, when background refresh is
+    enabled, primes the cheap caches and spawns the refresh loop. The refresh
+    loop itself runs one cycle correctly."""
+
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        from synclet import maint_cache
+
+        maint_cache.clear()
+        yield
+        maint_cache.clear()
+
     @pytest.mark.asyncio
-    async def test_also_primes_synced_and_watchlist(self, monkeypatch):
-        """After section_index warms, the hook prefetches get_synced and
-        get_watchlist so the first user click on either tab hits a warm
-        maint_cache instead of paying the full build cost."""
-        # Stub section_index away so we focus on the derived prefetch.
-        monkeypatch.setattr("synclet.plex.section_index", lambda _sec: {})
-        monkeypatch.setattr("main.section_index", lambda _sec: {})
+    async def test_registers_builders_when_refresh_disabled(self, monkeypatch):
+        from types import SimpleNamespace
 
-        synced_calls: list[int] = []
-        watchlist_calls: list[int] = []
+        from main import on_startup
+        from synclet import config, maint_cache
 
-        def _fake_synced():
-            synced_calls.append(1)
-            return [{"title": "fake"}]
+        monkeypatch.setattr(config, "CACHE_BACKGROUND_REFRESH", False)
+        app = cast(Litestar, SimpleNamespace(state=SimpleNamespace()))
+        await on_startup(app)
 
-        def _fake_watchlist():
-            watchlist_calls.append(1)
-            return [{"title": "fake"}]
+        # Every expensive key is registered so the loop could rebuild it, even
+        # though no prewarm/loop ran (refresh disabled).
+        for key in (
+            "state",
+            "disk_usage",
+            "synced_local",
+            "synced_enrichment",
+            "watchlist",
+            "watched",
+            "hanging",
+            "pending",
+        ):
+            assert key in maint_cache._builders
+        # No loop task was created.
+        assert not hasattr(app.state, "cache_task")
 
-        monkeypatch.setattr("main.get_synced", _fake_synced)
-        monkeypatch.setattr("main.get_watchlist", _fake_watchlist)
+    @pytest.mark.asyncio
+    async def test_primes_and_starts_loop_when_enabled(self, monkeypatch):
+        import asyncio
+        from types import SimpleNamespace
 
-        from main import warm_plex_caches
+        from main import on_startup
+        from synclet import config, maint_cache, state, synced
 
-        await warm_plex_caches()
-        assert len(synced_calls) == 1
-        assert len(watchlist_calls) == 1
+        monkeypatch.setattr(config, "CACHE_BACKGROUND_REFRESH", True)
+        # Stub the heavy work so this test stays scoped to the wiring.
+
+        async def _noop_warm():
+            return None
+
+        monkeypatch.setattr("main._warm_sections", _noop_warm)
+        monkeypatch.setattr(state, "_build", lambda: ["grid"])
+        monkeypatch.setattr(state, "_disk_usage_build", lambda: {"total": 1})
+        monkeypatch.setattr(synced, "_build_local", lambda: [{"title": "x"}])
+
+        app = cast(Litestar, SimpleNamespace(state=SimpleNamespace()))
+        await on_startup(app)
+        try:
+            # Cheap above-the-fold caches were primed synchronously.
+            assert "state" in maint_cache._cache
+            assert "disk_usage" in maint_cache._cache
+            assert "synced_local" in maint_cache._cache
+            # The background loop task is running.
+            assert isinstance(app.state.cache_task, asyncio.Task)
+        finally:
+            app.state.cache_task.cancel()
+            import contextlib
+
+            with contextlib.suppress(asyncio.CancelledError):
+                await app.state.cache_task
+
+    @pytest.mark.asyncio
+    async def test_refresh_loop_runs_a_cycle(self, monkeypatch):
+        import asyncio
+        import contextlib
+
+        import main
+        from synclet import config, maint_cache
+
+        # Tight loop so the first cycle fires immediately.
+        monkeypatch.setattr(config, "CACHE_DIRTY_REFRESH", 0)
+        calls: list[int] = []
+        maint_cache.register("k", lambda: calls.append(1) or "v")
+
+        task = asyncio.create_task(main._cache_refresh_loop())
+        try:
+            # Give the loop real time to run its first (full) cycle, which
+            # rebuilds every registered key in a worker thread.
+            for _ in range(50):
+                await asyncio.sleep(0.01)
+                if calls:
+                    break
+            assert calls, "loop did not run a refresh cycle"
+            assert maint_cache._cache["k"] == "v"
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    @pytest.mark.asyncio
+    async def test_refresh_loop_survives_a_failing_cycle(self, monkeypatch):
+        import asyncio
+        import contextlib
+
+        import main
+        from synclet import config
+
+        monkeypatch.setattr(config, "CACHE_DIRTY_REFRESH", 0)
+        boom = {"n": 0}
+
+        def _boom(*, full):
+            boom["n"] += 1
+            raise RuntimeError("cycle blew up")
+
+        monkeypatch.setattr(main.maint_cache, "run_refresh_cycle", _boom)
+        task = asyncio.create_task(main._cache_refresh_loop())
+        try:
+            for _ in range(50):
+                await asyncio.sleep(0.01)
+                if boom["n"] >= 2:
+                    break
+            # The loop logged the exception and kept going (ran more than once).
+            assert boom["n"] >= 2
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    @pytest.mark.asyncio
+    async def test_on_shutdown_cancels_the_loop_task(self):
+        import asyncio
+        from types import SimpleNamespace
+
+        from main import on_shutdown
+
+        async def _runs_forever():
+            # A never-set Event blocks until the task is cancelled.
+            await asyncio.Event().wait()
+
+        task = asyncio.create_task(_runs_forever())
+        app = cast(Litestar, SimpleNamespace(state=SimpleNamespace(cache_task=task)))
+        await on_shutdown(app)
+        assert task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_on_shutdown_no_task_is_safe(self):
+        from types import SimpleNamespace
+
+        from main import on_shutdown
+
+        # No cache_task attribute (e.g. refresh disabled) must not raise.
+        await on_shutdown(cast(Litestar, SimpleNamespace(state=SimpleNamespace())))
 
 
 class TestSyncedAndWatchlistCacheBehavior:
-    """The /api/synced + /api/watchlist routes are now served by maint_cache.
-    These tests pin the cache contract end-to-end so a future refactor that
-    removes the caching surfaces here, not as a 12-second tab click in
-    production.
+    """The /api/synced + /api/watchlist routes are served from the background-
+    refresh cache. These tests pin the contract end-to-end so a future refactor
+    that removes the caching (and reintroduces a multi-second tab click)
+    surfaces here.
 
-    No autouse cache-bust fixture: the `client` fixture's lifespan fires
-    warm_plex_caches which itself populates the cache via the REAL _build.
-    We invalidate after that runs and then monkeypatch _build so the
-    counting wrapper sees the next request.
+    Background refresh is disabled for the suite (conftest), so the `client`
+    lifespan neither prewarms nor runs the loop: the cache starts empty and the
+    first read is the cold-miss build.
     """
 
     def test_synced_second_request_does_not_rebuild(self, client, monkeypatch):
-        from synclet import maint_cache
         from synclet import synced as synced_mod
 
         build_count = {"n": 0}
-        original_build = synced_mod._build
+        original_build = synced_mod._build_local
 
         def _counting_build():
             build_count["n"] += 1
             return original_build()
 
-        # Clear the warm-hook's cached entry, THEN patch _build, so the next
-        # request rebuilds via the counting wrapper.
-        maint_cache.invalidate()
-        monkeypatch.setattr(synced_mod, "_build", _counting_build)
+        monkeypatch.setattr(synced_mod, "_build_local", _counting_build)
 
         r1 = client.get("/api/synced")
         r2 = client.get("/api/synced")
         assert r1.status_code == 200
         assert r2.status_code == 200
         assert r1.json() == r2.json()
-        # Cache hit on second request: build ran exactly once.
+        # First read cold-builds the synced list; second read hits the cache.
         assert build_count["n"] == 1
 
-    def test_synced_force_rebuilds_via_invalidate(self, client, monkeypatch):
-        """Mutation seams use maint_cache.invalidate() to force a rebuild;
-        confirming the contract works from the consumer side."""
+    def test_synced_rebuilds_after_invalidate_plus_refresh_cycle(
+        self, client, monkeypatch
+    ):
+        """Mutation seams flag dirty via maint_cache.invalidate(); the background
+        loop (run_refresh_cycle) is what rebuilds. A read alone never does."""
         from synclet import maint_cache
         from synclet import synced as synced_mod
 
         build_count = {"n": 0}
-        original_build = synced_mod._build
+        original_build = synced_mod._build_local
 
         def _counting_build():
             build_count["n"] += 1
             return original_build()
 
-        maint_cache.invalidate()
-        monkeypatch.setattr(synced_mod, "_build", _counting_build)
+        monkeypatch.setattr(synced_mod, "_build_local", _counting_build)
 
         client.get("/api/synced")
-        maint_cache.invalidate()
+        assert build_count["n"] == 1
+        # Invalidate then read: the read serves last-good, no rebuild.
+        maint_cache.invalidate("synced_local")
         client.get("/api/synced")
+        assert build_count["n"] == 1
+        # The background cycle is what rebuilds it.
+        maint_cache.run_refresh_cycle(full=False)
         assert build_count["n"] == 2
 
     def test_watchlist_second_request_does_not_rebuild(self, client, monkeypatch):
@@ -1024,7 +1145,7 @@ class TestEventLoopNotBlockedByHandlers:
             # Simulate a stalled shfs walk: signal we're running, then block.
             entered.set()
             release.wait(timeout=30)
-            return []
+            return {"items": [], "enriched": False}
 
         # Free port for the throwaway server.
         s = socket.socket()
@@ -1078,7 +1199,7 @@ class TestEventLoopNotBlockedByHandlers:
                 release.set()
                 synced = synced_fut.result(timeout=10)
                 assert synced.status_code == 200
-                assert synced.json() == {"items": []}
+                assert synced.json() == {"items": [], "enriched": False}
         finally:
             release.set()
             server.should_exit = True

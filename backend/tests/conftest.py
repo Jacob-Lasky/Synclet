@@ -8,11 +8,23 @@ not silently incomplete.
 
 from __future__ import annotations
 
+import os
+
+# Disable the background refresh loop + startup prewarm for the whole suite, so
+# no live timer mutates the in-process cache mid-test. Set before synclet.config
+# is imported so the module-load default is already off; the attribute override
+# below covers the case where config was imported first.
+os.environ.setdefault("SYNCLET_CACHE_BACKGROUND_REFRESH", "0")
+
 import sqlite3
 from collections.abc import Generator
 from pathlib import Path
 
 import pytest
+
+from synclet import config as _config
+
+_config.CACHE_BACKGROUND_REFRESH = False
 
 # ── WatchState schema (matches v02 , keep in sync with the real DB) ────────
 
@@ -174,12 +186,14 @@ def patch_paths(
     monkeypatch.setattr("synclet.config.IGNORED_FILE", ignored_file)
     monkeypatch.setattr("synclet.ignored.IGNORED_FILE", ignored_file)
 
-    # State cache holds previous-test data; invalidate every test.
-    from synclet import maint_cache
-    from synclet import state as state_mod
+    # The in-process cache holds previous-test data keyed off the prior
+    # tmp_path. invalidate() now only flags dirty (it preserves last-good for
+    # background rebuild), so it cannot isolate tests; clear() fully resets the
+    # engine. Also bust the watchstate lru caches behind the grid.
+    from synclet import maint_cache, watchstate
 
-    state_mod.invalidate()
-    maint_cache.invalidate()
+    maint_cache.clear()
+    watchstate.invalidate_cache()
     yield media_tree
-    state_mod.invalidate()
-    maint_cache.invalidate()
+    maint_cache.clear()
+    watchstate.invalidate_cache()
