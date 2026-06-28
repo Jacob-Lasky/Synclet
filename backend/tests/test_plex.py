@@ -97,6 +97,74 @@ class TestSectionIndex:
         assert find_in_library("nonexistent", "anything") is None
 
 
+# Plex stylizes "Pluribus" as "PLUR1BUS" (digit 1), so the title key misses,
+# but its tvdb Guid still matches the folder's {tvdb-436457}. The YouTube-style
+# channel has no Guid and Plex drops a separator the folder keeps.
+_FAKE_SECTION_WITH_GUIDS = b"""<?xml version="1.0" encoding="UTF-8"?>
+<MediaContainer size="2">
+<Directory ratingKey="374574" title="PLUR1BUS" type="show" thumb="/t/374574">
+  <Guid id="imdb://tt22202452"/>
+  <Guid id="tmdb://225171"/>
+  <Guid id="tvdb://436457"/>
+</Directory>
+<Directory ratingKey="382516" title="Complexly Ask Hank Anything" type="show"
+  thumb="/t/382516">
+</Directory>
+</MediaContainer>
+"""
+
+
+class TestFindInLibraryRobustJoin:
+    """find_in_library must resolve a synced folder to its Plex item even when
+    the display titles disagree , the cause of missing posters and 0%-watched
+    grid badges for stylized titles."""
+
+    def setup_method(self):
+        section_index.cache_clear()
+        plex._section_id_index.cache_clear()
+
+    def test_section_index_captures_external_ids(self, monkeypatch):
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_SECTION_WITH_GUIDS),
+        )
+        idx = section_index(2)
+        assert idx["plur1bus"]["ids"] == {
+            "imdb": "tt22202452",
+            "tmdb": "225171",
+            "tvdb": "436457",
+        }
+        # No <Guid> children → empty ids, never a KeyError on .get("ids").
+        assert idx["complexly ask hank anything"]["ids"] == {}
+
+    def test_joins_by_tvdb_id_when_title_is_stylized(self, monkeypatch):
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_SECTION_WITH_GUIDS),
+        )
+        # Title key "pluribus" != Plex's "plur1bus"; the tvdb id rescues it.
+        result = find_in_library("tv", "Pluribus (2025) {tvdb-436457}")
+        assert result is not None
+        assert result["ratingKey"] == "374574"
+
+    def test_joins_by_normalized_title_when_punctuation_differs(self, monkeypatch):
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_SECTION_WITH_GUIDS),
+        )
+        # No id on the folder; Plex dropped the hyphen. Normalized key matches.
+        result = find_in_library("YouTube", "Complexly - Ask Hank Anything")
+        assert result is not None
+        assert result["ratingKey"] == "382516"
+
+    def test_returns_none_when_no_strategy_matches(self, monkeypatch):
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_SECTION_WITH_GUIDS),
+        )
+        assert find_in_library("tv", "Totally Unknown Show {tvdb-999999}") is None
+
+
 # Episode ratingKey + scrobble
 
 
@@ -164,6 +232,13 @@ class TestEpisodeWatchMap:
 
 
 class TestInvalidateWatchCaches:
+    def setup_method(self):
+        # section_index is a process-lifetime lru_cache; clear it so this test
+        # primes from its own urlopen mock instead of inheriting a section 2
+        # entry an earlier test left behind.
+        section_index.cache_clear()
+        plex._section_id_index.cache_clear()
+
     def test_clears_section_index_and_episode_watch_map(self, monkeypatch):
         """After a scrobble, both caches must repopulate from Plex on the next
         read. Without invalidation the show-level view_count counters stay stale
@@ -555,12 +630,14 @@ class TestSectionIndexDiskCache:
         with plex.PLEX_CACHE_FILE.open("w") as f:
             json.dump(
                 {
+                    "v": plex._CACHE_SCHEMA,
                     "ts": time.time(),
                     "sections": {
                         "2": {
                             "from-disk": {
                                 "ratingKey": "999",
                                 "tag": "Directory",
+                                "ids": {"tvdb": "111"},
                                 "leaf_count": 3,
                                 "viewed_leaf_count": 2,
                                 "view_count": 0,
@@ -577,6 +654,31 @@ class TestSectionIndexDiskCache:
         idx = plex.section_index(2)
         assert "from-disk" in idx
         assert idx["from-disk"]["ratingKey"] == "999"
+
+    def test_old_schema_disk_cache_triggers_refetch(self, monkeypatch):
+        """A cache written before the schema bump (no "v", so missing the per-
+        item `ids` the ID join needs) is treated as a miss, not served stale.
+        Without this guard a deploy keeps the ID-based poster/grid join disabled
+        for the whole TTL window."""
+        import json
+        import time
+
+        plex.PLEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with plex.PLEX_CACHE_FILE.open("w") as f:
+            # v1 shape: fresh ts, but no "v" key and no per-item "ids".
+            json.dump(
+                {"ts": time.time(), "sections": {"2": {"old": {"ratingKey": "1"}}}},
+                f,
+            )
+
+        monkeypatch.setattr(
+            "synclet.plex.urllib.request.urlopen",
+            fake_urlopen(_FAKE_TV_SECTION_XML),
+        )
+        idx = plex.section_index(2)
+        # Refetch happened: the v1 "old" entry is dropped, fresh XML is parsed.
+        assert "old" not in idx
+        assert "better call saul" in idx
 
     def test_stale_disk_cache_triggers_refetch(self, monkeypatch):
         """Disk file older than PLEX_CACHE_TTL_S is treated as a miss."""
@@ -633,6 +735,7 @@ class TestSectionIndexDiskCache:
         assert plex.PLEX_CACHE_FILE.exists()
         with plex.PLEX_CACHE_FILE.open() as f:
             raw = json.load(f)
+        assert raw["v"] == plex._CACHE_SCHEMA
         assert "2" in raw["sections"]
         assert "better call saul" in raw["sections"]["2"]
 

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from synclet import maint_cache
 from synclet.config import SYNC_ROOT
 from synclet.fs_helpers import synced_title_sizes
+from synclet.plex import find_in_library
 from synclet.scan import Title, scan_titles, watchstate_key
 from synclet.watchstate import (
     all_movie_watched,
@@ -39,6 +40,25 @@ class TitleWithState:
         return d
 
 
+def _lookup_watch[T](t: Title, table: dict[str, T]) -> T | None:
+    """Look up a title's watch entry in an aggregate table, robust to title drift.
+
+    The aggregates are keyed by watchstate_key. Try the folder's key first
+    (fast, common). On a miss, resolve the title through find_in_library (which
+    joins by external ID) and retry with Plex's canonical title key. This is
+    what makes the grid badge correct for titles Plex stylizes (PLUR1BUS for
+    Pluribus) , without it those rows read 0% watched. Returns the table value
+    (a ShowAggregate, a bool, or None when genuinely absent).
+    """
+    key = watchstate_key(t.folder)
+    if key in table:
+        return table[key]
+    meta = find_in_library(t.lib, t.folder)
+    if meta:
+        return table.get(watchstate_key(meta["title"]))
+    return None
+
+
 def _build() -> list[TitleWithState]:
     invalidate_cache()  # force fresh watchstate read
     shows = all_show_aggregates()
@@ -46,11 +66,10 @@ def _build() -> list[TitleWithState]:
 
     out: list[TitleWithState] = []
     for t in scan_titles():
-        ws_key = watchstate_key(t.folder)
         watched = 0
         synced_pct = 0
         if t.kind in ("show", "youtube"):
-            agg = shows.get(ws_key)
+            agg = _lookup_watch(t, shows)
             watched = agg.watched if agg else 0
             denom = max(t.ep_count, 1)
             watched_pct = min(100, int(watched / denom * 100)) if t.ep_count else 0
@@ -58,7 +77,7 @@ def _build() -> list[TitleWithState]:
                 min(100, int(t.synced_files / denom * 100)) if t.ep_count else 0
             )
         else:
-            watched = 1 if movies.get(ws_key) else 0
+            watched = 1 if _lookup_watch(t, movies) else 0
             watched_pct = 100 if watched else 0
             synced_pct = 100 if t.has_synced else 0
 
