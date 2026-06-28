@@ -1,28 +1,53 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue"
+import { onMounted, onUnmounted, ref } from "vue"
 import { api } from "../api"
 import type { SyncedEntry } from "../types"
 import { humanSize, openDetail, trackJob } from "../store"
 
 const items = ref<SyncedEntry[]>([])
 const loading = ref(true)
+// Whether the backend's new-episode enrichment has landed. The synced list
+// paints immediately regardless; while this is false we re-poll so the
+// "+N new" badges fill in without a manual refresh.
+const enriched = ref(true)
 const error = ref("")
 const submitting = ref<Record<string, boolean>>({})
 
-async function load(): Promise<void> {
-    loading.value = true
+// How long to wait between silent re-polls while enrichment is pending. The
+// backend rebuilds dirty caches every few seconds; 4s comfortably clears it.
+const ENRICH_POLL_MS = 4000
+let enrichTimer: ReturnType<typeof setTimeout> | undefined
+
+async function fetchSynced(showSpinner: boolean): Promise<void> {
+    if (showSpinner) loading.value = true
     error.value = ""
     try {
         const r = await api.synced()
         items.value = r.items
+        enriched.value = r.enriched
+        scheduleEnrichPoll()
     } catch (e) {
         error.value = (e as Error).message
     } finally {
-        loading.value = false
+        if (showSpinner) loading.value = false
     }
 }
 
+function scheduleEnrichPoll(): void {
+    clearTimeout(enrichTimer)
+    // Only poll while the badges are still missing; once enriched, stop so we
+    // are not hammering the API for a steady-state tab.
+    if (!enriched.value) {
+        enrichTimer = setTimeout(() => fetchSynced(false), ENRICH_POLL_MS)
+    }
+}
+
+function load(): Promise<void> {
+    return fetchSynced(true)
+}
+
 onMounted(load)
+onUnmounted(() => clearTimeout(enrichTimer))
 
 async function syncNew(entry: SyncedEntry, n: number): Promise<void> {
     if (!entry.lib) return
@@ -100,6 +125,13 @@ async function unsyncTitle(entry: SyncedEntry): Promise<void> {
             </div>
 
             <div v-else class="list">
+                <div
+                    v-if="!enriched"
+                    class="enriching dim"
+                    data-testid="synced-enriching"
+                >
+                    Checking for new episodes…
+                </div>
                 <div v-for="item in items" :key="item.folder" class="row">
                     <div class="thumb-wrap">
                         <img
@@ -248,6 +280,11 @@ async function unsyncTitle(entry: SyncedEntry): Promise<void> {
 .new {
     color: var(--accent-progress);
     font-weight: 600;
+}
+.enriching {
+    font-size: 0.8rem;
+    text-align: center;
+    padding: 0.2rem 0 0.4rem;
 }
 .actions {
     display: flex;

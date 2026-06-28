@@ -91,13 +91,23 @@ def _build() -> list[dict]:
 
 
 def get_watchlist(*, force: bool = False) -> list[dict]:
-    """Return the cached /api/watchlist payload, recomputing on miss/expire.
+    """Return the /api/watchlist payload, served from the background cache.
 
-    `force=True` bypasses the cache for one call (and refreshes it).
-    Errored RSS fetches are intentionally cached too — the next request
-    within TTL gets the error rather than retrying the upstream RSS,
-    which prevents thundering-herd retries during a Plex.tv outage.
+    `force=True` flags the entry dirty so the background loop rebuilds it on its
+    next pass; the call itself returns the current last-good value without
+    blocking on the RSS fetch + fuzzy match. Errored RSS fetches are cached too
+    (the build returns the error payload), so a Plex.tv outage does not trigger
+    thundering-herd retries on the read path.
     """
     if force:
-        maint_cache.invalidate()
+        maint_cache.invalidate(_CACHE_KEY)
     return maint_cache.get_cached(_CACHE_KEY, _build)
+
+
+def register_builders() -> None:
+    """Register the watchlist builder with the background-refresh engine.
+
+    Called once at startup so the loop's full-refresh pass rebuilds the
+    watchlist (RSS fetch + fuzzy match) even before any request has touched it.
+    """
+    maint_cache.register(_CACHE_KEY, _build)

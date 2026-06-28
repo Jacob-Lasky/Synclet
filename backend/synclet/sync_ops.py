@@ -456,11 +456,18 @@ def _find_watched_synced_files_uncached() -> list[dict]:
     return out
 
 
+# Cache keys for the two maintenance walks. Single source of truth so the
+# get_cached read and the register-for-background-refresh use the exact same
+# key (a drifted literal would silently fork the cache into two entries).
+_WATCHED_KEY = "watched"
+_HANGING_KEY = "hanging"
+
+
 def find_watched_synced_files() -> list[dict]:
     """Cached wrapper: see _find_watched_synced_files_uncached."""
     from synclet.maint_cache import get_cached
 
-    return get_cached("watched", _find_watched_synced_files_uncached)
+    return get_cached(_WATCHED_KEY, _find_watched_synced_files_uncached)
 
 
 def _find_hanging_files_uncached() -> list[dict]:
@@ -499,7 +506,19 @@ def find_hanging_files() -> list[dict]:
     """Cached wrapper: see _find_hanging_files_uncached."""
     from synclet.maint_cache import get_cached
 
-    return get_cached("hanging", _find_hanging_files_uncached)
+    return get_cached(_HANGING_KEY, _find_hanging_files_uncached)
+
+
+def register_builders() -> None:
+    """Register the watched/hanging builders with the background-refresh engine.
+
+    Called once at startup so the loop's full-refresh pass rebuilds these walks
+    even before any Maintenance request has touched them.
+    """
+    from synclet.maint_cache import register
+
+    register(_WATCHED_KEY, _find_watched_synced_files_uncached)
+    register(_HANGING_KEY, _find_hanging_files_uncached)
 
 
 def remove_files(paths: list[str]) -> dict:

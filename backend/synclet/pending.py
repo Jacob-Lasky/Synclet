@@ -274,6 +274,10 @@ def keys_for_paths(paths: Iterable[str | Path]) -> set[SnapshotKey]:
 
 # ── Pending computation ─────────────────────────────────────────────────────
 
+# Cache key for the pending snapshot. Single source of truth so the get_cached
+# read and the register-for-background-refresh use the exact same key.
+_PENDING_KEY = "pending"
+
 
 def _compute_pending_uncached() -> set[SnapshotKey]:
     """Walk SYNC_ROOT + intersect with snapshot + filter ignored.
@@ -305,13 +309,24 @@ def compute_pending() -> set[SnapshotKey]:
     """Return the set of SnapshotKeys present in the snapshot but not on disk.
 
     Excludes user-muted entries from synclet.ignored so the maintenance UI
-    and the Maintenance tab badge both honor the mute. Cached via
-    `maint_cache` for STATE_CACHE_TTL seconds; invalidated by every
-    mutating maintenance action.
+    and the Maintenance tab badge both honor the mute. Served from the
+    background-refresh cache; invalidated (flagged for background rebuild) by
+    every mutating maintenance action.
     """
     from synclet.maint_cache import get_cached
 
-    return get_cached("pending", _compute_pending_uncached)
+    return get_cached(_PENDING_KEY, _compute_pending_uncached)
+
+
+def register_builders() -> None:
+    """Register the pending builder with the background-refresh engine.
+
+    Called once at startup so the loop's full-refresh pass rebuilds the pending
+    snapshot even before any Maintenance request has touched it.
+    """
+    from synclet.maint_cache import register
+
+    register(_PENDING_KEY, _compute_pending_uncached)
 
 
 # ── Post-resolve filesystem cleanup ─────────────────────────────────────────
