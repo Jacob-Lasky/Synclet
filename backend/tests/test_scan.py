@@ -9,7 +9,9 @@ from pathlib import Path
 
 from synclet.scan import (
     clean_name,
+    folder_external_ids,
     is_wanted_file,
+    normalized_key,
     parse_year,
     scan_title_detail,
     scan_titles,
@@ -23,6 +25,11 @@ class TestCleanName:
 
     def test_strips_tmdb(self):
         assert clean_name("1917 (2019) {tmdb-530915}") == "1917 (2019)"
+
+    def test_strips_imdb_with_tt_prefix(self):
+        # imdb ids are tt-prefixed; the cruft stripper must handle them too or
+        # the title key keeps the suffix and misses Plex/WatchState.
+        assert clean_name("Nobody (2021) {imdb-tt3530002}") == "Nobody (2021)"
 
     def test_keeps_year(self):
         assert (
@@ -55,11 +62,47 @@ class TestWatchstateKey:
     def test_strips_tmdb(self):
         assert watchstate_key("1917 (2019) {tmdb-530915}") == "1917"
 
+    def test_strips_imdb(self):
+        assert watchstate_key("Nobody (2021) {imdb-tt3530002}") == "nobody"
+
     def test_already_clean(self):
         assert watchstate_key("Fallout") == "fallout"
 
     def test_lowercases(self):
         assert watchstate_key("BETTER CALL SAUL") == "better call saul"
+
+
+class TestFolderExternalIds:
+    def test_extracts_tvdb(self):
+        assert folder_external_ids("Pluribus (2025) {tvdb-436457}") == {
+            "tvdb": "436457"
+        }
+
+    def test_extracts_tmdb(self):
+        assert folder_external_ids("Se7en (1995) {tmdb-807}") == {"tmdb": "807"}
+
+    def test_extracts_imdb_with_tt_prefix(self):
+        # imdb ids keep their tt prefix so they match Plex's imdb://tt... Guid.
+        assert folder_external_ids("Nobody {imdb-tt3530002}") == {"imdb": "tt3530002"}
+
+    def test_none_when_no_ids(self):
+        # YouTube channel folders carry no external id.
+        assert folder_external_ids("Hank Green") == {}
+
+
+class TestNormalizedKey:
+    def test_strips_punctuation(self):
+        # Plex drops the hyphen this folder keeps; both must collapse to one key.
+        assert (
+            normalized_key("Complexly - Ask Hank Anything")
+            == "complexlyaskhankanything"
+        )
+        assert (
+            normalized_key("Complexly Ask Hank Anything") == "complexlyaskhankanything"
+        )
+
+    def test_strips_year_tvdb_and_case(self):
+        assert normalized_key("Better Call Saul (2015) {tvdb-1}") == "bettercallsaul"
 
 
 class TestIsWantedFile:

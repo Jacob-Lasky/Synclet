@@ -712,6 +712,36 @@ class TestMarkWatchedScope:
         assert r["scrobbled"] == 3
         assert set(called) == {"A", "B", "C"}
 
+    def test_series_results_stay_aligned_under_parallel_scrobble(self, monkeypatch):
+        """The scrobbles fan out across a thread pool; each result must still
+        carry its OWN (season, episode, status). The frontend records its
+        optimistic overlay from these tuples, so a misaligned status would mark
+        the wrong episode watched. Fail exactly one episode and assert the
+        failure lands on that episode and no other."""
+        monkeypatch.setattr(
+            "synclet.plex.find_in_library",
+            lambda lib, folder: {"ratingKey": "SHOW100"},
+        )
+        monkeypatch.setattr(
+            "synclet.plex.episode_rating_keys",
+            lambda show_rk: {(1, 1): "A", (1, 2): "B", (2, 1): "C", (2, 2): "D"},
+        )
+        # Episode (2,1) -> rk "C" fails; the rest succeed.
+        monkeypatch.setattr(
+            "synclet.plex.scrobble",
+            lambda rk, **_: rk != "C",
+        )
+        r = mark_watched_scope(lib="tv", folder="Show", scope="series")
+        assert r["scrobbled"] == 3
+        assert r["failed"] == 1
+        by_ep = {(res["season"], res["episode"]): res["status"] for res in r["results"]}
+        assert by_ep == {
+            (1, 1): "ok",
+            (1, 2): "ok",
+            (2, 1): "scrobble_failed",
+            (2, 2): "ok",
+        }
+
     def test_watched_false_calls_unscrobble_not_scrobble(self, monkeypatch):
         """watched=False must route to plex.unscrobble and leave scrobble
         untouched. Same target expansion as the watched path."""

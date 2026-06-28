@@ -61,6 +61,12 @@ LIBRARIES: dict[str, dict] = {
     },
 }
 
+# External metadata-agent ID schemes Synclet can join a synced folder to its
+# Plex entry on. Single source of truth: scan.py parses them from a folder's
+# {tvdb-...} cruft and plex.py parses them from a Plex <Guid id="tvdb://..."/>.
+# Keep both parsers driven off this so adding a scheme (e.g. tvmaze) is one edit.
+EXTERNAL_ID_SCHEMES = ("imdb", "tmdb", "tvdb")
+
 EXCLUDED_DIRS = {".Recycle.Bin", ".recycle", ".trash", ".stfolder", ".stversions"}
 VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".m4v", ".webm"}
 SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".sub", ".vtt"}

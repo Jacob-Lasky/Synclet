@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from operator import itemgetter
 from pathlib import Path
@@ -758,18 +759,23 @@ def mark_watched_scope(
             for (s, e), rk in sorted(ep_map.items()):
                 targets.append((rk, s, e))
 
-    results: list[dict] = []
-    scrobbled = 0
-    failed = 0
-    for rk, s, e in targets:
+    def _apply(target: tuple[str, int | None, int | None]) -> dict:
+        rk, s, e = target
         ok = set_state(rk)
-        results.append(
-            {"season": s, "episode": e, "status": "ok" if ok else "scrobble_failed"},
-        )
-        if ok:
-            scrobbled += 1
-        else:
-            failed += 1
+        return {"season": s, "episode": e, "status": "ok" if ok else "scrobble_failed"}
+
+    # Each set_state is an independent Plex HTTP round-trip that blocks on I/O,
+    # so a whole-series mark used to run N requests strictly in series , minutes
+    # of dead UI for a long show. Fan them out across a bounded pool; the GIL is
+    # released during the urllib call so this is real concurrency. ThreadPool's
+    # map preserves input order, keeping results aligned with `targets`.
+    if len(targets) <= 1:
+        results: list[dict] = [_apply(t) for t in targets]
+    else:
+        with ThreadPoolExecutor(max_workers=min(8, len(targets))) as ex:
+            results = list(ex.map(_apply, targets))
+    scrobbled = sum(1 for r in results if r["status"] == "ok")
+    failed = len(results) - scrobbled
     if scrobbled:
         # DO NOT skip this on the Mark-watched path. Plex view counts just
         # changed; the section_index and episode_watch_map lru_caches still

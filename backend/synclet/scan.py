@@ -16,6 +16,7 @@ from pathlib import Path
 from synclet.config import (
     ENGLISH_CODES,
     EXCLUDED_DIRS,
+    EXTERNAL_ID_SCHEMES,
     LIBRARIES,
     MEDIA_ROOT,
     SUBTITLE_EXTS,
@@ -25,7 +26,19 @@ from synclet.config import (
 )
 from synclet.fs_helpers import iter_sync_subs
 
-_TVDB_TMDB = re.compile(r"\s*\{(?:tvdb|tmdb)-\d+\}")
+# Strips the {tvdb-...}/{tmdb-...}/{imdb-tt...} suffix Sonarr/Radarr append, so
+# clean_name and watchstate_key produce the bare title WatchState/Plex store.
+# Driven off EXTERNAL_ID_SCHEMES so it covers every scheme the ID join does ,
+# without imdb here an {imdb-tt...} folder kept its cruft and missed the title
+# key (the ID join now backstops it, but the keys should agree on their own).
+_ID_CRUFT = re.compile(r"\s*\{(?:" + "|".join(EXTERNAL_ID_SCHEMES) + r")-(?:tt)?\d+\}")
+# Capturing form of _ID_CRUFT: pulls the (scheme, id) out instead of stripping
+# it. Used to join a synced folder to its Plex / WatchState entry by stable
+# external ID when display titles disagree (Plex stylizes "Pluribus" as
+# "PLUR1BUS", so the title key misses but {tvdb-436457} still matches Plex's
+# Guid). Same config-sourced schemes as _ID_CRUFT and plex.py's Guid parser.
+_EXTERNAL_ID = re.compile(r"\{(" + "|".join(EXTERNAL_ID_SCHEMES) + r")-(tt\d+|\d+)\}")
+_NON_ALNUM = re.compile(r"[^a-z0-9]+")
 _YEAR = re.compile(r"\((\d{4})\)\s*$")
 _EP_PAT = re.compile(r"[Ss](\d+)[Ee](\d+)", re.IGNORECASE)
 _EP_TITLE_FROM_FILENAME = re.compile(
@@ -101,15 +114,38 @@ class TitleDetail:
 
 
 def clean_name(folder: str) -> str:
-    return _TVDB_TMDB.sub("", folder).strip()
+    return _ID_CRUFT.sub("", folder).strip()
 
 
 def watchstate_key(folder_or_name: str) -> str:
-    """Lowercased title without {tvdb-...} or trailing (YYYY) , matches the
-    `state.title` shape that WatchState writes (Plex-side title, no year)."""
-    s = _TVDB_TMDB.sub("", folder_or_name).strip()
+    """Lowercased title without the {tvdb/tmdb/imdb-...} suffix or trailing
+    (YYYY) , matches the `state.title` shape that WatchState writes (Plex-side
+    title, no year)."""
+    s = _ID_CRUFT.sub("", folder_or_name).strip()
     s = re.sub(r"\s*\(\d{4}\)\s*$", "", s).strip()
     return s.lower()
+
+
+def folder_external_ids(folder_or_name: str) -> dict[str, str]:
+    """Extract external IDs embedded in a folder name.
+
+    'Pluribus (2025) {tvdb-436457}' -> {'tvdb': '436457'}. imdb values keep
+    their 'tt' prefix to match Plex's `Guid id="imdb://tt..."`. Returns an
+    empty dict when no IDs are present (e.g. YouTube channel folders), which is
+    the signal for callers to fall back to a title-based join.
+    """
+    return {m.group(1): m.group(2) for m in _EXTERNAL_ID.finditer(folder_or_name)}
+
+
+def normalized_key(folder_or_name: str) -> str:
+    """watchstate_key with every non-alphanumeric stripped.
+
+    A punctuation-tolerant last-resort join for ID-less items (YouTube
+    channels) where Plex drops a separator the folder keeps:
+    'Complexly - Ask Hank Anything' and 'Complexly Ask Hank Anything' both
+    collapse to 'complexlyaskhankanything'.
+    """
+    return _NON_ALNUM.sub("", watchstate_key(folder_or_name))
 
 
 def parse_year(folder: str) -> int | None:

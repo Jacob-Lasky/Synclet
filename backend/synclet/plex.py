@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import threading
 import time
 import urllib.parse
@@ -33,7 +34,13 @@ import xml.etree.ElementTree as ET  # noqa: S405
 from functools import lru_cache
 from pathlib import Path
 
-from synclet.config import LIBRARIES, PLEX_TOKEN, PLEX_URL, THUMB_CACHE
+from synclet.config import (
+    EXTERNAL_ID_SCHEMES,
+    LIBRARIES,
+    PLEX_TOKEN,
+    PLEX_URL,
+    THUMB_CACHE,
+)
 
 # Disk-cache layer for section_index. Path is configurable for tests; default
 # lives alongside snapshot.json / thumb cache under the persistent /app/data
@@ -45,6 +52,17 @@ PLEX_CACHE_FILE = Path(
     os.environ.get("SYNCLET_PLEX_CACHE_FILE", "/app/data/.plex-section-cache.json")
 )
 PLEX_CACHE_TTL_S = int(os.environ.get("SYNCLET_PLEX_CACHE_TTL", "3600"))
+
+# Bump whenever the per-item meta shape changes so a deploy doesn't keep
+# serving a structurally-older disk cache within its TTL. v2 added the `ids`
+# dict (external Guids) that the ID-based find_in_library join depends on; a v1
+# cache has no `ids`, so loading it would silently disable the join until the
+# TTL expired. A mismatched version is treated as a full miss.
+_CACHE_SCHEMA = 2
+
+# Match a Plex Guid id ("tvdb://436457", "imdb://tt22202452") to (scheme, id).
+# Schemes come from config so this stays in lockstep with scan.py's folder parser.
+_GUID_SCHEME = re.compile(r"^(" + "|".join(EXTERNAL_ID_SCHEMES) + r")://(.+)$")
 
 # Serialize disk-cache writes. The startup-warm and watchstate paths now fan
 # out section_index calls in parallel; without a lock, two threads can race
@@ -100,6 +118,8 @@ def _load_disk_cache() -> dict[int, dict[str, dict]] | None:
         return None
     if not isinstance(raw, dict):
         return None
+    if raw.get("v") != _CACHE_SCHEMA:
+        return None
     ts = raw.get("ts")
     if not isinstance(ts, (int, float)) or time.time() - ts > PLEX_CACHE_TTL_S:
         return None
@@ -144,7 +164,7 @@ def _save_disk_cache_entry(section_id: int, idx: dict[str, dict]) -> None:
                 dict(sections_raw) if isinstance(sections_raw, dict) else {}
             )
             sections[str(section_id)] = idx
-            payload = {"sections": sections, "ts": time.time()}
+            payload = {"sections": sections, "ts": time.time(), "v": _CACHE_SCHEMA}
             PLEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
             tmp = PLEX_CACHE_FILE.with_suffix(PLEX_CACHE_FILE.suffix + ".tmp")
             with tmp.open("w", encoding="utf-8") as f:
@@ -164,7 +184,14 @@ def _fetch_section_index_from_plex(section_id: int) -> dict[str, dict]:
     """
     from synclet.scan import watchstate_key  # local to avoid cycle
 
-    root = _get_xml(f"/library/sections/{section_id}/all", timeout=30)
+    # includeGuids=1 embeds each item's external IDs (<Guid id="tvdb://..."/>)
+    # inline in the one section dump, so the ID-based join in find_in_library
+    # costs no extra round-trips.
+    root = _get_xml(
+        f"/library/sections/{section_id}/all",
+        params={"includeGuids": "1"},
+        timeout=30,
+    )
     if root is None:
         return {}
     out: dict[str, dict] = {}
@@ -183,11 +210,28 @@ def _fetch_section_index_from_plex(section_id: int) -> dict[str, dict]:
             "summary": item.get("summary") or "",
             "title": title,
             "tag": item.tag,
+            "ids": _extract_guids(item),
             "view_count": _parse_int(item.get("viewCount"), 0),
             "viewed_leaf_count": _parse_int(item.get("viewedLeafCount"), 0),
             "leaf_count": _parse_int(item.get("leafCount"), 0),
         }
     return out
+
+
+def _extract_guids(item: ET.Element) -> dict[str, str]:
+    """Map an item's <Guid> children to {scheme: id}, e.g. {'tvdb': '436457'}.
+
+    Plex returns multiple agents per item (imdb/tmdb/tvdb); we keep all the
+    ones find_in_library can match a folder's {tvdb-...}/{tmdb-...}/{imdb-...}
+    against. The legacy top-level `guid` attribute is the agent URI, not an
+    external ID, so it is deliberately ignored.
+    """
+    ids: dict[str, str] = {}
+    for g in item.findall("Guid"):
+        m = _GUID_SCHEME.match(g.get("id") or "")
+        if m:
+            ids[m.group(1)] = m.group(2)
+    return ids
 
 
 @lru_cache(maxsize=8)
@@ -197,6 +241,9 @@ def section_index(section_id: int) -> dict[str, dict]:
     Plex's /library/sections/{id}/all does NOT include Location on Directory
     (show) entries, so we can't join by folder path. Instead we join by the
     same key WatchState uses: title with year/tvdb cruft stripped, lowercased.
+    Each item also carries its external IDs under `ids` (see _extract_guids),
+    so find_in_library can fall back to an ID join when Plex's display title
+    diverges from the folder name.
 
     view_count / viewed_leaf_count / leaf_count are Plex's authoritative watch
     counters. They underpin the watchstate fallback for Plex sections that the
@@ -217,14 +264,56 @@ def section_index(section_id: int) -> dict[str, dict]:
     return idx
 
 
+@lru_cache(maxsize=8)
+def _section_id_index(section_id: int) -> dict[tuple[str, str], dict]:
+    """{(scheme, id): meta} derived from section_index.
+
+    Lets find_in_library join by stable external ID when display titles
+    disagree. Cached alongside section_index and busted by the same
+    invalidate_watch_caches() call.
+    """
+    out: dict[tuple[str, str], dict] = {}
+    for meta in section_index(section_id).values():
+        for scheme, val in (meta.get("ids") or {}).items():
+            out[scheme, val] = meta
+    return out
+
+
 def find_in_library(lib: str, folder: str) -> dict | None:
-    from synclet.scan import watchstate_key
+    """Resolve a synced folder to its Plex item, robust to title drift.
+
+    Three escalating strategies, cheapest first:
+      1. Exact title key , the common, fast path (Plex title == folder title).
+      2. External-ID join , Plex stylizes some titles ("PLUR1BUS" for
+         Pluribus) so the title key misses, but the folder's {tvdb-...} still
+         matches Plex's Guid. This is authoritative identity when present.
+      3. Punctuation-tolerant title match , recovers ID-less items (YouTube
+         channels) where Plex drops a separator the folder keeps.
+    """
+    from synclet.scan import folder_external_ids, normalized_key, watchstate_key
 
     info = LIBRARIES.get(lib)
     if not info:
         return None
-    idx = section_index(info["plex_section"])
-    return idx.get(watchstate_key(folder))
+    section = info["plex_section"]
+    idx = section_index(section)
+
+    hit = idx.get(watchstate_key(folder))
+    if hit is not None:
+        return hit
+
+    id_idx = _section_id_index(section)
+    for scheme, val in folder_external_ids(folder).items():
+        meta = id_idx.get((scheme, val))
+        if meta is not None:
+            return meta
+
+    nkey = normalized_key(folder)
+    if nkey:
+        for meta in idx.values():
+            if normalized_key(meta.get("title", "")) == nkey:
+                return meta
+    return None
 
 
 def fetch_thumb_bytes(lib: str, folder: str) -> tuple[bytes, str] | None:
@@ -351,6 +440,7 @@ def invalidate_watch_caches() -> None:
     window — the two layers share invalidation authority.
     """
     section_index.cache_clear()
+    _section_id_index.cache_clear()
     episode_watch_map.cache_clear()
     with contextlib.suppress(FileNotFoundError, OSError):
         PLEX_CACHE_FILE.unlink()
