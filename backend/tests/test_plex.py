@@ -698,6 +698,47 @@ class TestSectionIndexDiskCache:
         assert "better call saul" in idx
         assert "stale" not in idx
 
+    def test_failed_fetch_is_cached_no_retry_storm(self, monkeypatch):
+        """A failed fetch with nothing cached returns {} and CACHES it, so a
+        grid build's per-title find_in_library calls don't each re-attempt the
+        failing fetch and stack full timeouts into a request-long stall. Only
+        one network attempt happens across repeated calls; recovery comes from
+        cache_clear (fired on every scrobble via invalidate_watch_caches) and
+        the disk TTL, not from re-fetching on every call."""
+        attempts = {"n": 0}
+
+        def _counting_boom(*_args, **_kwargs):
+            attempts["n"] += 1
+            raise OSError("plex down")
+
+        monkeypatch.setattr("synclet.plex.urllib.request.urlopen", _counting_boom)
+        assert plex.section_index(2) == {}
+        assert plex.section_index(2) == {}  # served from cache, no second fetch
+        assert attempts["n"] == 1
+
+    def test_stale_disk_served_as_last_good_when_fetch_fails(self, monkeypatch):
+        """Regression: when the live fetch fails, a past-TTL disk copy is served
+        as last-good instead of returning {} and blanking the library. This is
+        the safety net for the reported incident — the disk held the full movie
+        section but was stale, so the old code refetched, timed out, pinned {}."""
+        import json
+
+        plex.PLEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with plex.PLEX_CACHE_FILE.open("w") as f:
+            # ts=0 is well past the TTL, so the fresh-load path treats it as a
+            # miss and the code drops to the live fetch (which then fails).
+            json.dump(
+                {
+                    "v": plex._CACHE_SCHEMA,
+                    "ts": 0,
+                    "sections": {"1": {"last-good-movie": {"ratingKey": "42"}}},
+                },
+                f,
+            )
+        monkeypatch.setattr("synclet.plex.urllib.request.urlopen", boom_urlopen())
+        idx = plex.section_index(1)
+        assert idx == {"last-good-movie": {"ratingKey": "42"}}
+
     def test_corrupt_disk_cache_falls_through_to_plex(self, monkeypatch):
         """Garbled JSON on disk must not block startup — _load_disk_cache
         returns None and the network fetch repopulates."""
