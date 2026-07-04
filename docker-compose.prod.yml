@@ -11,6 +11,14 @@ services:
     synclet:
         image: ghcr.io/jacob-lasky/synclet:${SYNCLET_TAG:-latest}
         container_name: synclet
+        # Run as 99:100 (UnRAID nobody:users), the SAME uid:gid Syncthing runs
+        # as. DO NOT remove or change this. Synclet copies media into the
+        # Syncthing-watched synced-media folder (sync_ops.py copy2); if it runs
+        # as root those files land root:root, and Syncthing (99:100) then cannot
+        # delete them when a title is unshared, so its folder wedges at 95% with
+        # "permission denied". All of Synclet's writable targets (/app/data
+        # state, synced-media) are 99:100-owned; nothing here needs root.
+        user: "99:100"
         # The container itself listens on 1314 (Litestar serves both API and
         # SPA from the same port). Map to host 1313 to keep the user-facing
         # URL stable across dev and prod — dev's frontend was on host 1313.
