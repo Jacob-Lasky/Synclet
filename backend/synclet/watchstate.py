@@ -29,12 +29,12 @@ despite the "immutable" promise.
 from __future__ import annotations
 
 import concurrent.futures
-import re
 import sqlite3
 from dataclasses import dataclass
 from functools import lru_cache
 
 from synclet.config import LIBRARIES, WATCHSTATE_DB
+from synclet.scan import watchstate_key
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,50 +51,30 @@ def _conn() -> sqlite3.Connection | None:
     return sqlite3.connect(f"file:{WATCHSTATE_DB}?immutable=1", uri=True)
 
 
-def _strip_year(title: str) -> str:
-    return re.sub(r"\s*\(\d{4}\)\s*$", "", title).strip()
-
-
 # ── Per-title reads (WatchState + Plex fallback) ────────────────────────────
 
 
 def _ws_show_map(title: str) -> dict[tuple[int, int], bool]:
-    """{(season, episode): watched} from WatchState for a single show."""
-    c = _conn()
-    if c is None:
-        return {}
-    try:
-        plex_title = _strip_year(title)
-        rows = c.execute(
-            "SELECT season, episode, watched FROM state"
-            " WHERE type='episode' AND title=? COLLATE NOCASE",
-            (plex_title,),
-        ).fetchall()
-        return {
-            (int(s), int(e)): bool(w)
-            for s, e, w in rows
-            if s is not None and e is not None
-        }
-    finally:
-        c.close()
+    """{(season, episode): watched} from WatchState for a single show.
+
+    Reads from the watchstate_key-keyed bulk map so a show whose Plex title
+    embeds the year (WatchState stores "Bluey (2018)", not "Bluey") still
+    joins. A raw title= match would miss those rows and silently drop the
+    show's entire WatchState history. invalidate_cache() (called on every
+    scrobble/unscrobble and on each grid rebuild) keeps the bulk map fresh, so
+    this is no staler than the exact-match query it replaced.
+    """
+    return dict(_ws_all_shows().get(watchstate_key(title), {}))
 
 
 def _ws_movie_state(title: str) -> bool | None:
-    """Watched/unwatched/missing from WatchState for a single movie."""
-    c = _conn()
-    if c is None:
-        return None
-    try:
-        plex_title = _strip_year(title)
-        row = c.execute(
-            "SELECT watched FROM state WHERE type='movie' AND title=? COLLATE NOCASE LIMIT 1",
-            (plex_title,),
-        ).fetchone()
-        if row is None:
-            return None
-        return bool(row[0])
-    finally:
-        c.close()
+    """Watched/unwatched/missing from WatchState for a single movie.
+
+    Keyed by watchstate_key for the same reason as _ws_show_map: WatchState
+    stores the year inside the title for disambiguated movies, so a raw
+    title= match would report a genuinely-tracked movie as missing.
+    """
+    return _ws_all_movies().get(watchstate_key(title))
 
 
 def show_watch_map(
@@ -188,7 +168,7 @@ def _fetch_indices_parallel(section_ids: list[int]) -> list[dict[str, dict]]:
     section-RTT. A ThreadPoolExecutor lets the network round-trips overlap
     without pulling the whole call chain into asyncio.
 
-    The lru_cache on section_index dedupes per-id calls within a single worker
+    The cache behind section_index dedupes per-id calls within a single worker
     process; this helper just parallelizes the first-cold fills.
     """
     from synclet.plex import section_index
@@ -209,7 +189,16 @@ def _fetch_indices_parallel(section_ids: list[int]) -> list[dict[str, dict]]:
 
 @lru_cache(maxsize=1)
 def _ws_all_shows() -> dict[str, dict[tuple[int, int], bool]]:
-    """{title_lower: {(s,e): watched}} for every episode WatchState knows."""
+    """{watchstate_key(title): {(s,e): watched}} for every episode WatchState knows.
+
+    Keyed by watchstate_key (year/cruft stripped, lowercased) to match the
+    Plex-side section_index keys, which is the invariant state._lookup_watch
+    documents and relies on. Raw title.lower() would leave WatchState's rows
+    for year-titled shows ("Bluey (2018)") under a key the Plex side ("bluey")
+    never uses, so all_show_aggregates could not MAX-merge them and the grid
+    would read Plex-direct only, discarding WatchState's cross-server view.
+    setdefault merges episodes when two title variants collapse to one key.
+    """
     c = _conn()
     if c is None:
         return {}
@@ -220,7 +209,7 @@ def _ws_all_shows() -> dict[str, dict[tuple[int, int], bool]]:
         ):
             if title is None or s is None or e is None:
                 continue
-            key = title.lower().strip()
+            key = watchstate_key(title)
             out.setdefault(key, {})[int(s), int(e)] = bool(w)
         return out
     finally:
@@ -229,7 +218,12 @@ def _ws_all_shows() -> dict[str, dict[tuple[int, int], bool]]:
 
 @lru_cache(maxsize=1)
 def _ws_all_movies() -> dict[str, bool]:
-    """{title_lower: watched} from WatchState (movies only)."""
+    """{watchstate_key(title): watched} from WatchState (movies only).
+
+    Keyed by watchstate_key to line up with the Plex-side section_index keys
+    (see _ws_all_shows). On the rare title-key collision, OR-merge watched so a
+    True from either row wins, mirroring all_movie_watched's cross-source merge.
+    """
     c = _conn()
     if c is None:
         return {}
@@ -240,7 +234,8 @@ def _ws_all_movies() -> dict[str, bool]:
         ):
             if title is None:
                 continue
-            out[title.lower().strip()] = bool(w)
+            key = watchstate_key(title)
+            out[key] = out.get(key, False) or bool(w)
         return out
     finally:
         c.close()
@@ -346,12 +341,19 @@ def coverage_counts() -> dict[str, CoverageStat]:
     ws_title_counts: dict[str, int] = {}
     if c is not None:
         try:
+            # Key by watchstate_key (year/cruft stripped) to match the Plex-side
+            # section_index keys. Grouping on raw lower(title) leaves every
+            # year-titled show ("Bluey (2018)") under a key the section index
+            # ("bluey") never looks up, so its episodes count as uncovered and
+            # the banner falsely flags a fully-indexed library. Accumulate
+            # because watchstate_key collapses year variants onto one key.
             for title, n in c.execute(
-                "SELECT lower(title), COUNT(*) FROM state GROUP BY lower(title)"
+                "SELECT title, COUNT(*) FROM state GROUP BY title"
             ):
                 if title is None:
                     continue
-                ws_title_counts[title.strip()] = n
+                key = watchstate_key(title)
+                ws_title_counts[key] = ws_title_counts.get(key, 0) + n
         finally:
             c.close()
 

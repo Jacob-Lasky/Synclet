@@ -2,16 +2,19 @@
 
 Designed for batch listing per section (one HTTP call per library) since the
 section dump contains every title's poster key, ratingKey, year, and summary
-in a single response. We cache the {folder_name: metadata} map across three
-layers: in-process lru_cache (hottest), a disk JSON file under
-SYNCLET_PLEX_CACHE_FILE (survives container restarts, 1h TTL by default),
-and finally a fresh Plex round-trip on full miss.
+in a single response. We cache the {watchstate_key: metadata} map across
+layers, cheapest first: in-process lru_cache (hottest), a disk JSON file under
+SYNCLET_PLEX_CACHE_FILE (survives container restarts, 1h TTL by default), a
+fresh Plex round-trip on full miss, and finally the disk file past its TTL as
+a last-good fallback when that round-trip fails. That stale-disk fallback is
+what stops a transient Plex outage from caching an empty index over good data
+(see section_index).
 
 The disk layer matters because the section_index calls dominate cold-load:
-five libraries fan out to five serialized Plex HTTP calls inside
-all_show_aggregates / all_movie_watched. With the disk cache, only the
-first container in the past hour pays that cost; subsequent restarts read
-the index in milliseconds.
+the libraries fan out to concurrent Plex HTTP calls inside
+all_show_aggregates / all_movie_watched (watchstate._fetch_indices_parallel).
+With the disk cache, only the first container in the past hour pays that cost;
+subsequent restarts read the index in milliseconds.
 """
 
 from __future__ import annotations
@@ -103,13 +106,16 @@ def _parse_int(value: str | None, default: int = 0) -> int:
         return default
 
 
-def _load_disk_cache() -> dict[int, dict[str, dict]] | None:
-    """Return {section_id: section_index_dict} from disk if fresh, else None.
+def _load_disk_cache(*, ignore_ttl: bool = False) -> dict[int, dict[str, dict]] | None:
+    """Return {section_id: section_index_dict} from disk if usable, else None.
 
-    Returns None on any IO error, decode error, or stale TTL — callers treat
-    that as a full miss and refetch from Plex. The disk cache is best-effort:
-    if it's corrupt for any reason, we don't surface the error, we just bypass
-    it and let the network fetch repopulate.
+    Returns None on any IO error, decode error, schema mismatch, or (unless
+    ignore_ttl) a stale TTL — callers treat that as a full miss and refetch
+    from Plex. ignore_ttl=True is the last-good fallback: when a live Plex
+    fetch fails, serving a past-TTL but structurally-valid cached section beats
+    returning an empty index that would blank the library (see section_index).
+    The disk cache is best-effort: if it's corrupt for any reason, we don't
+    surface the error, we just bypass it and let the network fetch repopulate.
     """
     try:
         with PLEX_CACHE_FILE.open("r", encoding="utf-8") as f:
@@ -121,7 +127,9 @@ def _load_disk_cache() -> dict[int, dict[str, dict]] | None:
     if raw.get("v") != _CACHE_SCHEMA:
         return None
     ts = raw.get("ts")
-    if not isinstance(ts, (int, float)) or time.time() - ts > PLEX_CACHE_TTL_S:
+    if not isinstance(ts, (int, float)):
+        return None
+    if not ignore_ttl and time.time() - ts > PLEX_CACHE_TTL_S:
         return None
     sections = raw.get("sections")
     if not isinstance(sections, dict):
@@ -176,11 +184,16 @@ def _save_disk_cache_entry(section_id: int, idx: dict[str, dict]) -> None:
             return
 
 
-def _fetch_section_index_from_plex(section_id: int) -> dict[str, dict]:
+def _fetch_section_index_from_plex(section_id: int) -> dict[str, dict] | None:
     """Pure Plex round-trip + parse, no caching. Split out for testability.
 
-    The disk-cache and lru_cache wrappers around this live in section_index
-    below. Tests that want to assert "the network was hit" monkeypatch this.
+    Returns None when the HTTP fetch itself failed (timeout, connection error,
+    unparseable body) and an actual dict (possibly empty for a genuinely-empty
+    section) when Plex responded. section_index relies on that distinction: a
+    None routes to the stale-disk last-good fallback, while a real {} is cached
+    as the honest answer. Conflating the two is what let a cold-start timeout
+    cache {} over good-but-stale disk data and blank the library. Tests that
+    want to assert "the network was hit" monkeypatch this.
     """
     from synclet.scan import watchstate_key  # local to avoid cycle
 
@@ -193,7 +206,7 @@ def _fetch_section_index_from_plex(section_id: int) -> dict[str, dict]:
         timeout=30,
     )
     if root is None:
-        return {}
+        return None
     out: dict[str, dict] = {}
     for item in root:
         if item.tag not in ("Video", "Directory"):
@@ -250,18 +263,41 @@ def section_index(section_id: int) -> dict[str, dict]:
     user's WatchState daemon does not index (notably section 6 / YouTube and
     under-tracked 4K sections); see synclet.watchstate.
 
-    Three-layer cache:
+    Cache layers, cheapest first:
       1. @lru_cache (this decorator) — in-process, lifetime of the worker.
       2. PLEX_CACHE_FILE — disk JSON, survives container restart, 1h TTL.
-      3. Plex network — only on full miss.
+      3. Plex network — on full miss.
+      4. PLEX_CACHE_FILE past its TTL — last-good fallback when the network
+         fetch fails, so a transient Plex outage serves the previous index
+         instead of blanking the library.
+
+    DO NOT drop the stale-disk fallback (step 4) or return {} directly on a
+    fetch failure. A fetch failure is distinct from a genuinely-empty section:
+    _fetch_section_index_from_plex returns None on failure and {} on empty. The
+    reported incident was exactly this — a slow cold fetch failed, the fresh
+    disk read had gone stale past its TTL, and the empty result got cached for
+    the worker's whole life, blanking TV and Movies until a container restart.
+    The result IS cached either way (a per-title find_in_library storm during a
+    grid build must never re-attempt a failing fetch once per title), so the
+    stale disk read is what keeps a cached failure from being an empty one.
     """
     disk = _load_disk_cache()
     if disk is not None and section_id in disk:
         return disk[section_id]
-    idx = _fetch_section_index_from_plex(section_id)
-    if idx:
-        _save_disk_cache_entry(section_id, idx)
-    return idx
+    fetched = _fetch_section_index_from_plex(section_id)
+    if fetched is not None:
+        # Success. Persist only non-empty results so a genuinely-empty section
+        # never blocks a legitimate refetch; the empty dict is still returned
+        # (and cached) as the real answer for this section.
+        if fetched:
+            _save_disk_cache_entry(section_id, fetched)
+        return fetched
+    # Fetch failed: serve the last-good disk copy even past its TTL rather than
+    # blank the library. Falls through to {} only when nothing is cached at all.
+    stale = _load_disk_cache(ignore_ttl=True)
+    if stale is not None and section_id in stale:
+        return stale[section_id]
+    return {}
 
 
 @lru_cache(maxsize=8)

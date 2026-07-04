@@ -44,6 +44,14 @@ class TestShowWatchMap:
         m = show_watch_map("Better Call Saul (2015)")
         assert len(m) == 3
 
+    def test_year_in_watchstate_title_still_joins(self, patch_watchstate):
+        # Regression: WatchState stores this show WITH the year in the title
+        # string ("Bluey (2018)"). A raw title= match against the year-stripped
+        # lookup key dropped every row; the watchstate_key join recovers them
+        # whether the caller passes the year or not.
+        assert show_watch_map("Bluey (2018)") == {(1, 1): True, (1, 2): False}
+        assert show_watch_map("Bluey") == {(1, 1): True, (1, 2): False}
+
     def test_missing_show_returns_empty(self, patch_watchstate):
         assert show_watch_map("Does Not Exist") == {}
 
@@ -125,6 +133,13 @@ class TestMovieWatchState:
     def test_missing_movie_returns_none(self, patch_watchstate):
         assert movie_watch_state("Nonexistent Film") is None
 
+    def test_year_in_watchstate_title_still_joins(self, patch_watchstate):
+        # Regression: WatchState stores "Dune (2021)" with the year in the
+        # title. watchstate_key normalizes both sides so the movie is found
+        # regardless of whether the caller carries the year.
+        assert movie_watch_state("Dune (2021)") is True
+        assert movie_watch_state("Dune") is True
+
     def test_missing_movie_falls_back_to_plex_view_count(
         self, patch_watchstate, monkeypatch
     ):
@@ -204,6 +219,38 @@ class TestBulkAggregates:
         movies = all_movie_watched()
         assert movies["the boys"] is True
         assert movies["1917"] is False
+
+    def test_year_titled_show_joins_and_merges_with_plex(self, monkeypatch):
+        """Regression: WatchState stores "Bluey (2018)" (year in the title) but
+        the Plex section_index key is "bluey" (year stripped). They must share
+        one watchstate_key so WatchState's watched count merges in. Before the
+        fix the WS rows were orphaned under "bluey (2018)" and the grid read
+        Plex-direct only — which here (Plex viewed_leaf_count=0) would report
+        watched=0 instead of the 1 WatchState knows."""
+
+        def _section_index(sec):
+            if sec == 2:
+                return {
+                    "bluey": {
+                        "tag": "Directory",
+                        "viewed_leaf_count": 0,
+                        "leaf_count": 2,
+                    }
+                }
+            return {}
+
+        monkeypatch.setattr("synclet.plex.section_index", _section_index)
+        shows = all_show_aggregates()
+        assert shows["bluey"] == ShowAggregate(watched=1, total=2)
+        # Unified under the year-stripped key, not a second orphaned entry.
+        assert "bluey (2018)" not in shows
+
+    def test_year_titled_movie_joins_watchstate(self):
+        # autouse stub returns section_index → {}, so this is WatchState-only.
+        # "Dune (2021)" (year in title) must surface under the stripped key.
+        movies = all_movie_watched()
+        assert movies["dune"] is True
+        assert "dune (2021)" not in movies
 
     def test_plex_fills_gap_for_untracked_show_section(self, monkeypatch):
         """Section 6 / YouTube has no WatchState rows in the fixture DB. Plex
@@ -356,6 +403,24 @@ class TestCoverageCounts:
         )
         counts = coverage_counts()
         assert counts["YouTube"] == CoverageStat(watchstate_rows=0, expected_rows=26)
+
+    def test_year_titled_show_counts_as_covered(self, patch_watchstate, monkeypatch):
+        """Regression: "Bluey (2018)" has 2 episode rows in WatchState but the
+        section_index key is "bluey". Grouping the WS side on raw lower(title)
+        left them under "bluey (2018)", so observed=0 and the banner falsely
+        flagged the library. watchstate_key on both sides recovers the count."""
+        from synclet import plex as plex_mod
+
+        plex_mod.section_index.cache_clear()
+
+        def _section_index(sec):
+            if sec == 2:
+                return {"bluey": {"tag": "Directory", "leaf_count": 2}}
+            return {}
+
+        monkeypatch.setattr("synclet.plex.section_index", _section_index)
+        counts = coverage_counts()
+        assert counts["tv"] == CoverageStat(watchstate_rows=2, expected_rows=2)
 
     def test_tracked_show_section_counts_real_rows(self, patch_watchstate, monkeypatch):
         """tv section has Better Call Saul with 3 BCS episode rows in the

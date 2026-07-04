@@ -63,6 +63,16 @@ def watchstate_db(tmp_path: Path) -> Path:
         ("episode", 0, 1, "plex", "After Life", 2019, 1, 1),
         ("movie", 0, 1, "plex", "The Boys", 2019, None, None),
         ("movie", 0, 0, "plex", "1917", 2019, None, None),
+        # Year embedded IN the title string (not just the separate `year`
+        # column) — this is how WatchState actually stores shows/movies Plex
+        # disambiguates by year ("Bluey (2018)", "Doctor Who (2005)"). The
+        # section_index side strips the year via watchstate_key, so the WS side
+        # must too or these rows never join. Regression fixtures for the
+        # year-suffix join fix in _ws_all_shows / _ws_all_movies /
+        # coverage_counts and the per-title reads.
+        ("episode", 0, 1, "plex", "Bluey (2018)", 2018, 1, 1),
+        ("episode", 0, 0, "plex", "Bluey (2018)", 2018, 1, 2),
+        ("movie", 0, 1, "plex", "Dune (2021)", 2021, None, None),
     ]
     conn.executemany(
         "INSERT INTO state (type, updated, watched, via, title, year, season, episode)"
