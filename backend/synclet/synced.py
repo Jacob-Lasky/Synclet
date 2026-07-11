@@ -59,6 +59,7 @@ def _build_local() -> list[dict]:
                 "kind": LIBRARIES[source_lib]["kind"] if source_lib else "unknown",
                 "size_bytes": title_stats.size_bytes if title_stats else 0,
                 "synced_episodes": title_stats.video_files if title_stats else 0,
+                "mtime": title_stats.mtime if title_stats else 0.0,
                 "new_unwatched": [],
             }
         )

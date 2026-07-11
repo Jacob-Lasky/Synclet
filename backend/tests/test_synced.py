@@ -40,6 +40,7 @@ def test_two_phase_list_first_then_enrichment(
             "kind",
             "size_bytes",
             "synced_episodes",
+            "mtime",
             "new_unwatched",
         } <= it.keys()
 
@@ -49,6 +50,8 @@ def test_two_phase_list_first_then_enrichment(
         it for it in payload["items"] if it["folder"] == "After Life (2019) {tvdb-2}"
     )
     assert al["synced_episodes"] == 1
+    # mtime rides the same local phase: a synced file exists, so it is positive.
+    assert al["mtime"] > 0
 
     # The background loop builds the enrichment phase.
     maint_cache.run_refresh_cycle(full=True)

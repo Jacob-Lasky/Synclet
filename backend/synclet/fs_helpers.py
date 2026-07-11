@@ -22,10 +22,15 @@ class SyncedTitleStats(NamedTuple):
     downloaded-episode count for show/youtube titles (one video per episode,
     the same 1-file-per-episode assumption the rest of the codebase counts by,
     e.g. Job.total_media_files).
+
+    `mtime` is the newest file mtime under the title (epoch seconds), i.e. when
+    the title was last synced to. It drives the Synced tab's "recently synced"
+    sort. 0.0 for a title whose every file stat failed or that has no files.
     """
 
     size_bytes: int
     video_files: int
+    mtime: float
 
 
 def iter_sync_subs() -> Iterator[Path]:
@@ -90,6 +95,7 @@ def synced_title_stats() -> dict[str, SyncedTitleStats]:
                 continue
             total = 0
             videos = 0
+            newest = 0.0
             # os.walk uses scandir internally and emits (dirpath, dirnames,
             # filenames). One walk per title beats rglob+stat per file
             # because scandir reuses inode buffers across siblings on the
@@ -102,8 +108,10 @@ def synced_title_stats() -> dict[str, SyncedTitleStats]:
                     if file_path.suffix.lower() in VIDEO_EXTS:
                         videos += 1
                     with contextlib.suppress(OSError):
-                        total += file_path.stat().st_size
-            out[top_entry.name] = SyncedTitleStats(total, videos)
+                        st = file_path.stat()
+                        total += st.st_size
+                        newest = max(newest, st.st_mtime)
+            out[top_entry.name] = SyncedTitleStats(total, videos, newest)
     return out
 
 

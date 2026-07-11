@@ -15,6 +15,7 @@ vi.mock("./api", () => ({
                     kind: "show",
                     size_bytes: 4601871517,
                     synced_episodes: 8,
+                    mtime: 1000,
                     new_unwatched: [],
                 },
             ],
@@ -30,8 +31,11 @@ vi.mock("./api", () => ({
 
 vi.mock("./store", () => ({
     humanSize: (n: number) => `${n}B`,
+    libraryLabel: (id: string) =>
+        ({ tv: "TV", movies: "Movies", youtube: "YouTube" })[id] ?? id,
     openDetail: vi.fn(),
     trackJob: vi.fn(),
+    store: { libraries: [{ id: "tv" }, { id: "movies" }, { id: "youtube" }] },
 }))
 
 describe("SyncedView unsync button", () => {
@@ -74,6 +78,7 @@ describe("SyncedView unsync button", () => {
                     kind: "unknown",
                     size_bytes: 100,
                     synced_episodes: 0,
+                    mtime: 100,
                     new_unwatched: [],
                 },
             ],
@@ -116,6 +121,7 @@ describe("SyncedView episode count label", () => {
                     kind: "show",
                     size_bytes: 500,
                     synced_episodes: 1,
+                    mtime: 100,
                     new_unwatched: [],
                 },
             ],
@@ -138,6 +144,7 @@ describe("SyncedView episode count label", () => {
                     kind: "movie",
                     size_bytes: 700,
                     synced_episodes: 1,
+                    mtime: 100,
                     new_unwatched: [],
                 },
             ],
@@ -147,6 +154,117 @@ describe("SyncedView episode count label", () => {
         const text = w.find(".size-line").text()
         expect(text).toContain("700B")
         expect(text).not.toContain("episode")
+    })
+})
+
+describe("SyncedView sort + library filter", () => {
+    // Three titles across two libraries with intentionally opposed name /
+    // recency / size orderings so each sort key produces a distinct sequence.
+    const mixed = {
+        enriched: true,
+        items: [
+            {
+                title: "Zebra",
+                folder: "Zebra",
+                lib: "tv",
+                kind: "show",
+                size_bytes: 100,
+                synced_episodes: 2,
+                mtime: 300,
+                new_unwatched: [],
+            },
+            {
+                title: "Apple",
+                folder: "Apple",
+                lib: "movies",
+                kind: "movie",
+                size_bytes: 300,
+                synced_episodes: 1,
+                mtime: 100,
+                new_unwatched: [],
+            },
+            {
+                title: "Mango",
+                folder: "Mango",
+                lib: "tv",
+                kind: "show",
+                size_bytes: 200,
+                synced_episodes: 5,
+                mtime: 200,
+                new_unwatched: [],
+            },
+        ],
+    }
+
+    function titlesInOrder(w: ReturnType<typeof mount>): string[] {
+        return w.findAll(".row .title").map((n) => n.text())
+    }
+
+    it("defaults to alphabetical (Name A-Z)", async () => {
+        const { api } = await import("./api")
+        vi.mocked(api.synced).mockResolvedValueOnce(mixed)
+        const w = mount(SyncedView)
+        await flushPromises()
+        expect(titlesInOrder(w)).toEqual(["Apple", "Mango", "Zebra"])
+    })
+
+    it("sorts by size (largest first) when Size is selected", async () => {
+        const { api } = await import("./api")
+        vi.mocked(api.synced).mockResolvedValueOnce(mixed)
+        const w = mount(SyncedView)
+        await flushPromises()
+        await w.find('[data-testid="sort-size"]').trigger("click")
+        expect(titlesInOrder(w)).toEqual(["Apple", "Mango", "Zebra"])
+        // Apple 300 > Mango 200 > Zebra 100.
+    })
+
+    it("sorts by recency (newest synced first) when Recent is selected", async () => {
+        const { api } = await import("./api")
+        vi.mocked(api.synced).mockResolvedValueOnce(mixed)
+        const w = mount(SyncedView)
+        await flushPromises()
+        await w.find('[data-testid="sort-recent"]').trigger("click")
+        expect(titlesInOrder(w)).toEqual(["Zebra", "Mango", "Apple"])
+        // mtime 300 > 200 > 100.
+    })
+
+    it("shows one library pill per present library with a count", async () => {
+        const { api } = await import("./api")
+        vi.mocked(api.synced).mockResolvedValueOnce(mixed)
+        const w = mount(SyncedView)
+        await flushPromises()
+        expect(w.find('[data-testid="lib-tv"]').text()).toContain("TV")
+        expect(w.find('[data-testid="lib-tv"]').text()).toContain("2")
+        expect(w.find('[data-testid="lib-movies"]').text()).toContain("Movies")
+        expect(w.find('[data-testid="lib-movies"]').text()).toContain("1")
+    })
+
+    it("narrows the list to the selected library pill", async () => {
+        const { api } = await import("./api")
+        vi.mocked(api.synced).mockResolvedValueOnce(mixed)
+        const w = mount(SyncedView)
+        await flushPromises()
+        await w.find('[data-testid="lib-tv"]').trigger("click")
+        expect(titlesInOrder(w)).toEqual(["Mango", "Zebra"])
+        // Re-toggling clears the filter (empty selection = all).
+        await w.find('[data-testid="lib-tv"]').trigger("click")
+        expect(titlesInOrder(w)).toEqual(["Apple", "Mango", "Zebra"])
+    })
+
+    it("hides the pill row when only one library is present", async () => {
+        const { api } = await import("./api")
+        const tvOnly = mixed.items
+            .filter((it) => it.lib === "tv")
+            .map((it, i) => ({ ...it, folder: `tv-${i}` }))
+        vi.mocked(api.synced).mockResolvedValueOnce({
+            enriched: true,
+            items: tvOnly,
+        })
+        const w = mount(SyncedView)
+        await flushPromises()
+        // Both are lib=tv, so no pills; the sort control still renders.
+        expect(w.find('[data-testid="lib-tv"]').exists()).toBe(false)
+        expect(w.find('[data-testid="sort-name"]').exists()).toBe(true)
     })
 })
 
@@ -164,6 +282,7 @@ describe("SyncedView two-phase enrichment", () => {
             kind: "show" as const,
             size_bytes: 100,
             synced_episodes: 3,
+            mtime: 100,
         }
         vi.mocked(api.synced)
             .mockReset()
