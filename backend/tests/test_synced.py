@@ -33,9 +33,22 @@ def test_two_phase_list_first_then_enrichment(
     assert all(it["new_unwatched"] == [] for it in payload["items"])
     # Every item carries the wire-contract fields.
     for it in payload["items"]:
-        assert {"title", "folder", "lib", "kind", "size_bytes", "new_unwatched"} <= (
-            it.keys()
-        )
+        assert {
+            "title",
+            "folder",
+            "lib",
+            "kind",
+            "size_bytes",
+            "synced_episodes",
+            "new_unwatched",
+        } <= it.keys()
+
+    # The downloaded-episode count comes from the local phase, so it is present
+    # on first paint. The fixture pre-synced one After Life episode.
+    al = next(
+        it for it in payload["items"] if it["folder"] == "After Life (2019) {tvdb-2}"
+    )
+    assert al["synced_episodes"] == 1
 
     # The background loop builds the enrichment phase.
     maint_cache.run_refresh_cycle(full=True)

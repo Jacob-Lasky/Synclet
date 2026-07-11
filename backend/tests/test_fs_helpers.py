@@ -6,6 +6,7 @@ from synclet.fs_helpers import (
     iter_sync_subs,
     iter_synced_titles,
     synced_title_sizes,
+    synced_title_stats,
 )
 
 
@@ -82,3 +83,29 @@ class TestSyncedTitleSizes:
     def test_missing_sync_root_returns_empty(self, monkeypatch, tmp_path):
         monkeypatch.setattr("synclet.fs_helpers.SYNC_ROOT", tmp_path / "nope")
         assert synced_title_sizes() == {}
+
+
+class TestSyncedTitleStats:
+    """The one authoritative walk yields both bytes and the video-file
+    (downloaded-episode) count; synced_title_sizes() is a byte projection of
+    it, so the two must never diverge on the byte value.
+    """
+
+    def test_counts_synced_video_files_per_title(self, patch_paths):
+        stats = synced_title_stats()
+        # Fixture pre-synced exactly one After Life episode (a single .mkv).
+        assert stats["After Life (2019) {tvdb-2}"].video_files == 1
+
+    def test_ignores_non_video_files_in_count(self, patch_paths):
+        sync = patch_paths["sync"]
+        al = sync / "tv" / "After Life (2019) {tvdb-2}" / "Season 01"
+        # A subtitle sidecar is not an episode; a second video file is.
+        (al / "After Life - S01E01 - Episode 1.en.srt").write_bytes(b"en")
+        (al / "After Life - S01E02 - Episode 2.mkv").write_bytes(b"\0" * 1024)
+        stats = synced_title_stats()
+        assert stats["After Life (2019) {tvdb-2}"].video_files == 2
+
+    def test_sizes_projects_stats_bytes(self, patch_paths):
+        stats = synced_title_stats()
+        sizes = synced_title_sizes()
+        assert sizes == {name: s.size_bytes for name, s in stats.items()}

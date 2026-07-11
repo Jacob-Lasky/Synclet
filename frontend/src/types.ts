@@ -123,6 +123,9 @@ export interface SyncedEntry {
     lib: string | null
     kind: string
     size_bytes: number
+    // Count of synced video files, i.e. downloaded episodes for show/youtube
+    // titles. Set on first paint (local phase), independent of enrichment.
+    synced_episodes: number
     new_unwatched: {
         season: number
         episode: number

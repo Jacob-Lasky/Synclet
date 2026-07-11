@@ -14,6 +14,7 @@ vi.mock("./api", () => ({
                     lib: "tv",
                     kind: "show",
                     size_bytes: 4601871517,
+                    synced_episodes: 8,
                     new_unwatched: [],
                 },
             ],
@@ -72,6 +73,7 @@ describe("SyncedView unsync button", () => {
                     lib: null,
                     kind: "unknown",
                     size_bytes: 100,
+                    synced_episodes: 0,
                     new_unwatched: [],
                 },
             ],
@@ -92,6 +94,62 @@ describe("SyncedView unsync button", () => {
     })
 })
 
+describe("SyncedView episode count label", () => {
+    it("leads an episodic title with its downloaded-episode count", async () => {
+        const w = mount(SyncedView)
+        await flushPromises()
+        // Mock humanSize renders bytes as `${n}B`; the label pairs the count.
+        expect(w.find(".size-line").text()).toContain(
+            "8 episodes (4601871517B)"
+        )
+    })
+
+    it("uses the singular for a one-episode title", async () => {
+        const { api } = await import("./api")
+        vi.mocked(api.synced).mockResolvedValueOnce({
+            enriched: true,
+            items: [
+                {
+                    title: "After Life",
+                    folder: "After Life (2019) {tvdb-347507}",
+                    lib: "tv",
+                    kind: "show",
+                    size_bytes: 500,
+                    synced_episodes: 1,
+                    new_unwatched: [],
+                },
+            ],
+        })
+        const w = mount(SyncedView)
+        await flushPromises()
+        expect(w.find(".size-line").text()).toContain("1 episode (500B)")
+        expect(w.find(".size-line").text()).not.toContain("1 episodes")
+    })
+
+    it("shows only the size for a movie (no episode count)", async () => {
+        const { api } = await import("./api")
+        vi.mocked(api.synced).mockResolvedValueOnce({
+            enriched: true,
+            items: [
+                {
+                    title: "1917",
+                    folder: "1917 (2019) {tmdb-3}",
+                    lib: "movies",
+                    kind: "movie",
+                    size_bytes: 700,
+                    synced_episodes: 1,
+                    new_unwatched: [],
+                },
+            ],
+        })
+        const w = mount(SyncedView)
+        await flushPromises()
+        const text = w.find(".size-line").text()
+        expect(text).toContain("700B")
+        expect(text).not.toContain("episode")
+    })
+})
+
 describe("SyncedView two-phase enrichment", () => {
     afterEach(() => {
         vi.useRealTimers()
@@ -105,6 +163,7 @@ describe("SyncedView two-phase enrichment", () => {
             lib: "tv",
             kind: "show" as const,
             size_bytes: 100,
+            synced_episodes: 3,
         }
         vi.mocked(api.synced)
             .mockReset()
