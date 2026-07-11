@@ -98,10 +98,11 @@ def synced_title_stats() -> dict[str, SyncedTitleStats]:
             for dirpath, _dirnames, filenames in os.walk(top_entry.path):
                 dir_path_obj = Path(dirpath)
                 for name in filenames:
-                    if os.path.splitext(name)[1].lower() in VIDEO_EXTS:
+                    file_path = dir_path_obj / name
+                    if file_path.suffix.lower() in VIDEO_EXTS:
                         videos += 1
                     with contextlib.suppress(OSError):
-                        total += (dir_path_obj / name).stat().st_size
+                        total += file_path.stat().st_size
             out[top_entry.name] = SyncedTitleStats(total, videos)
     return out
 
