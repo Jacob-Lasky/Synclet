@@ -132,27 +132,8 @@ function toggle(set: Set<string>, id: string): void {
     align-items: center;
     gap: 0.35rem;
 }
-.chip {
-    padding: 0.32rem 0.7rem;
-    font-size: 0.82rem;
-    border-radius: 999px;
-    background: var(--bg-elev);
-    border: 1px solid var(--border);
-    color: var(--fg-muted);
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-}
-.chip:hover {
-    color: var(--fg);
-    border-color: var(--border-strong);
-    background: var(--bg-elev-2);
-}
-.chip.on {
-    background: var(--bg-elev-2);
-    border-color: var(--accent-action);
-    color: var(--fg);
-}
+/* Base .chip pill lives in style.css (shared with the Synced tab); only the
+ * watch-state color variants are scoped here. */
 .chip.state.on {
     border-color: var(--state-color);
 }

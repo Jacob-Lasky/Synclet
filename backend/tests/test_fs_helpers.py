@@ -109,3 +109,17 @@ class TestSyncedTitleStats:
         stats = synced_title_stats()
         sizes = synced_title_sizes()
         assert sizes == {name: s.size_bytes for name, s in stats.items()}
+
+    def test_mtime_is_newest_file(self, patch_paths):
+        import os
+
+        sync = patch_paths["sync"]
+        al = sync / "tv" / "After Life (2019) {tvdb-2}" / "Season 01"
+        newer = al / "After Life - S01E02 - Episode 2.mkv"
+        newer.write_bytes(b"\0" * 1024)
+        # Pin both files' mtimes so the newest is deterministic regardless of
+        # when the fixture created S01E01.
+        os.utime(al / "After Life - S01E01 - Episode 1.mkv", (1_000, 1_000))
+        os.utime(newer, (2_000, 2_000))
+        stats = synced_title_stats()
+        assert stats["After Life (2019) {tvdb-2}"].mtime == 2_000

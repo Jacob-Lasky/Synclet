@@ -1,8 +1,22 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue"
+import { computed, onMounted, onUnmounted, ref } from "vue"
 import { api } from "../api"
 import type { SyncedEntry } from "../types"
-import { humanSize, openDetail, trackJob } from "../store"
+import { humanSize, libraryLabel, openDetail, store, trackJob } from "../store"
+
+type SortKey = "name" | "recent" | "size"
+
+const SORTS: { id: SortKey; label: string }[] = [
+    { id: "name", label: "Name" },
+    { id: "recent", label: "Recent" },
+    { id: "size", label: "Size" },
+]
+
+// Session-local view state. SyncedView lives inside the tab-group KeepAlive, so
+// these survive tab switches (the user's sort/filter choice sticks) and reset
+// only on a full reload. Default sort is Name A-Z.
+const sortKey = ref<SortKey>("name")
+const libFilter = ref<Set<string>>(new Set()) // empty = all libraries
 
 const items = ref<SyncedEntry[]>([])
 const loading = ref(true)
@@ -91,6 +105,55 @@ function sizeLabel(entry: SyncedEntry): string {
     return size
 }
 
+// Library filter pills, one per library that actually has synced items. Order
+// follows the canonical library order from the state bundle (store.libraries);
+// libraries not yet in the store fall to the end. Stray folders with no source
+// library (lib === null) are grouped under no pill and always shown.
+const libs = computed(() => {
+    const counts = new Map<string, number>()
+    for (const it of items.value) {
+        if (it.lib) counts.set(it.lib, (counts.get(it.lib) ?? 0) + 1)
+    }
+    const order = store.libraries.map((l) => l.id)
+    const rank = (id: string) => {
+        const i = order.indexOf(id)
+        return i === -1 ? order.length : i
+    }
+    return [...counts.entries()]
+        .map(([id, count]) => ({ id, label: libraryLabel(id), count }))
+        .sort((a, b) => rank(a.id) - rank(b.id))
+})
+
+function toggleLib(id: string): void {
+    // Reassign (not mutate) so the computed dependency tracks the change.
+    const next = new Set(libFilter.value)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    libFilter.value = next
+}
+
+// The rendered list: library-filtered (empty selection = all), then sorted by
+// the active key. Name is A-Z case-insensitive; Recent is newest-synced first;
+// Size is largest first. Sorting is stable (Array.prototype.sort) so ties keep
+// the backend's sub-major, name-sorted order.
+const visibleItems = computed<SyncedEntry[]>(() => {
+    const sel = libFilter.value
+    const list = items.value.filter(
+        (it) => sel.size === 0 || (it.lib !== null && sel.has(it.lib))
+    )
+    const sorted = [...list]
+    if (sortKey.value === "name") {
+        sorted.sort((a, b) =>
+            a.title.localeCompare(b.title, undefined, { sensitivity: "base" })
+        )
+    } else if (sortKey.value === "recent") {
+        sorted.sort((a, b) => b.mtime - a.mtime)
+    } else {
+        sorted.sort((a, b) => b.size_bytes - a.size_bytes)
+    }
+    return sorted
+})
+
 async function unsyncTitle(entry: SyncedEntry): Promise<void> {
     if (!entry.lib) return
     // Destructive: removes the title from synced-media and Syncthing propagates
@@ -137,6 +200,31 @@ async function unsyncTitle(entry: SyncedEntry): Promise<void> {
             </div>
 
             <div v-else class="list">
+                <div class="toolbar" data-testid="synced-toolbar">
+                    <div class="sort" role="group" aria-label="Sort">
+                        <button
+                            v-for="s in SORTS"
+                            :key="s.id"
+                            :class="['seg', { on: sortKey === s.id }]"
+                            :data-testid="`sort-${s.id}`"
+                            @click="sortKey = s.id"
+                        >
+                            {{ s.label }}
+                        </button>
+                    </div>
+                    <div v-if="libs.length > 1" class="chips">
+                        <button
+                            v-for="l in libs"
+                            :key="l.id"
+                            :class="['chip', { on: libFilter.has(l.id) }]"
+                            :data-testid="`lib-${l.id}`"
+                            @click="toggleLib(l.id)"
+                        >
+                            {{ l.label }}
+                            <span class="chip-count">{{ l.count }}</span>
+                        </button>
+                    </div>
+                </div>
                 <div
                     v-if="!enriched"
                     class="enriching dim"
@@ -144,7 +232,11 @@ async function unsyncTitle(entry: SyncedEntry): Promise<void> {
                 >
                     Checking for new episodes…
                 </div>
-                <div v-for="item in items" :key="item.folder" class="row">
+                <div
+                    v-for="item in visibleItems"
+                    :key="item.folder"
+                    class="row"
+                >
                     <div class="thumb-wrap">
                         <img
                             v-if="item.lib"
@@ -164,7 +256,9 @@ async function unsyncTitle(entry: SyncedEntry): Promise<void> {
                     >
                         <div class="title-line">
                             <span class="title">{{ item.title }}</span>
-                            <span class="lib-tag dim">{{ item.lib }}</span>
+                            <span v-if="item.lib" class="lib-tag dim">{{
+                                libraryLabel(item.lib)
+                            }}</span>
                         </div>
                         <div class="size-line">
                             <span>{{ sizeLabel(item) }}</span>
@@ -238,6 +332,51 @@ async function unsyncTitle(entry: SyncedEntry): Promise<void> {
     gap: 0.6rem;
     max-width: 900px;
     margin: 0 auto;
+}
+.toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem 1rem;
+    margin-bottom: 0.2rem;
+}
+.sort {
+    display: inline-flex;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 2px;
+}
+.sort .seg {
+    padding: 0.28rem 0.75rem;
+    font-size: 0.8rem;
+    border-radius: 999px;
+    color: var(--fg-muted);
+    background: transparent;
+    border: none;
+}
+.sort .seg:hover {
+    color: var(--fg);
+}
+.sort .seg.on {
+    background: var(--bg-elev-2);
+    color: var(--fg);
+}
+.chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+}
+/* Base .chip pill lives in style.css (shared with FilterBar); only the
+ * per-item count badge is scoped here. */
+.chip-count {
+    font-size: 0.72rem;
+    color: var(--fg-dim);
+}
+.chip.on .chip-count {
+    color: var(--fg-muted);
 }
 .row {
     display: flex;

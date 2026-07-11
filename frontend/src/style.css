@@ -110,6 +110,31 @@ button.ghost {
     background: transparent;
 }
 
+/* Pill toggle used by the Library FilterBar and the Synced tab's library
+ * filter. Single source of truth so the two never drift; per-view variants
+ * (FilterBar's .state color dot, SyncedView's count badge) stay scoped. */
+button.chip {
+    padding: 0.32rem 0.7rem;
+    font-size: 0.82rem;
+    border-radius: 999px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    color: var(--fg-muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+button.chip:hover {
+    color: var(--fg);
+    border-color: var(--border-strong);
+    background: var(--bg-elev-2);
+}
+button.chip.on {
+    background: var(--bg-elev-2);
+    border-color: var(--accent-action);
+    color: var(--fg);
+}
+
 input,
 select,
 textarea {

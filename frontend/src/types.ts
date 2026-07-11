@@ -126,6 +126,9 @@ export interface SyncedEntry {
     // Count of synced video files, i.e. downloaded episodes for show/youtube
     // titles. Set on first paint (local phase), independent of enrichment.
     synced_episodes: number
+    // Newest synced-file mtime (epoch seconds); when the title was last synced
+    // to. Drives the "recently synced" sort. Set on first paint.
+    mtime: number
     new_unwatched: {
         season: number
         episode: number
