@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from synclet import maint_cache
 from synclet.config import LIBRARIES
-from synclet.fs_helpers import iter_synced_titles, synced_title_sizes
+from synclet.fs_helpers import iter_synced_titles, synced_title_stats
 from synclet.scan import clean_name, scan_title_detail
 from synclet.sync_ops import find_source_lib
 from synclet.watchstate import show_watch_map
@@ -41,20 +41,24 @@ def _build_local() -> list[dict]:
     """Fast phase: the synced list + sizes, with empty new_unwatched.
 
     One SYNC_ROOT byte-walk; no per-show scan or watch-state lookup. This is
-    what the Synced tab renders on first paint.
+    what the Synced tab renders on first paint. The same walk yields the
+    downloaded-episode count (`synced_episodes`), so the episode badge paints
+    immediately and never waits on the slow enrichment phase.
     """
-    sizes = synced_title_sizes()
+    stats = synced_title_stats()
 
     items: list[dict] = []
     for _sub_path, item in iter_synced_titles():
         source_lib = find_source_lib(item.name)
+        title_stats = stats.get(item.name)
         items.append(
             {
                 "title": clean_name(item.name),
                 "folder": item.name,
                 "lib": source_lib,
                 "kind": LIBRARIES[source_lib]["kind"] if source_lib else "unknown",
-                "size_bytes": sizes.get(item.name, 0),
+                "size_bytes": title_stats.size_bytes if title_stats else 0,
+                "synced_episodes": title_stats.video_files if title_stats else 0,
                 "new_unwatched": [],
             }
         )

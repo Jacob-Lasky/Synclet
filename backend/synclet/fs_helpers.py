@@ -10,8 +10,22 @@ import contextlib
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import NamedTuple
 
-from synclet.config import LIBRARIES, SYNC_ROOT
+from synclet.config import LIBRARIES, SYNC_ROOT, VIDEO_EXTS
+
+
+class SyncedTitleStats(NamedTuple):
+    """Per-title rollup from a single SYNC_ROOT walk.
+
+    `video_files` is the count of synced video files, which is the
+    downloaded-episode count for show/youtube titles (one video per episode,
+    the same 1-file-per-episode assumption the rest of the codebase counts by,
+    e.g. Job.total_media_files).
+    """
+
+    size_bytes: int
+    video_files: int
 
 
 def iter_sync_subs() -> Iterator[Path]:
@@ -45,21 +59,25 @@ def iter_synced_titles() -> Iterator[tuple[Path, Path]]:
             yield sub_path, item
 
 
-def synced_title_sizes() -> dict[str, int]:
-    """Return {title_dir_name: total_bytes} across every synced title.
+def synced_title_stats() -> dict[str, SyncedTitleStats]:
+    """Return {title_dir_name: SyncedTitleStats} across every synced title.
 
     Single os.walk per sync-sub instead of one rglob+stat per title — same
     big-O but ~half the wall time on shfs FUSE because scandir-backed walks
     avoid repeated Path allocations and reuse stat buffers within a
-    directory. Used by /api/synced; result is owned by maint_cache's TTL
-    so the walk only fires once per cache window.
+    directory. One walk yields both the byte total and the video-file
+    (downloaded-episode) count so /api/synced never pays a second traversal
+    for the episode badge. Result is owned by maint_cache's TTL so the walk
+    only fires once per cache window.
 
     Key is the title's directory name (matches `iter_synced_titles()`'s
     second tuple element so callers can join by name without an extra
-    Path comparison). Returns 0 / missing for any title where every stat
-    failed; OSErrors are swallowed per-file to match the prior behavior.
+    Path comparison). Reports 0 bytes for any title where every stat failed;
+    OSErrors are swallowed per-file to match the prior behavior. The video
+    count keys off the filename suffix (no stat), so it is unaffected by a
+    failed stat.
     """
-    out: dict[str, int] = {}
+    out: dict[str, SyncedTitleStats] = {}
     for sub_path in iter_sync_subs():
         try:
             top_level_entries = list(os.scandir(sub_path))
@@ -71,6 +89,7 @@ def synced_title_sizes() -> dict[str, int]:
             if top_entry.name.startswith("."):
                 continue
             total = 0
+            videos = 0
             # os.walk uses scandir internally and emits (dirpath, dirnames,
             # filenames). One walk per title beats rglob+stat per file
             # because scandir reuses inode buffers across siblings on the
@@ -79,7 +98,18 @@ def synced_title_sizes() -> dict[str, int]:
             for dirpath, _dirnames, filenames in os.walk(top_entry.path):
                 dir_path_obj = Path(dirpath)
                 for name in filenames:
+                    if os.path.splitext(name)[1].lower() in VIDEO_EXTS:
+                        videos += 1
                     with contextlib.suppress(OSError):
                         total += (dir_path_obj / name).stat().st_size
-            out[top_entry.name] = total
+            out[top_entry.name] = SyncedTitleStats(total, videos)
     return out
+
+
+def synced_title_sizes() -> dict[str, int]:
+    """Return {title_dir_name: total_bytes} across every synced title.
+
+    Thin projection over `synced_title_stats()` (the one authoritative walk)
+    for callers that only need bytes. See that function for the walk contract.
+    """
+    return {name: stats.size_bytes for name, stats in synced_title_stats().items()}

@@ -79,6 +79,18 @@ function newBytes(entry: SyncedEntry, n: number): number {
     return entry.new_unwatched.slice(0, n).reduce((s, e) => s + e.size_bytes, 0)
 }
 
+// Episodic titles lead with their downloaded-episode count, e.g.
+// "8 episodes (2.6 GB)"; movies (one file) just show the size.
+function sizeLabel(entry: SyncedEntry): string {
+    const size = humanSize(entry.size_bytes)
+    const episodic = entry.kind === "show" || entry.kind === "youtube"
+    if (episodic && entry.synced_episodes > 0) {
+        const n = entry.synced_episodes
+        return `${n} episode${n === 1 ? "" : "s"} (${size})`
+    }
+    return size
+}
+
 async function unsyncTitle(entry: SyncedEntry): Promise<void> {
     if (!entry.lib) return
     // Destructive: removes the title from synced-media and Syncthing propagates
@@ -155,7 +167,7 @@ async function unsyncTitle(entry: SyncedEntry): Promise<void> {
                             <span class="lib-tag dim">{{ item.lib }}</span>
                         </div>
                         <div class="size-line">
-                            <span>{{ humanSize(item.size_bytes) }}</span>
+                            <span>{{ sizeLabel(item) }}</span>
                             <span
                                 v-if="item.new_unwatched.length > 0"
                                 class="new"
