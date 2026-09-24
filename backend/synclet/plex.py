@@ -77,11 +77,12 @@ _GUID_SCHEME = re.compile(r"^(" + "|".join(EXTERNAL_ID_SCHEMES) + r")://(.+)$")
 _DISK_CACHE_LOCK = threading.Lock()
 
 
-def _plex_url(path: str, params: dict | None = None) -> str:
-    qp = {"X-Plex-Token": PLEX_TOKEN}
-    if params:
-        qp.update(params)
-    return f"{PLEX_URL}{path}?{urllib.parse.urlencode(qp)}"
+def _plex_request(path: str, params: dict | None = None) -> urllib.request.Request:
+    """Keep Plex credentials out of proxy access logs and URL histories."""
+    query = f"?{urllib.parse.urlencode(params)}" if params else ""
+    return urllib.request.Request(  # noqa: S310 (trusted PLEX_URL)
+        f"{PLEX_URL}{path}{query}", headers={"X-Plex-Token": PLEX_TOKEN}
+    )
 
 
 def _get_xml(
@@ -89,7 +90,7 @@ def _get_xml(
 ) -> ET.Element | None:
     try:
         with urllib.request.urlopen(  # noqa: S310 (trusted PLEX_URL)
-            _plex_url(path, params), timeout=timeout
+            _plex_request(path, params), timeout=timeout
         ) as r:
             return ET.fromstring(r.read())  # noqa: S314 (same trust boundary)
     except Exception:
@@ -368,7 +369,7 @@ def fetch_thumb_bytes(lib: str, folder: str) -> tuple[bytes, str] | None:
         return None
     try:
         with urllib.request.urlopen(  # noqa: S310 (trusted PLEX_URL)
-            _plex_url(meta["thumb"]), timeout=10
+            _plex_request(meta["thumb"]), timeout=10
         ) as r:
             data = r.read()
             content_type = r.headers.get("Content-Type", "image/jpeg")
@@ -391,7 +392,7 @@ def fetch_art_bytes(lib: str, folder: str) -> tuple[bytes, str] | None:
         return None
     try:
         with urllib.request.urlopen(  # noqa: S310 (trusted PLEX_URL)
-            _plex_url(meta["art"]), timeout=10
+            _plex_request(meta["art"]), timeout=10
         ) as r:
             data = r.read()
             content_type = r.headers.get("Content-Type", "image/jpeg")
@@ -485,8 +486,8 @@ def invalidate_watch_caches() -> None:
 def _set_watched(rating_key: str, *, watched: bool, timeout: int = 8) -> bool:
     """Set a Plex item's watch state. Returns True on success.
 
-    `watched=True`  -> `PUT /:/scrobble`   (mark watched)
-    `watched=False` -> `PUT /:/unscrobble` (mark unwatched)
+    `watched=True`  -> `/:/scrobble`   (mark watched)
+    `watched=False` -> `/:/unscrobble` (mark unwatched)
 
     Both take `?identifier=com.plexapp.plugins.library&key=<ratingKey>` and are
     idempotent: Plex returns 200 even if the item was already in the target
@@ -495,12 +496,12 @@ def _set_watched(rating_key: str, *, watched: bool, timeout: int = 8) -> bool:
     aborting a batch.
     """
     endpoint = "/:/scrobble" if watched else "/:/unscrobble"
-    url = _plex_url(
+    request = _plex_request(
         endpoint,
         {"identifier": "com.plexapp.plugins.library", "key": rating_key},
     )
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:  # noqa: S310
+        with urllib.request.urlopen(request, timeout=timeout) as r:  # noqa: S310
             return 200 <= r.status < 300
     except Exception:
         return False

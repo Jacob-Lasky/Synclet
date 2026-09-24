@@ -23,7 +23,7 @@ WATCHSTATE_DB = Path(
 
 # Plex server on the LAN. The token is intentionally embedded for the local-only
 # deployment posture; rotate by setting SYNCLET_PLEX_TOKEN at runtime.
-PLEX_URL = os.environ.get("SYNCLET_PLEX_URL", "http://192.168.86.183:32400")
+PLEX_URL = os.environ.get("SYNCLET_PLEX_URL", "https://plex.lan.jacoblasky.com")
 PLEX_TOKEN = os.environ.get("SYNCLET_PLEX_TOKEN", "7p79GK4xzWp6A_pyNJkw")
 
 # Jake's personal Plex watchlist RSS.

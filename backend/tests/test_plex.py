@@ -5,6 +5,8 @@ attributes the parser actually consumes. If Plex changes the XML schema in
 ways that drop these attributes, the test breaks loudly.
 """
 
+from urllib.request import Request
+
 import pytest
 
 from synclet import plex
@@ -270,14 +272,21 @@ class TestInvalidateWatchCaches:
         assert episode_watch_map.cache_info().currsize == 0
 
 
+def test_plex_request_keeps_auth_out_of_urls():
+    request = plex._plex_request("/library/sections", {"type": "show"})
+    assert request.full_url.endswith("/library/sections?type=show")
+    assert "X-Plex-Token" not in request.full_url
+    assert dict(request.header_items())["X-plex-token"] == plex.PLEX_TOKEN
+
+
 class TestScrobble:
     def test_calls_plex_with_identifier_and_key(self, monkeypatch):
         from synclet.plex import scrobble
 
-        captured: list[str] = []
+        captured: list[Request] = []
 
-        def _capture(url, timeout=8):
-            captured.append(url)
+        def _capture(request, timeout=8):
+            captured.append(request)
             from tests._http_mocks import FakeUrlopenResponse
 
             return FakeUrlopenResponse(b"", status=200)
@@ -286,12 +295,13 @@ class TestScrobble:
         ok = scrobble("4242")
         assert ok is True
         assert len(captured) == 1
-        u = captured[0]
+        request = captured[0]
+        u = request.full_url
         assert "/:/scrobble" in u
         assert "identifier=com.plexapp.plugins.library" in u
         assert "key=4242" in u
-        # The X-Plex-Token query parameter must be present (auth)
-        assert "X-Plex-Token=" in u
+        assert "X-Plex-Token=" not in u
+        assert dict(request.header_items())["X-plex-token"] == plex.PLEX_TOKEN
 
     def test_returns_false_on_network_error(self, monkeypatch):
         from synclet.plex import scrobble
@@ -316,10 +326,10 @@ class TestUnscrobble:
     def test_calls_plex_unscrobble_endpoint(self, monkeypatch):
         from synclet.plex import unscrobble
 
-        captured: list[str] = []
+        captured: list[Request] = []
 
-        def _capture(url, timeout=8):
-            captured.append(url)
+        def _capture(request, timeout=8):
+            captured.append(request)
             from tests._http_mocks import FakeUrlopenResponse
 
             return FakeUrlopenResponse(b"", status=200)
@@ -328,14 +338,16 @@ class TestUnscrobble:
         ok = unscrobble("4242")
         assert ok is True
         assert len(captured) == 1
-        u = captured[0]
+        request = captured[0]
+        u = request.full_url
         assert "/:/unscrobble" in u
         # Must NOT hit the watched endpoint. "/:/scrobble" is a substring of
         # "/:/unscrobble", so guard on the leading slash to avoid a false pass.
         assert "/:/scrobble" not in u
         assert "identifier=com.plexapp.plugins.library" in u
         assert "key=4242" in u
-        assert "X-Plex-Token=" in u
+        assert "X-Plex-Token=" not in u
+        assert dict(request.header_items())["X-plex-token"] == plex.PLEX_TOKEN
 
     def test_returns_false_on_network_error(self, monkeypatch):
         from synclet.plex import unscrobble
