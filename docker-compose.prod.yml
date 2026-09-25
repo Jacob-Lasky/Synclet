@@ -48,6 +48,12 @@ services:
         # hardcoding a LAN IP.
         extra_hosts:
             - "host.docker.internal:host-gateway"
+        # Unraid's Docker tab reads this label for the container icon. Without it
+        # the tab falls back to question.png, and on Unraid < 7.3.3 removing an
+        # icon-less container from the Docker tab deletes that shared fallback.
+        # Source SVG and PNG live in Jacob-Lasky/homelab-icons.
+        labels:
+            net.unraid.docker.icon: "https://raw.githubusercontent.com/Jacob-Lasky/homelab-icons/main/png/synclet.png"
         restart: unless-stopped
         mem_limit: 2g
         memswap_limit: 2g
