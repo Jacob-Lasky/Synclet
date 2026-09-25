@@ -69,4 +69,7 @@ services:
             interval: 30s
             timeout: 5s
             retries: 3
-            start_period: 10s
+            # Startup warms the Plex section cache before uvicorn listens:
+            # measured 114s on Tower 2026-09-25. With 10s the container was
+            # marked unhealthy on every start. Keep this above real startup.
+            start_period: 180s
