@@ -9,6 +9,13 @@ vi.mock("./api", () => ({
     api: {
         artUrl: () => "",
         title: vi.fn(),
+        mediaDeletePreview: vi.fn().mockResolvedValue({
+            source_files: 2,
+            offline_files: 0,
+            source_bytes: 200,
+            offline_bytes: 0,
+            fingerprint: "preview-fingerprint",
+        }),
         scrobble: vi.fn().mockResolvedValue({
             scrobbled: 1,
             failed: 0,
@@ -43,6 +50,7 @@ const SHOW_FIXTURE = {
                     title: "Pilot",
                     size_bytes: 0,
                     files: [],
+                    has_video: true,
                     is_synced: false,
                     watch_state: "unwatched" as const,
                     watch_pct: 0,
@@ -53,6 +61,7 @@ const SHOW_FIXTURE = {
                     title: "Ep Two",
                     size_bytes: 0,
                     files: [],
+                    has_video: true,
                     is_synced: false,
                     watch_state: "unwatched" as const,
                     watch_pct: 0,
@@ -94,6 +103,7 @@ describe("DetailDrawer initial season focus", () => {
                     title: "New episode",
                     size_bytes: 1024,
                     files: [],
+                    has_video: true,
                     is_synced: true,
                     watch_state: "unwatched",
                     watch_pct: 0,
@@ -131,6 +141,113 @@ describe("DetailDrawer follow control", () => {
         expect(wrapper.get('[data-testid="follow-series"]').text()).toContain(
             "Stop following"
         )
+        store.detail = null
+    })
+})
+
+describe("DetailDrawer series deletion", () => {
+    it("previews only fully watched episodes across seasons", async () => {
+        const { api } = await import("./api")
+        HTMLDialogElement.prototype.showModal = vi.fn()
+        ;(api.mediaDeletePreview as ReturnType<typeof vi.fn>).mockClear()
+        const show = JSON.parse(JSON.stringify(SHOW_FIXTURE)) as TitleDetail
+        show.folder = "Delete Watched Show"
+        show.seasons[0]!.episodes[0]!.watch_state = "watched"
+        show.seasons[0]!.watched_episodes = 1
+        show.seasons[0]!.episodes[1]!.watch_state = "progress"
+        show.seasons.push({
+            season: 2,
+            total_bytes: 100,
+            synced_episodes: 0,
+            watched_episodes: 1,
+            episodes: [
+                {
+                    season: 2,
+                    episode: 1,
+                    title: "Watched later",
+                    size_bytes: 100,
+                    files: [],
+                    has_video: true,
+                    is_synced: false,
+                    watch_state: "watched",
+                    watch_pct: 100,
+                },
+                {
+                    season: 2,
+                    episode: 2,
+                    title: "Unwatched later",
+                    size_bytes: 100,
+                    files: [],
+                    has_video: true,
+                    is_synced: false,
+                    watch_state: "unwatched",
+                    watch_pct: 0,
+                },
+                {
+                    season: 2,
+                    episode: 3,
+                    title: "Leftover subtitle",
+                    size_bytes: 5,
+                    files: ["leftover.en.srt"],
+                    has_video: false,
+                    is_synced: false,
+                    watch_state: "watched",
+                    watch_pct: 100,
+                },
+            ],
+        })
+        ;(api.title as ReturnType<typeof vi.fn>).mockResolvedValue(show)
+        store.detail = { lib: "tv", folder: show.folder }
+        const wrapper = mount(DetailDrawer)
+        await new Promise((r) => setTimeout(r, 50))
+        await nextTick()
+
+        const button = wrapper.get('[data-testid="delete-watched-media"]')
+        expect(button.text()).toContain("Delete watched (2)")
+        await button.trigger("click")
+        await nextTick()
+        expect(api.mediaDeletePreview).toHaveBeenCalledWith({
+            lib: "tv",
+            folder: show.folder,
+            selection_type: "episodes",
+            episodes: [
+                [1, 1],
+                [2, 1],
+            ],
+        })
+        expect(wrapper.get("#delete-title").text()).toContain(
+            "2 watched episodes of Test Show"
+        )
+        wrapper.unmount()
+        store.detail = null
+    })
+
+    it("leaves subtitle-only rows out of a selected deletion", async () => {
+        const { api } = await import("./api")
+        HTMLDialogElement.prototype.showModal = vi.fn()
+        ;(api.mediaDeletePreview as ReturnType<typeof vi.fn>).mockClear()
+        const show = JSON.parse(JSON.stringify(SHOW_FIXTURE)) as TitleDetail
+        show.folder = "Selected Delete Show"
+        show.seasons[0]!.episodes[1]!.has_video = false
+        show.seasons[0]!.episodes[1]!.files = ["leftover.en.srt"]
+        ;(api.title as ReturnType<typeof vi.fn>).mockResolvedValue(show)
+        store.detail = { lib: "tv", folder: show.folder }
+        const wrapper = mount(DetailDrawer)
+        await new Promise((r) => setTimeout(r, 50))
+        await nextTick()
+
+        await wrapper.get(".actions-row button:nth-child(2)").trigger("click")
+        await wrapper
+            .get('[data-testid="delete-selected-media"]')
+            .trigger("click")
+        await nextTick()
+        expect(api.mediaDeletePreview).toHaveBeenCalledWith({
+            lib: "tv",
+            folder: show.folder,
+            selection_type: "episodes",
+            episodes: [[1, 1]],
+        })
+        wrapper.unmount()
         store.detail = null
     })
 })
@@ -331,6 +448,7 @@ describe("DetailDrawer mark-unwatched affordances", () => {
                             title: "Pilot",
                             size_bytes: 0,
                             files: [],
+                            has_video: true,
                             is_synced: false,
                             watch_state: "watched" as const,
                             watch_pct: 100,
@@ -430,6 +548,7 @@ describe("DetailDrawer mark-unwatched affordances", () => {
                             title: "Pilot",
                             size_bytes: 0,
                             files: [],
+                            has_video: true,
                             is_synced: false,
                             watch_state: "watched" as const,
                             watch_pct: 100,
@@ -440,6 +559,7 @@ describe("DetailDrawer mark-unwatched affordances", () => {
                             title: "Ep Two",
                             size_bytes: 0,
                             files: [],
+                            has_video: true,
                             is_synced: false,
                             watch_state: "watched" as const,
                             watch_pct: 100,

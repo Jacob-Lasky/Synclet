@@ -81,6 +81,7 @@ class Episode:
     title: str
     size_bytes: int
     files: list[str] = field(default_factory=list)  # absolute paths
+    has_video: bool = False
     is_synced: bool = False
     watch_state: str = "unwatched"  # "unwatched" | "watched" | "progress"
     watch_pct: int = 0
@@ -432,6 +433,7 @@ def scan_title_detail(lib: str, folder: str) -> TitleDetail | None:
                 title=_ep_title_from_files(wanted),
                 size_bytes=size,
                 files=[str(f) for f in wanted],
+                has_video=bool(videos),
                 is_synced=is_synced,
             )
             eps.append(ep)
@@ -480,6 +482,7 @@ def title_detail_to_dict(d: TitleDetail) -> dict:
                         "title": e.title,
                         "size_bytes": e.size_bytes,
                         "files": e.files,
+                        "has_video": e.has_video,
                         "is_synced": e.is_synced,
                         "watch_state": e.watch_state,
                         "watch_pct": e.watch_pct,

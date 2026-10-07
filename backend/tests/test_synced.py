@@ -134,6 +134,51 @@ def test_followed_show_remains_when_last_offline_episode_is_removed(
     ]
 
 
+def test_external_source_move_does_not_leave_duplicate_waiting_row(
+    patch_paths, patch_watchstate, monkeypatch
+):
+    from synclet import followed
+
+    monkeypatch.setattr("synclet.plex.section_index", lambda *a, **k: {})
+    folder = "After Life (2019) {tvdb-2}"
+    followed.set_following("tv", folder, True)
+    source = patch_paths["media"] / "tv" / folder
+    source.rename(patch_paths["tmp"] / "moved-source")
+
+    synced.get_synced()  # register builders without waiting on source checks
+    maint_cache.run_refresh_cycle(full=True)
+    rows = [item for item in synced.get_synced()["items"] if item["folder"] == folder]
+    assert len(rows) == 1
+    assert rows[0]["lib"] is None
+    assert rows[0]["followed"] is False
+    assert ("tv", folder) in followed.get_followed()  # intent is preserved
+
+    (patch_paths["tmp"] / "moved-source").rename(source)
+    maint_cache.run_refresh_cycle(full=True)
+    restored = [
+        item for item in synced.get_synced()["items"] if item["folder"] == folder
+    ]
+    assert len(restored) == 1
+    assert restored[0]["followed"] is True
+
+
+def test_missing_source_library_hides_waiting_row_after_background_check(
+    patch_paths, patch_watchstate, monkeypatch
+):
+    from synclet import followed
+
+    monkeypatch.setattr("synclet.plex.section_index", lambda *a, **k: {})
+    folder = "After Life (2019) {tvdb-2}"
+    followed.set_following("tv", folder, True)
+    (patch_paths["media"] / "tv").rename(patch_paths["tmp"] / "moved-library")
+
+    synced.get_synced()
+    maint_cache.run_refresh_cycle(full=True)
+    rows = [item for item in synced.get_synced()["items"] if item["folder"] == folder]
+    assert len(rows) == 1
+    assert rows[0]["followed"] is False
+
+
 def test_follow_bootstrap_skips_ambiguous_tv_and_4k_source(patch_paths):
     from synclet import followed
 

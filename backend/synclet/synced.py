@@ -119,7 +119,7 @@ def get_synced(*, force: bool = False) -> dict:
         maint_cache.invalidate(_ENRICH_KEY)
 
     items = [dict(entry) for entry in maint_cache.get_cached(_LOCAL_KEY, _build_local)]
-    tracked = followed.get_followed()
+    tracked = followed.get_display_followed()
     present = {(entry["lib"], entry["folder"]) for entry in items}
     for entry in items:
         entry["followed"] = (entry["lib"], entry["folder"]) in tracked
@@ -156,3 +156,4 @@ def register_builders() -> None:
     """
     maint_cache.register(_LOCAL_KEY, _build_local)
     maint_cache.register(_ENRICH_KEY, _build_enrichment)
+    followed.register_presence_builder()

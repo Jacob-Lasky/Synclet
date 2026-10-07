@@ -162,16 +162,37 @@ function openDeleteMovie(): void {
 }
 
 function openDeleteSelected(): void {
-    if (!detail.value || selected.value.size === 0) return
-    const n = selected.value.size
+    if (!detail.value || selectedDeletableEpisodes.value.length === 0) return
+    const n = selectedDeletableEpisodes.value.length
     deleteRequest.value = {
         body: {
             lib: detail.value.lib,
             folder: detail.value.folder,
             selection_type: "episodes",
-            episodes: [...selected.value].map(parseKey),
+            episodes: selectedDeletableEpisodes.value.map(
+                (ep): [number, number] => [ep.season, ep.episode]
+            ),
         },
         scopeLabel: `${n} episode${n === 1 ? "" : "s"} of ${detail.value.name}`,
+    }
+}
+
+function openDeleteWatched(): void {
+    if (!detail.value || detail.value.kind === "movie") return
+    const episodes = watchedEpisodes.value.map((ep): [number, number] => [
+        ep.season,
+        ep.episode,
+    ])
+    if (episodes.length === 0) return
+    const n = episodes.length
+    deleteRequest.value = {
+        body: {
+            lib: detail.value.lib,
+            folder: detail.value.folder,
+            selection_type: "episodes",
+            episodes,
+        },
+        scopeLabel: `${n} watched episode${n === 1 ? "" : "s"} of ${detail.value.name}`,
     }
 }
 
@@ -289,6 +310,16 @@ watch(
 function flatEpisodes(): Episode[] {
     return detail.value?.seasons.flatMap((s) => s.episodes) ?? []
 }
+
+const watchedEpisodes = computed(() =>
+    flatEpisodes().filter((ep) => ep.watch_state === "watched" && ep.has_video)
+)
+
+const selectedDeletableEpisodes = computed(() =>
+    flatEpisodes().filter(
+        (ep) => ep.has_video && selected.value.has(key(ep.season, ep.episode))
+    )
+)
 
 function toggle(s: number, e: number, shift: boolean): void {
     const k = key(s, e)
@@ -773,6 +804,15 @@ const movieSynced = computed(
                         >
                             Mark series unwatched
                         </button>
+                        <button
+                            v-if="watchedEpisodes.length > 0"
+                            class="danger-outline"
+                            data-testid="delete-watched-media"
+                            :disabled="submitting"
+                            @click="openDeleteWatched"
+                        >
+                            Delete watched ({{ watchedEpisodes.length }})
+                        </button>
                     </div>
 
                     <div class="seasons">
@@ -915,6 +955,7 @@ const movieSynced = computed(
                                 Unsync {{ selectionStats.unsyncCount }}
                             </button>
                             <button
+                                v-if="selectedDeletableEpisodes.length > 0"
                                 class="danger-outline"
                                 data-testid="delete-selected-media"
                                 :disabled="submitting"

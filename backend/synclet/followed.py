@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 
@@ -10,9 +11,10 @@ from synclet import config, maint_cache
 from synclet.fs_helpers import iter_synced_titles
 
 _lock = threading.RLock()
+_PRESENCE_KEY = "followed_presence"
 
 
-def _valid_title(lib: str, folder: str) -> bool:
+def _valid_key(lib: str, folder: str) -> bool:
     return (
         lib in config.LIBRARIES
         and config.LIBRARIES[lib]["kind"] in ("show", "youtube")
@@ -20,8 +22,11 @@ def _valid_title(lib: str, folder: str) -> bool:
         and not folder.startswith(".")
         and "/" not in folder
         and "\\" not in folder
-        and (config.MEDIA_ROOT / lib / folder).is_dir()
     )
+
+
+def _valid_title(lib: str, folder: str) -> bool:
+    return _valid_key(lib, folder) and (config.MEDIA_ROOT / lib / folder).is_dir()
 
 
 def _write(items: dict[tuple[str, str], float]) -> None:
@@ -70,9 +75,60 @@ def _read_all() -> dict[tuple[str, str], float]:
 
 
 def get_followed() -> dict[tuple[str, str], float]:
-    """Return followed titles still present in the source library."""
+    """Return followed intent without statting every source folder.
+
+    Source existence is checked when following starts. A slow source mount must
+    not hold up every title-detail request because another followed show lives
+    on that mount. An explicit source delete removes its follow entry.
+    """
     with _lock:
-        return {key: at for key, at in _read_all().items() if _valid_title(*key)}
+        return {key: at for key, at in _read_all().items() if _valid_key(*key)}
+
+
+def _build_source_presence() -> dict[tuple[str, str], tuple[float, bool]]:
+    """Scan each source library once, away from title-detail request latency."""
+    items = get_followed()
+    names_by_lib: dict[str, set[str]] = {}
+    for lib, _folder in items:
+        if lib in names_by_lib:
+            continue
+        try:
+            with os.scandir(config.MEDIA_ROOT / lib) as entries:
+                names: set[str] = set()
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            names.add(entry.name)
+                    except OSError:
+                        # One vanishing entry must not hide every other title.
+                        continue
+                names_by_lib[lib] = names
+        except OSError:
+            # Hide unavailable titles, but keep the saved intent so a later
+            # full refresh can show them again when the source mount returns.
+            names_by_lib[lib] = set()
+    return {key: (at, key[1] in names_by_lib[key[0]]) for key, at in items.items()}
+
+
+def get_display_followed() -> dict[tuple[str, str], float]:
+    """Hide externally moved titles after background validation, keeping intent.
+
+    A new Follow gesture appears immediately even if validation is still
+    rebuilding. The full refresh picks up a source folder that returns later.
+    """
+    items = get_followed()
+    ready, presence = maint_cache.peek(_PRESENCE_KEY, _build_source_presence)
+    if not ready:
+        return items
+    return {
+        key: at
+        for key, at in items.items()
+        if key not in presence or presence[key][0] != at or presence[key][1]
+    }
+
+
+def register_presence_builder() -> None:
+    maint_cache.register(_PRESENCE_KEY, _build_source_presence)
 
 
 def set_following(lib: str, folder: str, following: bool) -> bool:
@@ -92,4 +148,5 @@ def set_following(lib: str, folder: str, following: bool) -> bool:
             del items[key]
         _write(items)
     maint_cache.invalidate("synced_enrichment")
+    maint_cache.invalidate(_PRESENCE_KEY)
     return following

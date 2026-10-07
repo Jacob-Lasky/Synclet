@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue"
+import {
+    computed,
+    onActivated,
+    onDeactivated,
+    onMounted,
+    onUnmounted,
+    ref,
+    watch,
+} from "vue"
 import { api } from "../api"
 import type { SyncedEntry } from "../types"
 import {
@@ -37,7 +45,14 @@ const submitting = ref<Record<string, boolean>>({})
 // How long to wait between silent re-polls while enrichment is pending. The
 // backend rebuilds dirty caches every few seconds; 4s comfortably clears it.
 const ENRICH_POLL_MS = 4000
+// Source folders can move outside Synclet. Their followed status is checked
+// by a background cache, so an open tab must refresh after that check lands.
+const LIST_REFRESH_MS = 60_000
 let enrichTimer: ReturnType<typeof setTimeout> | undefined
+let refreshTimer: ReturnType<typeof setInterval> | undefined
+let hasActivated = false
+let lastFetchAt = 0
+let active = true
 
 async function fetchSynced(showSpinner: boolean): Promise<void> {
     if (showSpinner) loading.value = true
@@ -45,6 +60,7 @@ async function fetchSynced(showSpinner: boolean): Promise<void> {
     try {
         const r = await api.synced()
         items.value = r.items
+        lastFetchAt = Date.now()
         store.syncedListCount = r.items.length
         enriched.value = r.enriched
         scheduleEnrichPoll()
@@ -59,7 +75,7 @@ function scheduleEnrichPoll(): void {
     clearTimeout(enrichTimer)
     // Only poll while the badges are still missing; once enriched, stop so we
     // are not hammering the API for a steady-state tab.
-    if (!enriched.value) {
+    if (active && !enriched.value) {
         enrichTimer = setTimeout(() => fetchSynced(false), ENRICH_POLL_MS)
     }
 }
@@ -68,12 +84,37 @@ function load(): Promise<void> {
     return fetchSynced(true)
 }
 
-onMounted(load)
+function startPeriodicRefresh(): void {
+    if (refreshTimer) return
+    refreshTimer = setInterval(() => void fetchSynced(false), LIST_REFRESH_MS)
+}
+
+function stopPolling(): void {
+    clearTimeout(enrichTimer)
+    clearInterval(refreshTimer)
+    refreshTimer = undefined
+}
+
+onMounted(() => {
+    void load()
+    startPeriodicRefresh()
+})
+onActivated(() => {
+    active = true
+    startPeriodicRefresh()
+    if (hasActivated && Date.now() - lastFetchAt >= LIST_REFRESH_MS)
+        void fetchSynced(false)
+    hasActivated = true
+})
+onDeactivated(() => {
+    active = false
+    stopPolling()
+})
 watch(
     () => store.syncedVersion,
     () => void fetchSynced(false)
 )
-onUnmounted(() => clearTimeout(enrichTimer))
+onUnmounted(stopPolling)
 
 async function syncNew(entry: SyncedEntry, n: number): Promise<void> {
     if (!entry.lib) return
