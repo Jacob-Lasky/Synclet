@@ -23,7 +23,7 @@ maint_cache.invalidate(); no new invalidation hooks needed.
 
 from __future__ import annotations
 
-from synclet import maint_cache
+from synclet import followed, maint_cache
 from synclet.config import LIBRARIES
 from synclet.fs_helpers import iter_synced_titles, synced_title_stats
 from synclet.scan import clean_name, scan_title_detail
@@ -60,29 +60,32 @@ def _build_local() -> list[dict]:
                 "size_bytes": title_stats.size_bytes if title_stats else 0,
                 "synced_episodes": title_stats.video_files if title_stats else 0,
                 "mtime": title_stats.mtime if title_stats else 0.0,
+                "followed": False,
                 "new_unwatched": [],
             }
         )
     return items
 
 
-def _build_enrichment() -> dict[str, list[dict]]:
-    """Slow phase: {folder: new_unwatched_episodes} for show/youtube titles.
+def _build_enrichment() -> dict[tuple[str, str], list[dict]]:
+    """Slow phase: {(lib, folder): new episodes} for show/youtube titles.
 
     Per show: scan_title_detail (FS walk) + show_watch_map (WatchState SQLite
     with a Plex per-episode fallback for sections WatchState does not index).
     Runs only in the background loop, never under a user click.
     """
-    enrichment: dict[str, list[dict]] = {}
+    enrichment: dict[tuple[str, str], list[dict]] = {}
+    targets = set(followed.get_followed())
     for _sub_path, item in iter_synced_titles():
         source_lib = find_source_lib(item.name)
-        if not source_lib or LIBRARIES[source_lib]["kind"] not in ("show", "youtube"):
-            continue
-        display = clean_name(item.name)
-        detail = scan_title_detail(source_lib, item.name)
+        if source_lib and LIBRARIES[source_lib]["kind"] in ("show", "youtube"):
+            targets.add((source_lib, item.name))
+    for source_lib, folder in targets:
+        display = clean_name(folder)
+        detail = scan_title_detail(source_lib, folder)
         if not detail:
             continue
-        ws_map = show_watch_map(display, lib=source_lib, folder=item.name)
+        ws_map = show_watch_map(display, lib=source_lib, folder=folder)
         new_eps = [
             {
                 "season": e.season,
@@ -95,7 +98,7 @@ def _build_enrichment() -> dict[str, list[dict]]:
             if not ws_map.get((e.season, e.episode), False) and not e.is_synced
         ]
         if new_eps:
-            enrichment[item.name] = new_eps
+            enrichment[source_lib, folder] = new_eps
     return enrichment
 
 
@@ -116,10 +119,31 @@ def get_synced(*, force: bool = False) -> dict:
         maint_cache.invalidate(_ENRICH_KEY)
 
     items = [dict(entry) for entry in maint_cache.get_cached(_LOCAL_KEY, _build_local)]
+    tracked = followed.get_followed()
+    present = {(entry["lib"], entry["folder"]) for entry in items}
+    for entry in items:
+        entry["followed"] = (entry["lib"], entry["folder"]) in tracked
+    for (lib, folder), at in tracked.items():
+        if (lib, folder) in present:
+            continue
+        items.append(
+            {
+                "title": clean_name(folder),
+                "folder": folder,
+                "lib": lib,
+                "kind": LIBRARIES[lib]["kind"],
+                "size_bytes": 0,
+                "synced_episodes": 0,
+                "mtime": at,
+                "followed": True,
+                "new_unwatched": [],
+            }
+        )
     enriched, enrichment = maint_cache.peek(_ENRICH_KEY, _build_enrichment)
+    enriched = enriched and not maint_cache.is_dirty(_ENRICH_KEY)
     if enriched and enrichment:
         for entry in items:
-            entry["new_unwatched"] = enrichment.get(entry["folder"], [])
+            entry["new_unwatched"] = enrichment.get((entry["lib"], entry["folder"]), [])
     return {"items": items, "enriched": enriched}
 
 

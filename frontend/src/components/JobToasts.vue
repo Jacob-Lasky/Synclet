@@ -170,12 +170,12 @@ function jobWidth(t: Toast): number {
     transform: translateX(20px);
 }
 
-@media (max-width: 600px) {
+@media (max-width: 700px) {
     .toasts {
         left: 0.6rem;
         right: 0.6rem;
         max-width: none;
-        bottom: 0.6rem;
+        bottom: calc(68px + 0.6rem);
     }
     /* Mobile drawer is full-screen; lift toasts above the bottom action bar
      instead of trying to shift them sideways. */
@@ -185,7 +185,7 @@ function jobWidth(t: Toast): number {
         bottom: 5.5rem;
     }
 }
-@media (min-width: 601px) and (max-width: 720px) {
+@media (min-width: 701px) and (max-width: 720px) {
     /* Drawer is still full-width here — shift the toast to the top edge instead. */
     .toasts.drawer-open {
         right: 1rem;

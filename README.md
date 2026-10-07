@@ -38,3 +38,7 @@ Now, you can run the app by running:
 ```bash
 docker compose -f docker-compose.dev.yml down --rmi local && docker compose -f docker-compose.dev.yml up --build
 ```
+
+## Permanent media deletion
+
+The production compose mounts the source library writable so Synclet can delete selected movies or episodes. Each deletion shows a file preview, requires the exact title, and requires a separate deletion password. Set `SYNCLET_DELETE_KEY` to a long random value in the gitignored `.env` beside the compose file. Without it, the delete endpoint is disabled. The development compose keeps source media read-only.

@@ -1,8 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue"
+import { computed, onMounted, onUnmounted, ref, watch } from "vue"
 import { api } from "../api"
 import type { SyncedEntry } from "../types"
-import { humanSize, libraryLabel, openDetail, store, trackJob } from "../store"
+import {
+    humanSize,
+    libraryLabel,
+    openDetail,
+    pushToast,
+    store,
+    trackJob,
+} from "../store"
 
 type SortKey = "name" | "recent" | "size"
 
@@ -38,6 +45,7 @@ async function fetchSynced(showSpinner: boolean): Promise<void> {
     try {
         const r = await api.synced()
         items.value = r.items
+        store.syncedListCount = r.items.length
         enriched.value = r.enriched
         scheduleEnrichPoll()
     } catch (e) {
@@ -61,6 +69,10 @@ function load(): Promise<void> {
 }
 
 onMounted(load)
+watch(
+    () => store.syncedVersion,
+    () => void fetchSynced(false)
+)
 onUnmounted(() => clearTimeout(enrichTimer))
 
 async function syncNew(entry: SyncedEntry, n: number): Promise<void> {
@@ -96,6 +108,9 @@ function newBytes(entry: SyncedEntry, n: number): number {
 // Episodic titles lead with their downloaded-episode count, e.g.
 // "8 episodes (2.6 GB)"; movies (one file) just show the size.
 function sizeLabel(entry: SyncedEntry): string {
+    if (entry.followed && entry.synced_episodes === 0) {
+        return "Waiting for new episodes"
+    }
     const size = humanSize(entry.size_bytes)
     const episodic = entry.kind === "show" || entry.kind === "youtube"
     if (episodic && entry.synced_episodes > 0) {
@@ -103,6 +118,32 @@ function sizeLabel(entry: SyncedEntry): string {
         return `${n} episode${n === 1 ? "" : "s"} (${size})`
     }
     return size
+}
+
+async function toggleFollowing(entry: SyncedEntry): Promise<void> {
+    if (!entry.lib) return
+    submitting.value[entry.folder] = true
+    try {
+        const r = await api.follow(entry.lib, entry.folder, !entry.followed)
+        if (!r.following && entry.synced_episodes === 0) {
+            items.value = items.value.filter(
+                (it) => !(it.lib === entry.lib && it.folder === entry.folder)
+            )
+            store.syncedListCount = items.value.length
+        } else {
+            entry.followed = r.following
+        }
+        pushToast({
+            kind: "success",
+            text: r.following
+                ? `Following ${entry.title} for new episodes`
+                : `Stopped following ${entry.title}`,
+        })
+    } catch (e) {
+        pushToast({ kind: "error", text: (e as Error).message })
+    } finally {
+        submitting.value[entry.folder] = false
+    }
 }
 
 // Library filter pills, one per library that actually has synced items. Order
@@ -123,6 +164,14 @@ const libs = computed(() => {
         .map(([id, count]) => ({ id, label: libraryLabel(id), count }))
         .sort((a, b) => rank(a.id) - rank(b.id))
 })
+const offlineCount = computed(
+    () => items.value.filter((item) => item.size_bytes > 0).length
+)
+const waitingCount = computed(
+    () =>
+        items.value.filter((item) => item.followed && item.size_bytes === 0)
+            .length
+)
 
 function toggleLib(id: string): void {
     // Reassign (not mutate) so the computed dependency tracks the change.
@@ -194,9 +243,26 @@ async function unsyncTitle(entry: SyncedEntry): Promise<void> {
         <div v-if="loading" class="info">Loading synced library…</div>
         <div v-else-if="error" class="info err">{{ error }}</div>
         <template v-else>
+            <div class="view-heading">
+                <div>
+                    <p class="eyebrow">Your collection</p>
+                    <h1>Offline & following</h1>
+                    <p class="subtitle">
+                        Keep media close and catch the next episode.
+                    </p>
+                </div>
+                <div class="summary" aria-label="Collection summary">
+                    <span
+                        ><strong>{{ offlineCount }}</strong> offline</span
+                    >
+                    <span
+                        ><strong>{{ waitingCount }}</strong> waiting</span
+                    >
+                </div>
+            </div>
             <div v-if="items.length === 0" class="info">
-                <p>Nothing synced yet.</p>
-                <p class="dim">Pick a title in the Library tab to start.</p>
+                <p>No offline or followed titles yet.</p>
+                <p class="dim">Pick a title in the Library to start.</p>
             </div>
 
             <div v-else class="list">
@@ -234,8 +300,9 @@ async function unsyncTitle(entry: SyncedEntry): Promise<void> {
                 </div>
                 <div
                     v-for="item in visibleItems"
-                    :key="item.folder"
+                    :key="`${item.lib}/${item.folder}`"
                     class="row"
+                    :class="{ waiting: item.followed && item.size_bytes === 0 }"
                 >
                     <div class="thumb-wrap">
                         <img
@@ -262,6 +329,9 @@ async function unsyncTitle(entry: SyncedEntry): Promise<void> {
                         </div>
                         <div class="size-line">
                             <span>{{ sizeLabel(item) }}</span>
+                            <span v-if="item.followed" class="followed-tag">
+                                Following
+                            </span>
                             <span
                                 v-if="item.new_unwatched.length > 0"
                                 class="new"
@@ -296,13 +366,22 @@ async function unsyncTitle(entry: SyncedEntry): Promise<void> {
                             Sync all {{ item.new_unwatched.length }}
                         </button>
                         <button
-                            v-if="item.lib"
-                            class="danger"
+                            v-if="item.lib && item.size_bytes > 0"
+                            class="danger-outline"
                             data-testid="unsync-title"
                             :disabled="submitting[item.folder]"
                             @click="unsyncTitle(item)"
                         >
                             Unsync
+                        </button>
+                        <button
+                            v-if="item.lib && item.kind !== 'movie'"
+                            class="ghost"
+                            data-testid="follow-title"
+                            :disabled="submitting[item.folder]"
+                            @click="toggleFollowing(item)"
+                        >
+                            {{ item.followed ? "Stop following" : "Follow" }}
                         </button>
                     </div>
                 </div>
@@ -313,9 +392,47 @@ async function unsyncTitle(entry: SyncedEntry): Promise<void> {
 
 <style scoped>
 .view {
-    padding: 1rem;
+    padding: clamp(1rem, 2.5vw, 2rem);
     overflow-y: auto;
     flex: 1;
+}
+.view-heading {
+    max-width: 1020px;
+    margin: 0 auto 1.4rem;
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 1rem;
+}
+.eyebrow {
+    margin: 0 0 0.25rem;
+    color: var(--accent-sync);
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+}
+.view-heading h1 {
+    margin: 0;
+    font-size: clamp(1.55rem, 3vw, 2.2rem);
+    line-height: 1.1;
+    letter-spacing: -0.035em;
+}
+.subtitle {
+    margin: 0.45rem 0 0;
+    color: var(--fg-muted);
+    font-size: 0.9rem;
+}
+.summary {
+    display: flex;
+    gap: 1rem;
+    color: var(--fg-muted);
+    font-size: 0.83rem;
+    white-space: nowrap;
+}
+.summary strong {
+    color: var(--fg);
+    font-size: 1rem;
 }
 .info {
     padding: 3rem 1rem;
@@ -330,7 +447,7 @@ async function unsyncTitle(entry: SyncedEntry): Promise<void> {
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
-    max-width: 900px;
+    max-width: 1020px;
     margin: 0 auto;
 }
 .toolbar {
@@ -384,14 +501,22 @@ async function unsyncTitle(entry: SyncedEntry): Promise<void> {
     align-items: center;
     background: var(--bg-elev);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 0.7rem;
+    border-radius: var(--radius-lg);
+    padding: 0.85rem;
+}
+.row.waiting {
+    border-color: rgba(75, 214, 203, 0.38);
+    background: linear-gradient(
+        90deg,
+        rgba(75, 214, 203, 0.07),
+        var(--bg-elev) 28%
+    );
 }
 .thumb-wrap {
-    width: 50px;
+    width: 58px;
     aspect-ratio: 2 / 3;
     background: var(--bg-elev-2);
-    border-radius: 4px;
+    border-radius: 7px;
     overflow: hidden;
     flex-shrink: 0;
 }
@@ -432,6 +557,10 @@ async function unsyncTitle(entry: SyncedEntry): Promise<void> {
     color: var(--accent-progress);
     font-weight: 600;
 }
+.followed-tag {
+    color: var(--accent-sync);
+    font-weight: 600;
+}
 .enriching {
     font-size: 0.8rem;
     text-align: center;
@@ -450,6 +579,20 @@ async function unsyncTitle(entry: SyncedEntry): Promise<void> {
 }
 
 @media (max-width: 600px) {
+    .view {
+        padding: 0.9rem;
+    }
+    .view-heading {
+        align-items: start;
+        flex-direction: column;
+        gap: 0.65rem;
+    }
+    .subtitle {
+        font-size: 0.82rem;
+    }
+    .summary {
+        gap: 0.8rem;
+    }
     .row {
         flex-wrap: wrap;
     }

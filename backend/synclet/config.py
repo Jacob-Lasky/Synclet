@@ -7,8 +7,9 @@ values here so changing a path or rotating a token is one edit.
 import os
 from pathlib import Path
 
-# Mounted from the host. /data/media is read-only source, /data/others/synced-media
-# is what Syncthing watches , read-write, owned by the user that runs Syncthing.
+# Mounted from the host. Production grants /data/media write access for the
+# explicit, preview-confirmed source delete route. The dev mount stays read-only.
+# /data/others/synced-media is what Syncthing watches, read-write.
 MEDIA_ROOT = Path(os.environ.get("SYNCLET_MEDIA_ROOT", "/data/media"))
 SYNC_ROOT = Path(os.environ.get("SYNCLET_SYNC_ROOT", "/data/others/synced-media"))
 
@@ -108,6 +109,17 @@ SNAPSHOT_FILE = Path(
 IGNORED_FILE = Path(
     os.environ.get("SYNCLET_IGNORED_FILE", "/app/data/ignored.json"),
 )
+
+# Episodic titles the user wants to keep watching for new releases. This is
+# separate from the synced file tree: a show stays followed after its last
+# offline episode is removed. Stored with the other persistent app state.
+FOLLOWED_FILE = Path(
+    os.environ.get("SYNCLET_FOLLOWED_FILE", "/app/data/followed.json"),
+)
+
+# Permanent source deletion requires a separate secret. Keep it only in the
+# gitignored deployment .env, never in the shared committed env contract.
+DELETE_KEY = os.environ.get("SYNCLET_DELETE_KEY", "")
 
 # Syncthing REST API integration (read-only). See backend/synclet/syncthing.py.
 # DO NOT supply committed defaults. The integration is opt-in; unset env vars

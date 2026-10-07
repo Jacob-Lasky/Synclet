@@ -5,6 +5,9 @@ import type {
     IgnoreOp,
     Job,
     MaintenanceCounts,
+    MediaDeleteBody,
+    MediaDeletePreview,
+    MediaDeleteResult,
     PendingGroup,
     PendingItemRef,
     RemoveResponse,
@@ -62,6 +65,24 @@ export const api = {
             method: "POST",
             body: JSON.stringify(body),
         }),
+    mediaDeletePreview: (body: MediaDeleteBody) =>
+        json<MediaDeletePreview>("/api/media/delete/preview", {
+            method: "POST",
+            body: JSON.stringify(body),
+        }),
+    mediaDelete: (
+        body: MediaDeleteBody,
+        fingerprint: string,
+        deleteKey: string
+    ) =>
+        json<MediaDeleteResult>("/api/media/delete", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-Synclet-Delete-Key": deleteKey,
+            },
+            body: JSON.stringify({ ...body, fingerprint }),
+        }),
 
     job: (id: string) => json<Job>(`/api/jobs/${id}`),
     jobs: () => json<{ jobs: Job[] }>(`/api/jobs`),
@@ -72,6 +93,11 @@ export const api = {
     // UI to re-poll so the badges appear without a manual refresh.
     synced: () =>
         json<{ items: SyncedEntry[]; enriched: boolean }>(`/api/synced`),
+    follow: (lib: string, folder: string, following: boolean) =>
+        json<{ following: boolean }>("/api/follow", {
+            method: "POST",
+            body: JSON.stringify({ lib, folder, following }),
+        }),
     watchlist: () => json<{ items: WatchlistEntry[] }>(`/api/watchlist`),
     maintWatched: () =>
         json<{ items: WatchedFiles[] }>(`/api/maintenance/watched`),

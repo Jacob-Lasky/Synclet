@@ -91,6 +91,14 @@ def recent_jobs(limit: int = 20) -> list[Job]:
     return sorted(_JOBS.values(), key=lambda j: j.started_at, reverse=True)[:limit]
 
 
+def has_active_job_for_title(title: str) -> bool:
+    """Guard source deletion against an in-flight copy of the same title."""
+    return any(
+        job.title == title and job.status in ("queued", "running")
+        for job in _JOBS.values()
+    )
+
+
 # ── Selector → file pairs ─────────────────────────────────────────────────────
 
 

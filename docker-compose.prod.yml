@@ -28,7 +28,10 @@ services:
             # Host paths — evaluated on the Tower host. See dev compose for
             # the path-translation rationale; the misc/ prefix matters for
             # /coding but NOT for /data or /appdata.
-            - /mnt/user/data/media:/data/media:ro
+            # Source deletion is limited in code to a previewed title/episode
+            # selection and confirmed in the UI. This mount must be writable
+            # for that action; the development stack keeps its source read-only.
+            - /mnt/user/data/media:/data/media
             - /mnt/user/data/others/synced-media:/data/others/synced-media
             - /mnt/user/appdata/watchstate:/appdata/watchstate:ro
             # Persistent app data: thumb cache, snapshot.json, ignored.json.

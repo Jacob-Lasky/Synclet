@@ -1,12 +1,20 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue"
 import { api } from "../api"
-import type { Episode, TitleDetail } from "../types"
+import type {
+    Episode,
+    MediaDeleteBody,
+    MediaDeleteResult,
+    Season,
+    TitleDetail,
+} from "../types"
 import {
     closeDetail,
     humanSize,
     isScrobbledThisSession,
     isUnwatchedThisSession,
+    loadState,
+    markTitleDeleted,
     pushToast,
     recordScrobbled,
     recordUnwatched,
@@ -14,6 +22,7 @@ import {
     trackJob,
 } from "../store"
 import EpisodeTile from "./EpisodeTile.vue"
+import DeleteMediaDialog from "./DeleteMediaDialog.vue"
 
 // How long after a sync/unsync job kicks off before we re-fetch the title
 // detail to surface updated badges. Unsync feels instant (file delete) so
@@ -29,6 +38,10 @@ const selected = ref<Set<string>>(new Set()) // "S-E"
 const lastClick = ref<{ s: number; e: number } | null>(null)
 const expandedSeasons = ref<Set<number>>(new Set())
 const submitting = ref(false)
+const deleteRequest = ref<{
+    body: MediaDeleteBody
+    scopeLabel: string
+} | null>(null)
 
 function key(s: number, e: number): string {
     return `${s}-${e}`
@@ -84,6 +97,108 @@ function applyScrobbleOverlay(d: TitleDetail): TitleDetail {
     return d
 }
 
+function seasonPriority(season: Season): number {
+    const remaining = season.episodes.filter(
+        (ep) => ep.watch_state !== "watched"
+    )
+    if (remaining.some((ep) => ep.is_synced)) return 4
+    if (
+        remaining.length > 0 &&
+        season.episodes.some(
+            (ep) =>
+                ep.watch_state === "watched" || ep.watch_state === "progress"
+        )
+    )
+        return 3
+    if (remaining.length > 0) return 2
+    if (season.synced_episodes > 0) return 1
+    return 0
+}
+
+function initialSeason(d: TitleDetail): number | undefined {
+    // Open the season with the clearest next action. Within a priority, the
+    // newer season wins, so a fresh release does not strand the user at S1.
+    return [...d.seasons].sort(
+        (a, b) => seasonPriority(b) - seasonPriority(a) || b.season - a.season
+    )[0]?.season
+}
+
+async function toggleFollowDetail(): Promise<void> {
+    if (!detail.value || detail.value.kind === "movie") return
+    const current = detail.value
+    submitting.value = true
+    try {
+        const result = await api.follow(
+            current.lib,
+            current.folder,
+            !current.followed
+        )
+        current.followed = result.following
+        store.syncedVersion++
+        pushToast({
+            kind: "success",
+            text: result.following
+                ? `Following ${current.name} for new episodes`
+                : `Stopped following ${current.name}`,
+        })
+    } catch (e) {
+        pushToast({ kind: "error", text: (e as Error).message })
+    } finally {
+        submitting.value = false
+    }
+}
+
+function openDeleteMovie(): void {
+    if (!detail.value || detail.value.kind !== "movie") return
+    deleteRequest.value = {
+        body: {
+            lib: detail.value.lib,
+            folder: detail.value.folder,
+            selection_type: "movie",
+            episodes: [],
+        },
+        scopeLabel: detail.value.name,
+    }
+}
+
+function openDeleteSelected(): void {
+    if (!detail.value || selected.value.size === 0) return
+    const n = selected.value.size
+    deleteRequest.value = {
+        body: {
+            lib: detail.value.lib,
+            folder: detail.value.folder,
+            selection_type: "episodes",
+            episodes: [...selected.value].map(parseKey),
+        },
+        scopeLabel: `${n} episode${n === 1 ? "" : "s"} of ${detail.value.name}`,
+    }
+}
+
+function onMediaDeleted(result: MediaDeleteResult): void {
+    const current = detail.value
+    deleteRequest.value = null
+    if (!current) return
+    const counts =
+        `Deleted ${result.source_deleted} source file${result.source_deleted === 1 ? "" : "s"}` +
+        (result.offline_deleted
+            ? ` and ${result.offline_deleted} offline cop${result.offline_deleted === 1 ? "y" : "ies"}`
+            : "")
+    pushToast({
+        kind: result.error ? "error" : "success",
+        text: result.error ? `${counts}. ${result.error}` : counts,
+    })
+    selected.value = new Set()
+    store.syncedVersion++
+    if (result.title_remaining) {
+        void load(current.lib, current.folder)
+    } else {
+        markTitleDeleted(current.lib, current.folder)
+        closeDetail()
+    }
+    void loadState(true)
+}
+
 async function load(lib: string, folder: string): Promise<void> {
     loading.value = true
     error.value = ""
@@ -94,18 +209,10 @@ async function load(lib: string, folder: string): Promise<void> {
     try {
         const d = applyScrobbleOverlay(await api.title(lib, folder))
         detail.value = d
-        // Expand the first season with unsynced or unwatched eps; otherwise
-        // season 1. noUncheckedIndexedAccess means d.seasons[0] is T|undefined,
-        // so capture it once and let the ?? collapse to a defined value.
+        // Choose from watch and sync state after the session overlay is applied.
         if (d.kind !== "movie") {
-            const first = d.seasons[0]
-            if (first) {
-                const seed =
-                    d.seasons.find(
-                        (s) => s.synced_episodes < s.episodes.length
-                    ) ?? first
-                expandedSeasons.value.add(seed.season)
-            }
+            const season = initialSeason(d)
+            if (season !== undefined) expandedSeasons.value.add(season)
         }
     } catch (err) {
         error.value = (err as Error).message
@@ -138,6 +245,7 @@ async function refreshInPlace(lib: string, folder: string): Promise<void> {
         // Merge in-place: only mutate fields that can change as a result of sync ops.
         detail.value.total_bytes = d.total_bytes
         detail.value.synced_bytes = d.synced_bytes
+        detail.value.followed = d.followed
         detail.value.files = d.files
         if (d.kind !== "movie") {
             // Build a lookup by season number for quick patching
@@ -267,6 +375,7 @@ async function doSync(): Promise<void> {
             episodes: eps,
         })
         if (r.job_id) {
+            detail.value.followed = true
             const lib = detail.value.lib
             const folder = detail.value.folder
             trackJob(r.job_id, {
@@ -593,6 +702,14 @@ const movieSynced = computed(
                             >
                                 Mark unwatched
                             </button>
+                            <button
+                                class="danger-outline"
+                                data-testid="delete-movie-media"
+                                :disabled="submitting"
+                                @click="openDeleteMovie"
+                            >
+                                Delete from library
+                            </button>
                         </div>
                     </div>
                 </template>
@@ -600,6 +717,18 @@ const movieSynced = computed(
                 <!-- Show / YouTube -->
                 <template v-else>
                     <div class="actions-row">
+                        <button
+                            class="ghost"
+                            data-testid="follow-series"
+                            :disabled="submitting"
+                            @click="toggleFollowDetail"
+                        >
+                            {{
+                                detail.followed
+                                    ? "Stop following"
+                                    : "Follow for new episodes"
+                            }}
+                        </button>
                         <button class="ghost" @click="selectAll">
                             {{
                                 selected.size === flatEpisodes().length &&
@@ -652,72 +781,79 @@ const movieSynced = computed(
                             :key="s.season"
                             class="season"
                         >
-                            <header
-                                class="season-head"
-                                @click="toggleSeasonExpand(s.season)"
-                            >
-                                <span
-                                    class="chev"
-                                    :class="{
-                                        open: expandedSeasons.has(s.season),
-                                    }"
-                                    >▸</span
-                                >
-                                <strong>Season {{ s.season }}</strong>
-                                <span class="dim"
-                                    >{{ s.episodes.length }} ep</span
-                                >
-                                <span class="dim">·</span>
-                                <span class="dim">{{
-                                    humanSize(s.total_bytes)
-                                }}</span>
-                                <span
-                                    v-if="s.watched_episodes"
-                                    class="tag watched"
-                                    >{{ s.watched_episodes }} ✓</span
-                                >
-                                <span v-if="s.synced_episodes" class="tag sync"
-                                    >{{ s.synced_episodes }} ⬇</span
-                                >
-                                <span class="spacer"></span>
+                            <header class="season-head">
                                 <button
-                                    class="ghost mini"
-                                    @click.stop="selectSeason(s.season)"
-                                >
-                                    select
-                                </button>
-                                <button
-                                    class="ghost mini"
-                                    :disabled="submitting"
-                                    data-testid="mark-season-watched"
-                                    @click.stop="
-                                        setWatched(
-                                            'season',
-                                            true,
-                                            s.season,
-                                            undefined,
-                                            `Season ${s.season}`
-                                        )
+                                    class="season-toggle"
+                                    :aria-expanded="
+                                        expandedSeasons.has(s.season)
                                     "
+                                    @click="toggleSeasonExpand(s.season)"
                                 >
-                                    ✓ season
+                                    <span
+                                        class="chev"
+                                        :class="{
+                                            open: expandedSeasons.has(s.season),
+                                        }"
+                                        >▸</span
+                                    >
+                                    <strong>Season {{ s.season }}</strong>
+                                    <span class="dim"
+                                        >{{ s.episodes.length }} ep</span
+                                    >
+                                    <span class="dim"
+                                        >· {{ humanSize(s.total_bytes) }}</span
+                                    >
+                                    <span
+                                        v-if="s.watched_episodes"
+                                        class="tag watched"
+                                        >{{ s.watched_episodes }} ✓</span
+                                    >
+                                    <span
+                                        v-if="s.synced_episodes"
+                                        class="tag sync"
+                                        >{{ s.synced_episodes }} ⬇</span
+                                    >
                                 </button>
-                                <button
-                                    class="ghost mini"
-                                    :disabled="submitting"
-                                    data-testid="mark-season-unwatched"
-                                    @click.stop="
-                                        setWatched(
-                                            'season',
-                                            false,
-                                            s.season,
-                                            undefined,
-                                            `Season ${s.season}`
-                                        )
-                                    "
-                                >
-                                    ✗ season
-                                </button>
+                                <div class="season-actions">
+                                    <button
+                                        class="ghost mini"
+                                        @click="selectSeason(s.season)"
+                                    >
+                                        select
+                                    </button>
+                                    <button
+                                        class="ghost mini"
+                                        :disabled="submitting"
+                                        data-testid="mark-season-watched"
+                                        @click="
+                                            setWatched(
+                                                'season',
+                                                true,
+                                                s.season,
+                                                undefined,
+                                                `Season ${s.season}`
+                                            )
+                                        "
+                                    >
+                                        ✓ season
+                                    </button>
+                                    <button
+                                        class="ghost mini"
+                                        :disabled="submitting"
+                                        data-testid="mark-season-unwatched"
+                                        @click="
+                                            setWatched(
+                                                'season',
+                                                false,
+                                                s.season,
+                                                undefined,
+                                                `Season ${s.season}`
+                                            )
+                                        "
+                                    >
+                                        ✗ season
+                                    </button>
+                                </div>
                             </header>
                             <div
                                 v-show="expandedSeasons.has(s.season)"
@@ -778,11 +914,27 @@ const movieSynced = computed(
                             >
                                 Unsync {{ selectionStats.unsyncCount }}
                             </button>
+                            <button
+                                class="danger-outline"
+                                data-testid="delete-selected-media"
+                                :disabled="submitting"
+                                @click="openDeleteSelected"
+                            >
+                                Delete selected
+                            </button>
                         </div>
                     </div>
                 </template>
             </template>
         </aside>
+        <DeleteMediaDialog
+            v-if="deleteRequest && detail"
+            :body="deleteRequest.body"
+            :scope-label="deleteRequest.scopeLabel"
+            :title="detail.name"
+            @close="deleteRequest = null"
+            @deleted="onMediaDeleted"
+        />
     </div>
 </template>
 
@@ -951,15 +1103,34 @@ const movieSynced = computed(
     display: flex;
     align-items: center;
     gap: 0.45rem;
-    padding: 0.6rem 0.7rem;
+    padding: 0.35rem;
     background: var(--bg-elev);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    cursor: pointer;
     font-size: 0.9rem;
 }
-.season-head:hover {
+.season-head:has(.season-toggle:hover) {
     background: var(--bg-hover);
+}
+.season-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex: 1;
+    min-width: 0;
+    min-height: 40px;
+    padding: 0.35rem;
+    text-align: left;
+    background: transparent;
+    border: 0;
+}
+.season-toggle:hover {
+    background: transparent;
+    border: 0;
+}
+.season-actions {
+    display: flex;
+    gap: 0.35rem;
 }
 .chev {
     display: inline-block;
@@ -1031,6 +1202,21 @@ const movieSynced = computed(
     }
     .eps {
         grid-template-columns: 1fr 1fr;
+    }
+    .season-head {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .season-toggle {
+        flex-wrap: wrap;
+        min-height: 44px;
+    }
+    .season-actions {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .season-actions button {
+        min-height: 40px;
     }
 }
 @media (max-width: 380px) {

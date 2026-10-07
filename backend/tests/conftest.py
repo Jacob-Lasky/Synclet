@@ -195,6 +195,9 @@ def patch_paths(
     ignored_file = media_tree["tmp"] / "ignored.json"
     monkeypatch.setattr("synclet.config.IGNORED_FILE", ignored_file)
     monkeypatch.setattr("synclet.ignored.IGNORED_FILE", ignored_file)
+    monkeypatch.setattr(
+        "synclet.config.FOLLOWED_FILE", media_tree["tmp"] / "followed.json"
+    )
 
     # The in-process cache holds previous-test data keyed off the prior
     # tmp_path. invalidate() now only flags dirty (it preserves last-good for

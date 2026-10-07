@@ -49,7 +49,7 @@ onMounted(async () => {
 
 const counts = computed(() => ({
     library: store.titles.length,
-    synced: store.disk?.synced_titles ?? 0,
+    synced: store.syncedListCount ?? store.disk?.synced_titles ?? 0,
     watchlist: store.watchlistCount ?? undefined,
     // Maintenance is "attention required" not "inventory" — only badge when
     // the count is positive. 0 means the user has nothing to do; no badge.
@@ -84,6 +84,7 @@ window.addEventListener("keydown", onKeydown)
 
 <template>
     <div class="app">
+        <a class="skip-link" href="#main-content">Skip to content</a>
         <TopBar
             :on-paste-link="() => (showPaste = true)"
             :on-refresh="refresh"
@@ -95,7 +96,7 @@ window.addEventListener("keydown", onKeydown)
         />
         <WatchStateCoverageBanner />
 
-        <main class="main">
+        <main id="main-content" class="main" tabindex="-1">
             <!-- KeepAlive preserves Synced / Watchlist / Maintenance / Syncthing
            state across tab switches so leaving and returning is instant.
            Synced / Watchlist / Maintenance fetch in onMounted only, so for them
@@ -136,7 +137,8 @@ window.addEventListener("keydown", onKeydown)
 .app {
     display: flex;
     flex-direction: column;
-    height: 100%;
+    height: 100vh;
+    height: 100dvh;
     background: var(--bg);
 }
 .main {
@@ -149,5 +151,33 @@ window.addEventListener("keydown", onKeydown)
     padding: 4rem 1rem;
     text-align: center;
     color: var(--fg-muted);
+}
+@media (min-width: 1100px) {
+    .app {
+        display: grid;
+        grid-template-columns: 208px minmax(0, 1fr);
+        grid-template-rows: auto auto minmax(0, 1fr);
+    }
+    .app > :deep(.topbar) {
+        grid-column: 1 / -1;
+        grid-row: 1;
+    }
+    .app > :deep(.tabs) {
+        grid-column: 1;
+        grid-row: 2 / 4;
+    }
+    .app > :deep(.banner) {
+        grid-column: 2;
+        grid-row: 2;
+    }
+    .main {
+        grid-column: 2;
+        grid-row: 3;
+    }
+}
+@media (max-width: 700px) {
+    .main {
+        padding-bottom: 68px;
+    }
 }
 </style>

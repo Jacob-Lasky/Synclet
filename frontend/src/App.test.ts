@@ -214,5 +214,53 @@ describe("App.vue KeepAlive cache survives a Library visit", () => {
         await nextTick()
         await nextTick()
         expect(syncedMock).toHaveBeenCalledTimes(1)
+
+        // A completed sync or delete explicitly invalidates the cached view.
+        store.syncedVersion++
+        await nextTick()
+        await nextTick()
+        expect(syncedMock).toHaveBeenCalledTimes(2)
+    })
+})
+
+describe("deleted catalog title overlay", () => {
+    it("keeps a deleted movie hidden through a stale state response", async () => {
+        const { loadState, markTitleDeleted, store } = await import("./store")
+        const movie = {
+            id: "movies/Deleted Test Movie",
+            lib: "movies",
+            folder: "Deleted Test Movie",
+            name: "Deleted Test Movie",
+            kind: "movie",
+            year: null,
+            ep_count: 0,
+            synced_files: 0,
+            has_synced: false,
+        }
+        store.titles = [movie] as typeof store.titles
+        markTitleDeleted("movies", "Deleted Test Movie")
+        expect(store.titles).toHaveLength(0)
+
+        stateMock.mockResolvedValueOnce({
+            titles: [movie],
+            disk: null,
+            libraries: [],
+        })
+        await loadState(true)
+        expect(store.titles).toHaveLength(0)
+
+        stateMock.mockResolvedValueOnce({
+            titles: [],
+            disk: null,
+            libraries: [],
+        })
+        await loadState(true)
+        stateMock.mockResolvedValueOnce({
+            titles: [movie],
+            disk: null,
+            libraries: [],
+        })
+        await loadState(true)
+        expect(store.titles).toHaveLength(1)
     })
 })

@@ -699,6 +699,7 @@ const totalPendingEpisodes = computed(() =>
         0
     )
 )
+const allPendingRefs = computed(() => pending.value.flatMap(refsForGroup))
 
 async function removePaths(paths: string[], label: string): Promise<void> {
     if (paths.length === 0) return
@@ -862,6 +863,22 @@ function totalHangingBytes(): number {
                             }}
                         </template>
                     </span>
+                    <span class="spacer"></span>
+                    <button
+                        v-if="allPendingRefs.length > 0"
+                        class="primary"
+                        data-testid="mark-all-pending-watched"
+                        :disabled="resolving"
+                        @click="
+                            resolveItems(
+                                allPendingRefs,
+                                'confirm',
+                                'All pending deletions across every title'
+                            )
+                        "
+                    >
+                        Mark all watched
+                    </button>
                 </header>
                 <p v-if="pending.length === 0" class="empty">
                     No pending deletions. Synced media matches the snapshot.
