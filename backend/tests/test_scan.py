@@ -15,6 +15,7 @@ from synclet.scan import (
     parse_year,
     scan_title_detail,
     scan_titles,
+    title_detail_to_dict,
     watchstate_key,
 )
 
@@ -169,6 +170,18 @@ class TestScanTitleDetail:
         assert all("fr.srt" not in f for f in e1.files), (
             f"French subtitle leaked through filter: {e1.files}"
         )
+
+    def test_episode_wire_marks_subtitle_only_row_without_video(self, patch_paths):
+        folder = "Better Call Saul (2015) {tvdb-1}"
+        season = patch_paths["media"] / "tv" / folder / "Season 01"
+        (season / "Better Call Saul - S01E03 - Third.en.srt").write_bytes(b"sub")
+
+        detail = scan_title_detail("tv", folder)
+        assert detail is not None
+        episodes = title_detail_to_dict(detail)["seasons"][0]["episodes"]
+        by_number = {episode["episode"]: episode for episode in episodes}
+        assert by_number[1].get("has_video") is True
+        assert by_number[3].get("has_video") is False
 
     def test_episode_synced_despite_reencode_rename(self, patch_paths):
         """A source-side re-encode renames the file but keeps the same SxxExx.

@@ -21,6 +21,7 @@ export interface Episode {
     title: string
     size_bytes: number
     files: string[]
+    has_video: boolean
     is_synced: boolean
     watch_state: "watched" | "unwatched" | "progress"
     watch_pct: number

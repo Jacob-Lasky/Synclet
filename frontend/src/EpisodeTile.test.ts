@@ -15,6 +15,7 @@ function makeEpisode(overrides: Partial<Episode> = {}): Episode {
         title: "The One With The Test",
         size_bytes: 0,
         files: [],
+        has_video: true,
         is_synced: false,
         watch_state: "unwatched",
         watch_pct: 0,

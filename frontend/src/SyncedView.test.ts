@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { flushPromises, mount } from "@vue/test-utils"
+import { defineComponent, h, KeepAlive, nextTick, ref } from "vue"
 import SyncedView from "./components/SyncedView.vue"
 
 vi.mock("./api", () => ({
@@ -193,6 +194,84 @@ describe("SyncedView followed titles", () => {
         await flushPromises()
         expect(api.follow).toHaveBeenCalledWith("tv", "Waiting Show", false)
         expect(wrapper.text()).not.toContain("Waiting Show")
+    })
+
+    it("refreshes an already enriched list while the tab stays open", async () => {
+        const { api } = await import("./api")
+        vi.mocked(api.synced)
+            .mockResolvedValueOnce({
+                enriched: true,
+                items: [
+                    {
+                        title: "Moved Show",
+                        folder: "Moved Show",
+                        lib: "tv",
+                        kind: "show",
+                        size_bytes: 0,
+                        synced_episodes: 0,
+                        followed: true,
+                        mtime: 100,
+                        new_unwatched: [],
+                    },
+                ],
+            })
+            .mockResolvedValueOnce({ enriched: true, items: [] })
+        let refresh: (() => void) | undefined
+        const interval = vi
+            .spyOn(globalThis, "setInterval")
+            .mockImplementation((callback) => {
+                refresh = callback as () => void
+                return 42 as ReturnType<typeof setInterval>
+            })
+        try {
+            const wrapper = mount(SyncedView)
+            await flushPromises()
+            expect(wrapper.text()).toContain("Moved Show")
+            expect(interval).toHaveBeenCalledWith(expect.any(Function), 60_000)
+            refresh?.()
+            await flushPromises()
+            expect(wrapper.text()).not.toContain("Moved Show")
+            wrapper.unmount()
+        } finally {
+            interval.mockRestore()
+        }
+    })
+
+    it("does not restart enrichment polling after deactivation", async () => {
+        const { api } = await import("./api")
+        type SyncedResponse = Awaited<ReturnType<typeof api.synced>>
+        let resolveSynced: (value: SyncedResponse) => void = () => {}
+        vi.mocked(api.synced).mockImplementationOnce(
+            () =>
+                new Promise<SyncedResponse>((resolve) => {
+                    resolveSynced = resolve
+                })
+        )
+        const visible = ref(true)
+        const Host = defineComponent({
+            setup: () => () =>
+                h(KeepAlive, null, [
+                    visible.value
+                        ? h(SyncedView, { key: "synced" })
+                        : h("div", { key: "other" }),
+                ]),
+        })
+        const timeout = vi.spyOn(globalThis, "setTimeout")
+        const wrapper = mount(Host)
+        try {
+            await nextTick()
+            visible.value = false
+            await nextTick()
+            resolveSynced({ enriched: false, items: [] })
+            await flushPromises()
+
+            expect(
+                timeout.mock.calls.some(([, delay]) => delay === 4_000)
+            ).toBe(false)
+        } finally {
+            wrapper.unmount()
+            timeout.mockRestore()
+        }
     })
 })
 
