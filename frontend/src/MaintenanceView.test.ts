@@ -155,6 +155,35 @@ describe("MaintenanceView pending pane visual artifact", () => {
         // Ignore affordance present on the movie row.
         expect(html).toContain("Ignore")
     })
+
+    it("marks every pending movie and episode watched in one action", async () => {
+        maintResolveMock.mockClear()
+        const wrapper = await mountWaited()
+        const button = wrapper.find('[data-testid="mark-all-pending-watched"]')
+        expect(button.exists()).toBe(true)
+        await button.trigger("click")
+        expect(maintResolveMock).toHaveBeenCalledWith(
+            [
+                {
+                    sync_sub: "movies",
+                    folder: "Synclet Ship Test Movie (2099) {tmdb-0}",
+                },
+                {
+                    sync_sub: "tv",
+                    folder: "Synclet Ship Test Show (2099) {tvdb-0}",
+                    season: 1,
+                    episode: 1,
+                },
+                {
+                    sync_sub: "tv",
+                    folder: "Synclet Ship Test Show (2099) {tvdb-0}",
+                    season: 1,
+                    episode: 2,
+                },
+            ],
+            "confirm"
+        )
+    })
 })
 
 // Each test calls a single Ignore button and asserts the wire body shape the

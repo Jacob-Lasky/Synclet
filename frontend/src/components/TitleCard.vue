@@ -14,6 +14,9 @@ const thumbUrl = api.thumbUrl(props.title.lib, props.title.folder)
 <template>
     <button class="card" @click="$emit('open', title.lib, title.folder)">
         <div class="poster">
+            <div class="poster-fallback" aria-hidden="true">
+                <span>{{ title.name.slice(0, 2).toUpperCase() }}</span>
+            </div>
             <img
                 v-if="!thumbErrored"
                 :src="thumbUrl"
@@ -22,9 +25,6 @@ const thumbUrl = api.thumbUrl(props.title.lib, props.title.folder)
                 decoding="async"
                 @error="thumbErrored = true"
             />
-            <div v-else class="poster-fallback">
-                <span>{{ title.name.slice(0, 2).toUpperCase() }}</span>
-            </div>
 
             <div class="lib-badge">{{ libraryShort(title.lib) }}</div>
 
@@ -116,6 +116,9 @@ const thumbUrl = api.thumbUrl(props.title.lib, props.title.folder)
         border-color 140ms ease;
 }
 .poster img {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
     width: 100%;
     height: 100%;
     object-fit: cover;
@@ -123,6 +126,8 @@ const thumbUrl = api.thumbUrl(props.title.lib, props.title.folder)
     background: var(--bg-elev);
 }
 .poster-fallback {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
     display: flex;
@@ -133,6 +138,17 @@ const thumbUrl = api.thumbUrl(props.title.lib, props.title.folder)
     font-size: 2rem;
     font-weight: 700;
     letter-spacing: 0.02em;
+}
+.lib-badge,
+.badges {
+    z-index: 3;
+}
+.gradient {
+    z-index: 2;
+}
+.card:focus-visible .poster {
+    border-color: var(--accent-sync);
+    box-shadow: 0 0 0 3px rgba(75, 214, 203, 0.25);
 }
 
 .lib-badge {

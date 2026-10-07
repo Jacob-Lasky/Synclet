@@ -31,6 +31,8 @@ interface State {
     // item count. Refreshed on app mount and after relevant actions.
     maintenanceCount: number | null
     watchlistCount: number | null
+    syncedListCount: number | null
+    syncedVersion: number
 
     // Per-library WatchState coverage. Loaded once on mount; entries with
     // watchstate_rows === 0 surface a banner so the user knows their marks
@@ -137,6 +139,8 @@ export const store = reactive<State>({
 
     maintenanceCount: null,
     watchlistCount: null,
+    syncedListCount: null,
+    syncedVersion: 0,
     coverage: null,
 
     jobs: {},
@@ -146,13 +150,30 @@ export const store = reactive<State>({
 // ── Loading ────────────────────────────────────────────────────────────────
 
 let stateInflight: Promise<void> | null = null
+const deletedTitleIds = new Set<string>()
+
+export function markTitleDeleted(lib: string, folder: string): void {
+    const id = `${lib}/${folder}`
+    deletedTitleIds.add(id)
+    store.titles = store.titles.filter((title) => title.id !== id)
+}
 
 export async function loadState(refresh = false): Promise<void> {
     if (stateInflight) return stateInflight
     stateInflight = (async () => {
         try {
             const data = await api.state(refresh)
-            store.titles = data.titles
+            // Forced reads can return a stale cache while a rebuild runs.
+            // Keep a successful source deletion out of the grid until the
+            // backend catalog catches up, then allow a future re-addition.
+            for (const id of deletedTitleIds) {
+                if (!data.titles.some((title) => title.id === id)) {
+                    deletedTitleIds.delete(id)
+                }
+            }
+            store.titles = data.titles.filter(
+                (title) => !deletedTitleIds.has(title.id)
+            )
             store.disk = data.disk
             store.libraries = data.libraries ?? []
             store.loaded = true
@@ -293,6 +314,7 @@ export function trackJob(jobId: string, label: JobLabel): void {
                 store.jobs[jobId] = job
 
                 if (job.status === "done") {
+                    store.syncedVersion++
                     const past = label.action === "Sync" ? "Synced" : "Unsynced"
                     const n = job.processed_media_files
                     // Bytes are only meaningful for sync (unsync just deletes); show both

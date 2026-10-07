@@ -13,8 +13,9 @@ const syncedCount = computed(() => store.disk?.synced_titles ?? 0)
 <template>
     <header class="topbar">
         <div class="brand">
-            <span class="dot"></span>
+            <span class="dot" aria-hidden="true"></span>
             <span class="name">synclet</span>
+            <span class="brand-sub">Your offline media</span>
         </div>
 
         <div v-if="store.disk" class="disk">
@@ -39,6 +40,7 @@ const syncedCount = computed(() => store.disk?.synced_titles ?? 0)
             <button
                 class="ghost"
                 title="Paste a Plex link or search query"
+                aria-label="Paste a Plex link or search query"
                 @click="onPasteLink"
             >
                 <svg
@@ -60,7 +62,12 @@ const syncedCount = computed(() => store.disk?.synced_titles ?? 0)
                 </svg>
                 <span class="lbl">paste</span>
             </button>
-            <button class="ghost" title="Rescan library" @click="onRefresh">
+            <button
+                class="ghost"
+                title="Rescan library"
+                aria-label="Rescan library"
+                @click="onRefresh"
+            >
                 <svg
                     width="16"
                     height="16"
@@ -81,16 +88,13 @@ const syncedCount = computed(() => store.disk?.synced_titles ?? 0)
 
 <style scoped>
 .topbar {
-    position: sticky;
-    top: 0;
     z-index: 50;
     display: flex;
     align-items: center;
     gap: 1rem;
-    padding: 0.65rem 1rem;
-    background: rgba(12, 14, 18, 0.92);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    min-height: 62px;
+    padding: 0.65rem 1.25rem;
+    background: var(--bg-elev);
     border-bottom: 1px solid var(--border);
 }
 .brand {
@@ -99,20 +103,31 @@ const syncedCount = computed(() => store.disk?.synced_titles ?? 0)
     gap: 0.45rem;
     font-weight: 700;
     letter-spacing: -0.01em;
-    font-size: 1rem;
+    font-size: 1.12rem;
+    white-space: nowrap;
 }
 .brand .name {
     color: var(--fg);
 }
+.brand-sub {
+    margin-left: 0.5rem;
+    padding-left: 0.8rem;
+    border-left: 1px solid var(--border-strong);
+    color: var(--fg-dim);
+    font-size: 0.76rem;
+    font-weight: 500;
+    letter-spacing: 0;
+}
 .dot {
-    width: 9px;
-    height: 9px;
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
     background: var(--accent-sync);
     box-shadow: 0 0 12px rgba(41, 208, 208, 0.55);
 }
 .disk {
-    flex: 1;
+    flex: 0 1 370px;
+    margin-left: auto;
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -158,7 +173,8 @@ const syncedCount = computed(() => store.disk?.synced_titles ?? 0)
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
-    padding: 0.45rem 0.7rem;
+    padding: 0.5rem 0.75rem;
+    min-height: 38px;
 }
 .actions .lbl {
     font-size: 0.85rem;
@@ -166,11 +182,18 @@ const syncedCount = computed(() => store.disk?.synced_titles ?? 0)
 
 @media (max-width: 600px) {
     .topbar {
-        padding: 0.55rem 0.7rem;
+        min-height: 56px;
+        padding: 0.55rem 0.9rem;
         gap: 0.6rem;
     }
     .disk {
         display: none;
+    }
+    .brand-sub {
+        display: none;
+    }
+    .actions {
+        margin-left: auto;
     }
     .actions .lbl {
         display: none;

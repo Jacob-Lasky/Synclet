@@ -15,6 +15,7 @@ vi.mock("./api", () => ({
                     kind: "show",
                     size_bytes: 4601871517,
                     synced_episodes: 8,
+                    followed: true,
                     mtime: 1000,
                     new_unwatched: [],
                 },
@@ -26,6 +27,7 @@ vi.mock("./api", () => ({
             total_media_files: 6,
             total_bytes: 4601871517,
         }),
+        follow: vi.fn().mockResolvedValue({ following: false }),
     },
 }))
 
@@ -35,6 +37,7 @@ vi.mock("./store", () => ({
         ({ tv: "TV", movies: "Movies", youtube: "YouTube" })[id] ?? id,
     openDetail: vi.fn(),
     trackJob: vi.fn(),
+    pushToast: vi.fn(),
     store: { libraries: [{ id: "tv" }, { id: "movies" }, { id: "youtube" }] },
 }))
 
@@ -78,6 +81,7 @@ describe("SyncedView unsync button", () => {
                     kind: "unknown",
                     size_bytes: 100,
                     synced_episodes: 0,
+                    followed: false,
                     mtime: 100,
                     new_unwatched: [],
                 },
@@ -121,6 +125,7 @@ describe("SyncedView episode count label", () => {
                     kind: "show",
                     size_bytes: 500,
                     synced_episodes: 1,
+                    followed: true,
                     mtime: 100,
                     new_unwatched: [],
                 },
@@ -144,6 +149,7 @@ describe("SyncedView episode count label", () => {
                     kind: "movie",
                     size_bytes: 700,
                     synced_episodes: 1,
+                    followed: false,
                     mtime: 100,
                     new_unwatched: [],
                 },
@@ -154,6 +160,39 @@ describe("SyncedView episode count label", () => {
         const text = w.find(".size-line").text()
         expect(text).toContain("700B")
         expect(text).not.toContain("episode")
+    })
+})
+
+describe("SyncedView followed titles", () => {
+    it("keeps a zero-offline show visible until Stop following is chosen", async () => {
+        const { api } = await import("./api")
+        vi.mocked(api.synced).mockResolvedValueOnce({
+            enriched: true,
+            items: [
+                {
+                    title: "Waiting Show",
+                    folder: "Waiting Show",
+                    lib: "tv",
+                    kind: "show",
+                    size_bytes: 0,
+                    synced_episodes: 0,
+                    followed: true,
+                    mtime: 100,
+                    new_unwatched: [],
+                },
+            ],
+        })
+        vi.mocked(api.follow).mockClear()
+        const wrapper = mount(SyncedView)
+        await flushPromises()
+        expect(wrapper.text()).toContain("Waiting for new episodes")
+        expect(wrapper.find('[data-testid="unsync-title"]').exists()).toBe(
+            false
+        )
+        await wrapper.find('[data-testid="follow-title"]').trigger("click")
+        await flushPromises()
+        expect(api.follow).toHaveBeenCalledWith("tv", "Waiting Show", false)
+        expect(wrapper.text()).not.toContain("Waiting Show")
     })
 })
 
@@ -170,6 +209,7 @@ describe("SyncedView sort + library filter", () => {
                 kind: "show",
                 size_bytes: 100,
                 synced_episodes: 2,
+                followed: true,
                 mtime: 300,
                 new_unwatched: [],
             },
@@ -180,6 +220,7 @@ describe("SyncedView sort + library filter", () => {
                 kind: "movie",
                 size_bytes: 300,
                 synced_episodes: 1,
+                followed: false,
                 mtime: 100,
                 new_unwatched: [],
             },
@@ -190,6 +231,7 @@ describe("SyncedView sort + library filter", () => {
                 kind: "show",
                 size_bytes: 200,
                 synced_episodes: 5,
+                followed: true,
                 mtime: 200,
                 new_unwatched: [],
             },
@@ -282,6 +324,7 @@ describe("SyncedView two-phase enrichment", () => {
             kind: "show" as const,
             size_bytes: 100,
             synced_episodes: 3,
+            followed: true,
             mtime: 100,
         }
         vi.mocked(api.synced)

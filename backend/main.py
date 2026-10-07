@@ -20,19 +20,21 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 from pathlib import Path
 
-from litestar import Litestar, MediaType, Response, get, post
-from litestar.config.cors import CORSConfig
-from litestar.exceptions import NotFoundException
+from litestar import Litestar, MediaType, Request, Response, get, post
+from litestar.exceptions import HTTPException, NotFoundException
 from litestar.static_files import create_static_files_router
 from pydantic import BaseModel
 
 from common.log_utils import get_logger
 from synclet import (
     config,
+    followed,
     ignored,
     maint_cache,
+    media_delete,
     pending,
     state,
     sync_ops,
@@ -54,14 +56,6 @@ from synclet.watchstate import (
 
 logger = get_logger(__name__)
 
-cors_config = CORSConfig(
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-    allow_credentials=False,
-)
-
-
 # ── Models ────────────────────────────────────────────────────────────────────
 
 
@@ -72,6 +66,23 @@ class SyncRequest(BaseModel):
     season: int | None = None
     episodes: list[list[int]] | None = None
     unwatched_only: bool = False
+
+
+class FollowRequest(BaseModel):
+    lib: str
+    folder: str
+    following: bool
+
+
+class MediaDeleteRequest(BaseModel):
+    lib: str
+    folder: str
+    selection_type: str
+    episodes: list[tuple[int, int]] | None = None
+
+
+class MediaDeleteCommitRequest(MediaDeleteRequest):
+    fingerprint: str
 
 
 class RemoveFilesRequest(BaseModel):
@@ -202,6 +213,9 @@ async def api_title(lib: str, folder: str) -> dict:
             )
         )
     else:
+        out["followed"] = (lib, folder) in await asyncio.to_thread(
+            followed.get_followed
+        )
         ws_map = await asyncio.to_thread(
             show_watch_map, detail.name, lib=lib, folder=folder
         )
@@ -265,6 +279,10 @@ async def api_sync(data: SyncRequest) -> dict:
     )
     if not pairs:
         return {"error": "no files matched", "job_id": None}
+    if config.LIBRARIES.get(data.lib, {}).get("kind") in ("show", "youtube"):
+        # Syncing an episode expresses ongoing interest in the series. Keep
+        # that intent even after the last offline copy is later removed.
+        await asyncio.to_thread(followed.set_following, data.lib, data.folder, True)
     job = sync_ops.start_sync(pairs, title=f"{data.lib}/{data.folder}")
     return {
         "job_id": job.id,
@@ -324,6 +342,57 @@ async def api_synced() -> dict:
     sync/unsync/remove mutations and /api/refresh.
     """
     return await asyncio.to_thread(get_synced)
+
+
+@post("/api/follow")
+async def api_follow(data: FollowRequest) -> dict:
+    try:
+        following = await asyncio.to_thread(
+            followed.set_following, data.lib, data.folder, data.following
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"following": following}
+
+
+@post("/api/media/delete/preview")
+async def api_media_delete_preview(data: MediaDeleteRequest) -> dict:
+    try:
+        plan = await asyncio.to_thread(
+            media_delete.plan_selection,
+            data.lib,
+            data.folder,
+            data.selection_type,
+            data.episodes or [],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return plan.to_dict()
+
+
+@post("/api/media/delete")
+async def api_media_delete(
+    data: MediaDeleteCommitRequest, request: Request
+) -> dict | Response:
+    if not config.DELETE_KEY:
+        raise HTTPException(status_code=503, detail="source deletion is not configured")
+    supplied_key = request.headers.get("x-synclet-delete-key", "")
+    if not hmac.compare_digest(supplied_key, config.DELETE_KEY):
+        raise HTTPException(status_code=403, detail="invalid deletion password")
+    try:
+        result = await asyncio.to_thread(
+            media_delete.delete_selection,
+            data.lib,
+            data.folder,
+            data.selection_type,
+            data.episodes or [],
+            data.fingerprint,
+        )
+        if result["error"]:
+            return Response(content=result, status_code=207, media_type=MediaType.JSON)
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @get("/api/watchlist")
@@ -550,6 +619,9 @@ def build_route_handlers(static_dir: Path | None = None) -> list:
         api_job,
         api_jobs,
         api_synced,
+        api_follow,
+        api_media_delete_preview,
+        api_media_delete,
         api_watchlist,
         api_maint_watched,
         api_maint_hanging,
@@ -687,7 +759,6 @@ async def on_shutdown(app: Litestar) -> None:
 
 app = Litestar(
     route_handlers=build_route_handlers(config.STATIC_DIR),
-    cors_config=cors_config,
     on_startup=[on_startup],
     on_shutdown=[on_shutdown],
 )

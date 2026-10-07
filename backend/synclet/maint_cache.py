@@ -48,9 +48,12 @@ _cache: dict[str, Any] = {}
 # key -> builder, registered the first time a key is requested (or via
 # register()), so the background loop knows how to rebuild it.
 _builders: dict[str, Callable[[], Any]] = {}
-# keys awaiting a background rebuild, set by invalidate(). Serving the last-good
-# value continues until the loop clears the flag.
+# Keys awaiting a background rebuild. Keep the flag set DURING the build so
+# clients polling for fresh enrichment cannot mistake the old value for fresh.
 _dirty: set[str] = set()
+# An invalidation during a build must survive that build's commit. Versions
+# distinguish a new invalidation from the one the builder started for.
+_version: dict[str, int] = {}
 # Guards the three structures above against the background thread racing the
 # request worker threads (both run builds off the event loop via to_thread).
 _lock = threading.Lock()
@@ -81,12 +84,14 @@ def get_cached(key: str, build: Callable[[], Any]) -> Any:
         _builders[key] = build
         if key in _cache:
             return _cache[key]
+        version = _version.get(key, 0)
     # Cold first-boot miss: build once, synchronously, so the first caller
     # still gets data. Every later caller takes the in-cache branch above.
     value = build()
     with _lock:
         _cache[key] = value
-        _dirty.discard(key)
+        if _version.get(key, 0) == version:
+            _dirty.discard(key)
     return value
 
 
@@ -108,6 +113,12 @@ def peek(key: str, build: Callable[[], Any]) -> tuple[bool, Any]:
         return False, None
 
 
+def is_dirty(key: str) -> bool:
+    """Report whether a last-good value awaits a background rebuild."""
+    with _lock:
+        return key in _dirty
+
+
 def invalidate(key: str | None = None) -> None:
     """Flag keys for background rebuild WITHOUT dropping the cached value.
 
@@ -117,16 +128,17 @@ def invalidate(key: str | None = None) -> None:
     CACHE_DIRTY_REFRESH_S). Passing None flags every registered key.
     """
     with _lock:
-        if key is None:
-            _dirty.update(_builders)
-        else:
-            _dirty.add(key)
+        keys = tuple(_builders) if key is None else (key,)
+        for dirty_key in keys:
+            _dirty.add(dirty_key)
+            _version[dirty_key] = _version.get(dirty_key, 0) + 1
 
 
 def _rebuild(key: str) -> None:
     """Rebuild one key, swapping in the new value. Keeps last-good on error."""
     with _lock:
         build = _builders.get(key)
+        version = _version.get(key, 0)
     if build is None:
         return
     try:
@@ -136,7 +148,8 @@ def _rebuild(key: str) -> None:
         return
     with _lock:
         _cache[key] = value
-        _dirty.discard(key)
+        if _version.get(key, 0) == version:
+            _dirty.discard(key)
 
 
 def run_refresh_cycle(*, full: bool) -> list[str]:
@@ -151,7 +164,6 @@ def run_refresh_cycle(*, full: bool) -> list[str]:
         due = set(_dirty)
         if full:
             due.update(_builders)
-        _dirty.clear()
     for key in sorted(due):
         _rebuild(key)
     return sorted(due)
@@ -167,3 +179,4 @@ def clear() -> None:
         _cache.clear()
         _builders.clear()
         _dirty.clear()
+        _version.clear()

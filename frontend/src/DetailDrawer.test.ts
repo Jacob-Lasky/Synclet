@@ -16,6 +16,7 @@ vi.mock("./api", () => ({
         }),
         sync: vi.fn(),
         unsync: vi.fn(),
+        follow: vi.fn().mockResolvedValue({ following: true }),
     },
 }))
 
@@ -74,6 +75,65 @@ const MOVIE_FIXTURE = {
     seasons: [],
     watched: false,
 }
+
+describe("DetailDrawer initial season focus", () => {
+    it("opens the latest season with an unwatched offline episode", async () => {
+        const { api } = await import("./api")
+        const show = JSON.parse(JSON.stringify(SHOW_FIXTURE)) as TitleDetail
+        show.seasons[0]!.episodes[0]!.watch_state = "watched"
+        show.seasons[0]!.watched_episodes = 1
+        show.seasons.push({
+            season: 2,
+            total_bytes: 1024,
+            synced_episodes: 1,
+            watched_episodes: 0,
+            episodes: [
+                {
+                    season: 2,
+                    episode: 1,
+                    title: "New episode",
+                    size_bytes: 1024,
+                    files: [],
+                    is_synced: true,
+                    watch_state: "unwatched",
+                    watch_pct: 0,
+                },
+            ],
+        })
+        ;(api.title as ReturnType<typeof vi.fn>).mockResolvedValue(show)
+        store.detail = { lib: "tv", folder: "Test Show" }
+        const wrapper = mount(DetailDrawer)
+        await new Promise((r) => setTimeout(r, 50))
+        await nextTick()
+
+        const headers = wrapper.findAll(".season-head")
+        expect(headers).toHaveLength(2)
+        expect(headers[0]!.find(".chev").classes()).not.toContain("open")
+        expect(headers[1]!.find(".chev").classes()).toContain("open")
+        store.detail = null
+    })
+})
+
+describe("DetailDrawer follow control", () => {
+    it("can follow a show before any episode is offline", async () => {
+        const { api } = await import("./api")
+        ;(api.title as ReturnType<typeof vi.fn>).mockResolvedValue({
+            ...SHOW_FIXTURE,
+            followed: false,
+        })
+        store.detail = { lib: "tv", folder: "Test Show" }
+        const wrapper = mount(DetailDrawer)
+        await new Promise((r) => setTimeout(r, 50))
+        await nextTick()
+        await wrapper.get('[data-testid="follow-series"]').trigger("click")
+        await nextTick()
+        expect(api.follow).toHaveBeenCalledWith("tv", "Test Show", true)
+        expect(wrapper.get('[data-testid="follow-series"]').text()).toContain(
+            "Stop following"
+        )
+        store.detail = null
+    })
+})
 
 describe("DetailDrawer mark-watched affordances", () => {
     it("renders Mark series watched + Mark season watched + per-episode mark buttons", async () => {

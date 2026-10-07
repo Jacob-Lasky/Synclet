@@ -78,8 +78,8 @@ def test_enrichment_surfaces_unwatched_unsynced_episode(
 
     enrichment = synced._build_enrichment()
     folder = "After Life (2019) {tvdb-2}"
-    assert folder in enrichment
-    eps = {(e["season"], e["episode"]) for e in enrichment[folder]}
+    assert ("tv", folder) in enrichment
+    eps = {(e["season"], e["episode"]) for e in enrichment["tv", folder]}
     assert (1, 2) in eps
     assert (1, 1) not in eps  # synced + watched → not "new unwatched"
 
@@ -92,3 +92,53 @@ def test_force_flags_both_phases_dirty(patch_paths, patch_watchstate, monkeypatc
     synced.get_synced(force=True)
     assert "synced_local" in maint_cache._dirty
     assert "synced_enrichment" in maint_cache._dirty
+
+
+def test_followed_show_remains_when_last_offline_episode_is_removed(
+    patch_paths, patch_watchstate, monkeypatch
+):
+    """Following is title intent, so it survives an empty synced folder."""
+    from synclet import followed
+
+    monkeypatch.setattr("synclet.plex.section_index", lambda *a, **k: {})
+    folder = "After Life (2019) {tvdb-2}"
+    followed.set_following("tv", folder, True)
+    synced_file = (
+        patch_paths["sync"]
+        / "tv"
+        / folder
+        / "Season 01"
+        / "After Life - S01E01 - Episode 1.mkv"
+    )
+    synced_file.unlink()
+    synced_file.parent.rmdir()
+    synced_file.parent.parent.rmdir()
+    (
+        patch_paths["media"]
+        / "tv"
+        / folder
+        / "Season 01"
+        / "After Life - S01E02 - Episode 2.mkv"
+    ).write_bytes(b"\0" * 1024)
+
+    payload = synced.get_synced()
+    entry = next(it for it in payload["items"] if it["folder"] == folder)
+    assert entry["followed"] is True
+    assert entry["synced_episodes"] == 0
+    assert entry["size_bytes"] == 0
+
+    maint_cache.run_refresh_cycle(full=True)
+    entry = next(it for it in synced.get_synced()["items"] if it["folder"] == folder)
+    assert entry["new_unwatched"] == [
+        {"season": 1, "episode": 2, "title": "Episode 2", "size_bytes": 1024}
+    ]
+
+
+def test_follow_bootstrap_skips_ambiguous_tv_and_4k_source(patch_paths):
+    from synclet import followed
+
+    folder = "After Life (2019) {tvdb-2}"
+    (patch_paths["media"] / "tv-4kUHD" / folder).mkdir(parents=True)
+
+    assert ("tv", folder) not in followed.get_followed()
+    assert ("tv-4kUHD", folder) not in followed.get_followed()

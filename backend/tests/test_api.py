@@ -6,6 +6,7 @@ in the user's browser silently.
 """
 
 from typing import cast
+from urllib.parse import quote
 
 import pytest
 from litestar import Litestar
@@ -42,6 +43,115 @@ class TestHealthRoute:
         r = client.get("/api/health")
         assert r.status_code == 200
         assert r.text == "OK"
+
+
+class TestMediaManagementRoutes:
+    def test_follow_and_zero_offline_title(self, client, patch_paths):
+        folder = "After Life (2019) {tvdb-2}"
+        response = client.post(
+            "/api/follow",
+            json={"lib": "tv", "folder": folder, "following": True},
+        )
+        assert response.status_code == 201, response.text
+        assert client.get(f"/api/title/tv/{quote(folder)}").json()["followed"] is True
+        offline = patch_paths["sync"] / "tv" / folder / "Season 01"
+        for path in offline.iterdir():
+            path.unlink()
+        offline.rmdir()
+        offline.parent.rmdir()
+        items = client.get("/api/synced").json()["items"]
+        entry = next(item for item in items if item["folder"] == folder)
+        assert entry["followed"] is True
+        assert entry["synced_episodes"] == 0
+
+    def test_delete_preview_and_commit_use_same_selection(
+        self, client, patch_paths, monkeypatch
+    ):
+        monkeypatch.setattr("synclet.config.DELETE_KEY", "test-key")
+        body = {
+            "lib": "movies",
+            "folder": "1917 (2019) {tmdb-3}",
+            "selection_type": "movie",
+            "episodes": [],
+        }
+        preview = client.post("/api/media/delete/preview", json=body)
+        assert preview.status_code == 201, preview.text
+        assert preview.json()["source_files"] == 3
+        denied = client.post(
+            "/api/media/delete",
+            json={**body, "fingerprint": preview.json()["fingerprint"]},
+            headers={"X-Synclet-Delete-Key": "wrong"},
+        )
+        assert denied.status_code == 403
+        assert (patch_paths["media"] / "movies" / body["folder"]).exists()
+        commit = client.post(
+            "/api/media/delete",
+            json={**body, "fingerprint": preview.json()["fingerprint"]},
+            headers={"X-Synclet-Delete-Key": "test-key"},
+        )
+        assert commit.status_code == 201, commit.text
+        assert commit.json()["source_deleted"] == 3
+        assert commit.json()["title_remaining"] is False
+        assert not (patch_paths["media"] / "movies" / body["folder"]).exists()
+
+    def test_delete_is_disabled_without_a_server_key(
+        self, client, patch_paths, monkeypatch
+    ):
+        monkeypatch.setattr("synclet.config.DELETE_KEY", "")
+        response = client.post(
+            "/api/media/delete",
+            json={
+                "lib": "movies",
+                "folder": "1917 (2019) {tmdb-3}",
+                "selection_type": "movie",
+                "episodes": [],
+                "fingerprint": "anything",
+            },
+        )
+        assert response.status_code == 503
+        assert (patch_paths["media"] / "movies" / "1917 (2019) {tmdb-3}").exists()
+
+    def test_partial_delete_has_multistatus_with_counts(self, client, monkeypatch):
+        from synclet import media_delete
+
+        monkeypatch.setattr("synclet.config.DELETE_KEY", "test-key")
+        monkeypatch.setattr(
+            media_delete,
+            "delete_selection",
+            lambda *args: {
+                "source_deleted": 1,
+                "offline_deleted": 0,
+                "source_bytes": 2,
+                "offline_bytes": 0,
+                "title_remaining": True,
+                "error": "Stopped at a subtitle: Permission denied",
+            },
+        )
+        response = client.post(
+            "/api/media/delete",
+            json={
+                "lib": "movies",
+                "folder": "1917 (2019) {tmdb-3}",
+                "selection_type": "movie",
+                "episodes": [],
+                "fingerprint": "preview",
+            },
+            headers={"X-Synclet-Delete-Key": "test-key"},
+        )
+        assert response.status_code == 207
+        assert response.json()["source_deleted"] == 1
+        assert "Permission denied" in response.json()["error"]
+
+    def test_cross_origin_browser_cannot_preflight_delete(self, client):
+        response = client.options(
+            "/api/media/delete",
+            headers={
+                "Origin": "https://untrusted.example",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        assert "access-control-allow-origin" not in response.headers
 
 
 class TestStateRoute:

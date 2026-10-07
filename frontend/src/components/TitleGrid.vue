@@ -50,12 +50,12 @@ function onScroll(e: Event): void {
 .grid-scroll {
     flex: 1;
     overflow-y: auto;
-    padding: 1rem;
+    padding: clamp(1rem, 2.5vw, 2rem);
 }
 .grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    gap: 1rem;
+    gap: 1.2rem;
 }
 .grid.empty {
     min-height: 30vh;

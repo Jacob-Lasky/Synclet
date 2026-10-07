@@ -55,6 +55,7 @@ export interface TitleDetail {
     seasons: Season[]
     watched_episodes?: number
     watched?: boolean
+    followed?: boolean
 }
 
 export interface DiskUsage {
@@ -100,6 +101,30 @@ export interface StateBundle {
     libraries: LibraryInfo[]
 }
 
+export interface MediaDeleteBody {
+    lib: string
+    folder: string
+    selection_type: "movie" | "episodes"
+    episodes: [number, number][]
+}
+
+export interface MediaDeletePreview {
+    source_files: number
+    offline_files: number
+    source_bytes: number
+    offline_bytes: number
+    fingerprint: string
+}
+
+export interface MediaDeleteResult {
+    source_deleted: number
+    offline_deleted: number
+    source_bytes: number
+    offline_bytes: number
+    title_remaining: boolean
+    error: string | null
+}
+
 export interface Job {
     id: string
     op: "sync" | "unsync"
@@ -126,6 +151,8 @@ export interface SyncedEntry {
     // Count of synced video files, i.e. downloaded episodes for show/youtube
     // titles. Set on first paint (local phase), independent of enrichment.
     synced_episodes: number
+    // Follow intent persists when the final offline episode is removed.
+    followed: boolean
     // Newest synced-file mtime (epoch seconds); when the title was last synced
     // to. Drives the "recently synced" sort. Set on first paint.
     mtime: number

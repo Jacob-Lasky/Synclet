@@ -92,6 +92,40 @@ class TestPeek:
 
 
 class TestRefreshCycle:
+    def test_dirty_remains_visible_while_rebuilding(self):
+        observed = []
+        maint_cache.get_cached("k", lambda: "old")
+
+        def rebuild():
+            observed.append(maint_cache.is_dirty("k"))
+            return "new"
+
+        maint_cache.register("k", rebuild)
+        maint_cache.invalidate("k")
+        maint_cache.run_refresh_cycle(full=False)
+        assert observed == [True]
+        assert maint_cache.is_dirty("k") is False
+
+    def test_invalidation_during_build_survives_for_next_cycle(self):
+        maint_cache.get_cached("k", lambda: "old")
+        builds = []
+
+        def rebuild():
+            builds.append(len(builds) + 1)
+            if len(builds) == 1:
+                maint_cache.invalidate("k")
+                return "stale"
+            return "fresh"
+
+        maint_cache.register("k", rebuild)
+        maint_cache.invalidate("k")
+        maint_cache.run_refresh_cycle(full=False)
+        assert maint_cache.get_cached("k", rebuild) == "stale"
+        assert maint_cache.is_dirty("k") is True
+        maint_cache.run_refresh_cycle(full=False)
+        assert maint_cache.get_cached("k", rebuild) == "fresh"
+        assert maint_cache.is_dirty("k") is False
+
     def test_full_rebuilds_every_registered_key(self):
         seq_a = iter(["a1", "a2"])
         seq_b = iter(["b1", "b2"])

@@ -50,6 +50,7 @@ function toggle(set: Set<string>, id: string): void {
             <input
                 v-model="localQuery"
                 type="search"
+                aria-label="Search library"
                 placeholder="Search library… (fa = Fallout)"
                 autocomplete="off"
                 spellcheck="false"
@@ -87,14 +88,11 @@ function toggle(set: Set<string>, id: string): void {
 
 <style scoped>
 .filter-bar {
-    position: sticky;
-    top: 49px;
+    position: relative;
     z-index: 40;
-    background: rgba(12, 14, 18, 0.92);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    background: var(--bg);
     border-bottom: 1px solid var(--border);
-    padding: 0.6rem 1rem;
+    padding: 0.9rem clamp(1rem, 2.5vw, 2rem);
     display: flex;
     flex-direction: column;
     gap: 0.55rem;
@@ -104,6 +102,7 @@ function toggle(set: Set<string>, id: string): void {
     position: relative;
     display: flex;
     align-items: center;
+    max-width: 640px;
 }
 .search .ico {
     position: absolute;
@@ -152,8 +151,20 @@ function toggle(set: Set<string>, id: string): void {
 
 @media (max-width: 600px) {
     .filter-bar {
-        top: 47px;
-        padding: 0.5rem 0.7rem;
+        padding: 0.7rem 0.9rem;
+    }
+    .chips {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+        padding-bottom: 2px;
+    }
+    .chips::-webkit-scrollbar {
+        display: none;
+    }
+    .chips button {
+        flex: none;
+        min-height: 34px;
     }
 }
 </style>
