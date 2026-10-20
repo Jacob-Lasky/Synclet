@@ -28,6 +28,8 @@ from __future__ import annotations
 import json
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 from common.log_utils import get_logger
@@ -196,42 +198,58 @@ def _unmonitor_deleted(
     base: str,
     key: str,
     item_id: int,
-    files: dict[str, set[tuple[int, int]]],
+    deleted: DeletedMedia,
 ) -> dict:
-    """Unmonitor the episodes whose files a delete removed (or the movie).
+    """Unmonitor the episodes whose media a delete removed (or the movie).
 
-    `files` maps each deleted video, relative to the title folder, to the
-    (season, episode) numbers in its name. DO NOT match by those numbers
-    first: Sonarr links each episode to a file (episodeFileId), and that link
-    is the truth. A multi-episode file (S01E01E02) is linked to both episodes,
-    and a file imported under different numbering is linked to the episode
-    Sonarr thinks it is. Names are only the fallback for a deleted file Sonarr
-    has no record of, and even then an episode linked to a file that still
-    exists is never touched.
+    DO NOT match by the numbers in file names first: the arr links each
+    episode (episodeFileId) or movie (movieFile) to a file, and that link is
+    the truth. A multi-episode file (S01E01E02) is linked to both episodes, and
+    a file imported under different numbering is linked to the episode Sonarr
+    thinks it is. A link counts as deleted when Synclet deleted that file, or
+    when the linked file is no longer on disk at all (the arr's path went stale
+    after a rename nobody reported) and the deleted file's name names that
+    episode. Names alone decide only for a deleted file the arr has no record
+    of, and then only for episodes with no live linked file, so an episode whose
+    media is still on disk is never touched. `deleted.keep` holds episodes that
+    still have a copy among the files this delete planned (a failed unlink).
     """
     if app == "radarr":
+        movie = _request(base, key, f"/api/v3/movie/{item_id}")
+        linked = movie.get("movieFile") if isinstance(movie, dict) else None
+        rel = linked.get("relativePath") if isinstance(linked, dict) else None
+        if rel and rel not in deleted.files and deleted.on_disk(rel):
+            return {
+                "requested": False,
+                "app": app,
+                "reason": "the movie file Radarr knows is still on disk",
+            }
         return _unmonitor_movie(app, base, key, item_id)
     episodes = _episodes(base, key, item_id)
     listed = _request(base, key, "/api/v3/episodefile", params={"seriesId": item_id})
-    episode_files = listed if isinstance(listed, list) else []
-    deleted_file_ids = {
-        f["id"]
-        for f in episode_files
-        if f.get("relativePath") in files and isinstance(f.get("id"), int)
+    file_paths = {
+        f["id"]: f.get("relativePath")
+        for f in (listed if isinstance(listed, list) else [])
+        if isinstance(f.get("id"), int)
     }
-    known = {f.get("relativePath") for f in episode_files}
-    unknown_numbers = {
-        n for rel, nums in files.items() if rel not in known for n in nums
+    known = set(file_paths.values())
+    named = {n for nums in deleted.files.values() for n in nums}
+    unknown_named = {
+        n for rel, nums in deleted.files.items() if rel not in known for n in nums
     }
-    ids = sorted(
-        ep["id"]
-        for ep in episodes
-        if ep.get("episodeFileId") in deleted_file_ids
-        or (
-            (ep.get("seasonNumber"), ep.get("episodeNumber")) in unknown_numbers
-            and ep.get("episodeFileId", 0) in (0, *deleted_file_ids)
-        )
-    )
+
+    def lost_media(ep: dict) -> bool:
+        number = (ep.get("seasonNumber"), ep.get("episodeNumber"))
+        if number in deleted.keep:
+            return False
+        rel = file_paths.get(ep.get("episodeFileId") or 0)
+        if rel is None:
+            return number in unknown_named
+        if rel in deleted.files:
+            return True
+        return number in named and not deleted.on_disk(rel)
+
+    ids = sorted(ep["id"] for ep in episodes if lost_media(ep))
     if ids:
         _put_unmonitored(base, key, ids)
     return _report(app, item_id, ids)
@@ -289,17 +307,27 @@ def unmonitor_title(lib: str, folder: str, episodes: set[tuple[int, int]]) -> di
         return _failed(instance[0] if instance else None, lib, folder, "unmonitor", exc)
 
 
+@dataclass(frozen=True)
+class DeletedMedia:
+    """What a source delete removed, as the arr needs to know it.
+
+    files:   each deleted video, relative to the title folder (the arr's
+             relativePath), with the episode numbers its name carries.
+    keep:    episode numbers that still have a planned video on disk.
+    on_disk: whether a path relative to the title folder still exists.
+    """
+
+    files: dict[str, set[tuple[int, int]]]
+    keep: set[tuple[int, int]]
+    on_disk: Callable[[str], bool]
+
+
 def after_source_delete(
-    lib: str,
-    folder: str,
-    *,
-    unmonitor: bool,
-    files: dict[str, set[tuple[int, int]]],
+    lib: str, folder: str, *, unmonitor: bool, deleted: DeletedMedia
 ) -> dict:
     """What a source delete tells the owning arr: unmonitor (if asked), then rescan.
 
-    `files` is every deleted video, relative to the title folder, with the
-    episode numbers in its name (see _unmonitor_deleted). One arr lookup for
+    See DeletedMedia and _unmonitor_deleted for what is unmonitored. One arr lookup for
     both steps. Unmonitor runs first so the rescan that marks the files missing
     never sees them as wanted. If unmonitoring FAILS, the rescan is skipped:
     an arr that still believes the files exist will not go looking for them,
@@ -319,7 +347,7 @@ def after_source_delete(
     unmonitored = None
     if unmonitor:
         try:
-            unmonitored = _unmonitor_deleted(*item, files)
+            unmonitored = _unmonitor_deleted(*item, deleted)
         except (OSError, ValueError) as exc:
             failed = _failed(app, lib, folder, "unmonitor", exc)
             skipped = {

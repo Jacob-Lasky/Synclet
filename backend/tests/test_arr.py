@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+from collections.abc import Iterable
 
 import pytest
 
@@ -166,6 +167,11 @@ def test_two_items_with_the_same_library_folder_are_ambiguous(sonarr_env, monkey
 E1 = "Season 01/Show - S01E01.mkv"
 
 
+def _gone(files, keep: Iterable[tuple[int, int]] = (), on_disk=lambda rel: False):
+    """DeletedMedia for a test: by default nothing the arr links is on disk."""
+    return arr.DeletedMedia(files=dict(files), keep=set(keep), on_disk=on_disk)
+
+
 def _series_routes(episodes, episode_files, monitor=None):
     return {
         "GET /api/v3/series": [{"id": 7, "path": f"/data/media/tv/{BCS}"}],
@@ -192,7 +198,9 @@ def test_delete_watched_unmonitors_linked_episodes_before_the_rescan(
             ],
         ),
     )
-    out = arr.after_source_delete("tv", BCS, unmonitor=True, files={E1: {(1, 1)}})
+    out = arr.after_source_delete(
+        "tv", BCS, unmonitor=True, deleted=_gone({E1: {(1, 1)}})
+    )
 
     assert out["unmonitor"] == {
         "requested": True,
@@ -226,7 +234,9 @@ def test_multi_episode_file_unmonitors_every_linked_episode(sonarr_env, monkeypa
             [{"id": 500, "relativePath": double}],
         ),
     )
-    arr.after_source_delete("tv", BCS, unmonitor=True, files={double: {(1, 1)}})
+    arr.after_source_delete(
+        "tv", BCS, unmonitor=True, deleted=_gone({double: {(1, 1)}})
+    )
     assert calls[3][2] == {"episodeIds": [70, 71], "monitored": False}
 
 
@@ -243,7 +253,9 @@ def test_link_beats_file_name_numbering(sonarr_env, monkeypatch):
             [{"id": 503, "relativePath": misnumbered}],
         ),
     )
-    arr.after_source_delete("tv", BCS, unmonitor=True, files={misnumbered: {(1, 3)}})
+    arr.after_source_delete(
+        "tv", BCS, unmonitor=True, deleted=_gone({misnumbered: {(1, 3)}})
+    )
     assert calls[3][2] == {"episodeIds": [74], "monitored": False}
 
 
@@ -264,7 +276,13 @@ def test_unknown_file_falls_back_to_name_but_spares_linked_episodes(
         ),
     )
     out = arr.after_source_delete(
-        "tv", BCS, unmonitor=True, files={stray: {(2, 1), (2, 2)}}
+        "tv",
+        BCS,
+        unmonitor=True,
+        deleted=_gone(
+            {stray: {(2, 1), (2, 2)}},
+            on_disk=lambda rel: rel == "Season 02/Show - S02E02 - keep.mkv",
+        ),
     )
     assert calls[3][2] == {"episodeIds": [80], "monitored": False}
     assert out["unmonitor"]["episode_ids"] == [80]
@@ -272,7 +290,9 @@ def test_unknown_file_falls_back_to_name_but_spares_linked_episodes(
 
 def test_nothing_matched_skips_the_put(sonarr_env, monkeypatch):
     calls = _fake_arr(monkeypatch, _series_routes([], []))
-    out = arr.after_source_delete("tv", BCS, unmonitor=True, files={E1: {(1, 1)}})
+    out = arr.after_source_delete(
+        "tv", BCS, unmonitor=True, deleted=_gone({E1: {(1, 1)}})
+    )
     assert out["unmonitor"] == {
         "requested": False,
         "app": "sonarr",
@@ -284,7 +304,9 @@ def test_nothing_matched_skips_the_put(sonarr_env, monkeypatch):
 
 def test_plain_delete_never_touches_monitoring(sonarr_env, monkeypatch):
     calls = _fake_arr(monkeypatch, _series_routes([], []))
-    out = arr.after_source_delete("tv", BCS, unmonitor=False, files={E1: {(1, 1)}})
+    out = arr.after_source_delete(
+        "tv", BCS, unmonitor=False, deleted=_gone({E1: {(1, 1)}})
+    )
     assert out["unmonitor"] is None
     assert out["rescan"]["requested"] is True
     assert [m for m, _, _ in calls] == ["GET", "POST"]
@@ -311,15 +333,125 @@ def test_unmonitor_movie_uses_radarr_editor(monkeypatch):
         "movies-4kUHD",
         "Dune (2021) {tmdb-438631}",
         unmonitor=True,
-        files={"Dune.mkv": set()},
+        deleted=_gone({"Dune.mkv": set()}),
     )
     assert out["unmonitor"] == {"requested": True, "app": "radarr", "item_id": 5}
     assert out["rescan"]["command"] == "RescanMovie"
-    assert seen[1][:3] == (
+    assert seen[1][:2] == ("GET", "http://radarr4k:7879/api/v3/movie/5")
+    assert seen[2][:3] == (
         "PUT",
         "http://radarr4k:7879/api/v3/movie/editor",
         {"movieIds": [5], "monitored": False},
     )
+
+
+def _radarr(monkeypatch, movie_file):
+    monkeypatch.setenv("SYNCLET_RADARR_URL", "http://radarr:7878")
+    monkeypatch.setenv("SYNCLET_RADARR_API_KEY", "k")
+    seen: list[tuple[str, str]] = []
+
+    def _open(request, timeout):
+        seen.append((request.get_method(), request.full_url))
+        url = request.full_url
+        if url.endswith("/api/v3/movie/5"):
+            payload: object = {"id": 5, "movieFile": movie_file}
+        elif request.get_method() == "GET":
+            payload = [{"id": 5, "path": "/data/media/movies/M (2020)"}]
+        else:
+            payload = [] if request.get_method() == "PUT" else {"id": 1}
+        return FakeUrlopenResponse(json.dumps(payload).encode())
+
+    monkeypatch.setattr(arr.urllib.request, "urlopen", _open)
+    return seen
+
+
+def test_movie_stays_monitored_while_its_radarr_file_is_on_disk(monkeypatch):
+    """Movie.mkv kept (an extra was deleted, or the main unlink failed)."""
+    seen = _radarr(monkeypatch, {"id": 9, "relativePath": "M.mkv"})
+    out = arr.after_source_delete(
+        "movies",
+        "M (2020)",
+        unmonitor=True,
+        deleted=_gone(
+            {"extras/trailer.mkv": set()}, on_disk=lambda rel: rel == "M.mkv"
+        ),
+    )
+    assert out["unmonitor"]["requested"] is False
+    assert "PUT" not in [m for m, _ in seen]
+
+
+def test_movie_is_unmonitored_when_its_radarr_file_was_deleted(monkeypatch):
+    """Extras that failed to unlink do not matter: Radarr's file is gone."""
+    seen = _radarr(monkeypatch, {"id": 9, "relativePath": "M.mkv"})
+    out = arr.after_source_delete(
+        "movies",
+        "M (2020)",
+        unmonitor=True,
+        deleted=_gone({"M.mkv": set()}, on_disk=lambda rel: True),
+    )
+    assert out["unmonitor"]["requested"] is True
+    assert ("PUT", "http://radarr:7878/api/v3/movie/editor") in seen
+
+
+def test_stale_link_counts_when_the_deleted_name_matches(sonarr_env, monkeypatch):
+    """Sonarr still links E04 to an old encode's path that is gone from disk."""
+    calls = _fake_arr(
+        monkeypatch,
+        _series_routes(
+            [{"id": 74, "seasonNumber": 1, "episodeNumber": 4, "episodeFileId": 504}],
+            [{"id": 504, "relativePath": "Season 01/Show - S01E04 old.mkv"}],
+        ),
+    )
+    arr.after_source_delete(
+        "tv",
+        BCS,
+        unmonitor=True,
+        deleted=_gone({"Season 01/Show - S01E04 new.mkv": {(1, 4)}}),
+    )
+    assert calls[3][2] == {"episodeIds": [74], "monitored": False}
+
+
+def test_live_link_is_never_touched_by_a_name_match(sonarr_env, monkeypatch):
+    calls = _fake_arr(
+        monkeypatch,
+        _series_routes(
+            [{"id": 74, "seasonNumber": 1, "episodeNumber": 4, "episodeFileId": 504}],
+            [{"id": 504, "relativePath": "Season 01/Show - S01E04 old.mkv"}],
+        ),
+    )
+    out = arr.after_source_delete(
+        "tv",
+        BCS,
+        unmonitor=True,
+        deleted=_gone(
+            {"Season 01/Show - S01E04 new.mkv": {(1, 4)}}, on_disk=lambda rel: True
+        ),
+    )
+    assert out["unmonitor"]["requested"] is False
+    assert "PUT" not in [m for m, _, _ in calls]
+
+
+def test_kept_copy_spares_only_its_episode_of_a_multi_episode_file(
+    sonarr_env, monkeypatch
+):
+    double = "Season 01/Show - S01E01E02.mkv"
+    calls = _fake_arr(
+        monkeypatch,
+        _series_routes(
+            [
+                {"id": 70, "seasonNumber": 1, "episodeNumber": 1, "episodeFileId": 500},
+                {"id": 71, "seasonNumber": 1, "episodeNumber": 2, "episodeFileId": 500},
+            ],
+            [{"id": 500, "relativePath": double}],
+        ),
+    )
+    arr.after_source_delete(
+        "tv",
+        BCS,
+        unmonitor=True,
+        deleted=_gone({double: {(1, 1), (1, 2)}}, keep={(1, 1)}),
+    )
+    assert calls[3][2] == {"episodeIds": [71], "monitored": False}
 
 
 def test_failed_unmonitor_skips_the_rescan(sonarr_env, monkeypatch):
@@ -334,7 +466,9 @@ def test_failed_unmonitor_skips_the_rescan(sonarr_env, monkeypatch):
             "POST /api/v3/command": {"id": 99},
         },
     )
-    out = arr.after_source_delete("tv", BCS, unmonitor=True, files={E1: {(1, 1)}})
+    out = arr.after_source_delete(
+        "tv", BCS, unmonitor=True, deleted=_gone({E1: {(1, 1)}})
+    )
     assert out["unmonitor"]["requested"] is False
     assert "timed out" in out["unmonitor"]["reason"]
     assert out["rescan"] == {
@@ -379,12 +513,14 @@ def test_on_demand_unmonitor_never_raises(sonarr_env, monkeypatch):
 
 def test_lookup_failure_reports_both_steps(sonarr_env, monkeypatch):
     _fake_arr(monkeypatch, {"GET /api/v3/series": urllib.error.URLError("refused")})
-    out = arr.after_source_delete("tv", BCS, unmonitor=True, files={E1: {(1, 1)}})
+    out = arr.after_source_delete(
+        "tv", BCS, unmonitor=True, deleted=_gone({E1: {(1, 1)}})
+    )
     assert out["unmonitor"]["requested"] is False
     assert out["rescan"]["requested"] is False
 
 
 def test_unconfigured_library_skips_both_steps(monkeypatch):
-    out = arr.after_source_delete("YouTube", "Chan", unmonitor=True, files={})
+    out = arr.after_source_delete("YouTube", "Chan", unmonitor=True, deleted=_gone({}))
     assert out["unmonitor"]["reason"] == "no arr configured for this library"
     assert out["rescan"]["reason"] == "no arr configured for this library"
