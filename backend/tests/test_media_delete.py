@@ -456,33 +456,170 @@ def test_partial_delete_reports_completed_files_and_remaining_media(
     assert (title / "1917.mkv").exists()
 
 
+# The arr.DeletedMedia each faked after_source_delete call received.
+_deleted: list = []
+
+
+def _record_arr(monkeypatch) -> list[dict]:
+    _deleted.clear()
+    from synclet import arr
+
+    seen: list[dict] = []
+
+    def fake(lib, folder, *, unmonitor, deleted):
+        seen.append(
+            {
+                "lib": lib,
+                "folder": folder,
+                "unmonitor": unmonitor,
+                "files": deleted.files,
+            }
+        )
+        _deleted.append(deleted)
+        return {
+            "unmonitor": {"requested": True} if unmonitor else None,
+            "rescan": {"requested": True},
+        }
+
+    monkeypatch.setattr(arr, "after_source_delete", fake)
+    return seen
+
+
 def test_delete_asks_the_owning_arr_to_rescan_that_title(patch_paths, monkeypatch):
-    from synclet import arr, library
+    from synclet import library
 
     folder = "1917 (2019) {tmdb-3}"
-    seen: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        arr, "rescan_title", lambda lib, f: seen.append((lib, f)) or {"requested": True}
-    )
+    seen = _record_arr(monkeypatch)
     library.folders("movies")
     plan = media_delete.plan_selection("movies", folder, "movie", [])
     result = media_delete.delete_selection(
         "movies", folder, "movie", [], plan.fingerprint
     )
 
-    assert seen == [("movies", folder)]
+    # A plain delete rescans but leaves monitoring alone (a bad copy may be
+    # deleted on purpose so the arr re-grabs it).
+    assert seen == [
+        {
+            "lib": "movies",
+            "folder": folder,
+            "unmonitor": False,
+            "files": {"1917.mkv": set()},
+        }
+    ]
     assert result["arr_rescan"] == {"requested": True}
+    assert result["arr_unmonitor"] is None
     # The listing dropped the deleted title by one stat, without re-listing.
     assert result["title_remaining"] is False
     assert library.peek("movies", folder) is False
 
 
-def test_refused_delete_does_not_ask_the_arr(patch_paths, monkeypatch):
-    from synclet import arr
-
-    monkeypatch.setattr(
-        arr, "rescan_title", lambda *a: pytest.fail("rescan after a refused delete")
+def test_delete_watched_unmonitors_exactly_the_deleted_episodes(
+    patch_paths, monkeypatch
+):
+    folder = "Better Call Saul (2015) {tvdb-1}"
+    seen = _record_arr(monkeypatch)
+    plan = media_delete.plan_selection("tv", folder, "episodes", [(1, 1)])
+    result = media_delete.delete_selection(
+        "tv", folder, "episodes", [(1, 1)], plan.fingerprint, unmonitor=True
     )
+
+    # Subtitles of S01E01 were deleted too; only the video is reported.
+    assert seen == [
+        {
+            "lib": "tv",
+            "folder": folder,
+            "unmonitor": True,
+            "files": {
+                "Season 01/Better Call Saul - S01E01 - Uno [WEBDL-1080p].mkv": {(1, 1)}
+            },
+        }
+    ]
+    assert result["arr_unmonitor"] == {"requested": True}
+    deleted = _deleted[0]
+    assert deleted.keep == set()
+    # on_disk answers about the real title folder, after the delete.
+    deleted_ep = "Season 01/Better Call Saul - S01E01 - Uno [WEBDL-1080p].mkv"
+    kept_ep = "Season 01/Better Call Saul - S01E02 - Mijo [WEBDL-1080p].mkv"
+    assert deleted.on_disk(deleted_ep) is False
+    assert deleted.on_disk(kept_ep) is True
+
+
+def test_partial_delete_unmonitors_only_episodes_whose_video_went(
+    patch_paths, monkeypatch
+):
+    folder = "Better Call Saul (2015) {tvdb-1}"
+    seen = _record_arr(monkeypatch)
+    season = patch_paths["media"] / "tv" / folder / "Season 01"
+    original_unlink = Path.unlink
+
+    def fail_e02_video(self, *args, **kwargs):
+        if self.name.endswith(".mkv") and "S01E02" in self.name:
+            raise OSError(13, "Permission denied")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_e02_video)
+    plan = media_delete.plan_selection("tv", folder, "episodes", [(1, 1), (1, 2)])
+    result = media_delete.delete_selection(
+        "tv", folder, "episodes", [(1, 1), (1, 2)], plan.fingerprint, unmonitor=True
+    )
+
+    assert result["error"]
+    assert any("S01E02" in p.name for p in season.iterdir())
+    assert seen[0]["files"] == {
+        "Season 01/Better Call Saul - S01E01 - Uno [WEBDL-1080p].mkv": {(1, 1)}
+    }
+    assert _deleted[0].keep == {(1, 2)}
+
+
+def test_movie_delete_reports_what_survived_for_radarr_to_judge(
+    patch_paths, monkeypatch
+):
+    """Part 2 deleted, part 1's unlink failed: the arr sees part 1 still on disk.
+
+    Whether the movie stays monitored is Radarr's movieFile link against
+    on_disk (arr tests cover both outcomes), so extras never decide it.
+    """
     folder = "1917 (2019) {tmdb-3}"
-    with pytest.raises(ValueError):
-        media_delete.delete_selection("movies", folder, "movie", [], "stale")
+    (patch_paths["media"] / "movies" / folder / "1917 - part2.mkv").write_bytes(b"\0")
+    seen = _record_arr(monkeypatch)
+    original_unlink = Path.unlink
+
+    def fail_video(self, *args, **kwargs):
+        if self.name == "1917.mkv":  # deleted after part2 (name order)
+            raise OSError(13, "Permission denied")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_video)
+    plan = media_delete.plan_selection("movies", folder, "movie", [])
+    result = media_delete.delete_selection(
+        "movies", folder, "movie", [], plan.fingerprint, unmonitor=True
+    )
+    assert result["error"]
+    assert seen[0]["files"] == {"1917 - part2.mkv": set()}
+    assert _deleted[0].on_disk("1917.mkv") is True
+    assert _deleted[0].on_disk("1917 - part2.mkv") is False
+
+
+def test_episode_numbers_cover_multi_episode_names():
+    assert media_delete._episode_numbers(Path("Show - S01E01E02.mkv")) == {
+        (1, 1),
+        (1, 2),
+    }
+    assert media_delete._episode_numbers(Path("Show - S01E01-E02 - x.mkv")) == {
+        (1, 1),
+        (1, 2),
+    }
+    assert media_delete._episode_numbers(Path("Show - S00E05.mkv")) == {(0, 5)}
+    assert media_delete._episode_numbers(Path("Show - 1080p.mkv")) == set()
+
+
+def test_a_surviving_copy_keeps_its_episode_number(tmp_path):
+    root = tmp_path / "Show"
+    double = root / "Season 01" / "Show - S01E01E02.mkv"
+    kept = root / "Season 01" / "Show - S01E01 - copy.mkv"
+    deleted = media_delete._deleted_media_for_arr(
+        root, (double, kept, root / "Season 01" / "Show - S01E01.srt"), [double]
+    )
+    # The double episode still counts for E02; E01 is kept by its copy.
+    assert deleted.files == {"Season 01/Show - S01E01E02.mkv": {(1, 1), (1, 2)}}
+    assert deleted.keep == {(1, 1)}

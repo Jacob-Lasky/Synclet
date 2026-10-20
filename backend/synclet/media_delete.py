@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
+import re
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,46 @@ _SEASON_SIDECAR_EXTS = _TRICKPLAY_IMAGE_EXTS | config.SUBTITLE_EXTS | {".nfo", "
 def _episode_key(path: Path) -> tuple[int, int] | None:
     match = _EP_PAT.search(path.name)
     return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+# Every episode a file name claims: S01E01, S01E01E02, S01E01-E02 (Sonarr's
+# repeat and scene styles). Used only to tell the arr which episodes a deleted
+# file it has no record of covered; the arr's own file links come first.
+_MULTI_EP = re.compile(r"[Ss](\d+)((?:-?[Ee]\d+)+)")
+_EP_NUM = re.compile(r"[Ee](\d+)")
+
+
+def _episode_numbers(path: Path) -> set[tuple[int, int]]:
+    match = _MULTI_EP.search(path.name)
+    if not match:
+        return set()
+    season = int(match.group(1))
+    return {(season, int(e)) for e in _EP_NUM.findall(match.group(2))}
+
+
+def _deleted_media_for_arr(
+    title_root: Path, planned: tuple[Path, ...], deleted: list[Path]
+) -> arr.DeletedMedia:
+    """What the arr should forget after this delete (see arr.DeletedMedia).
+
+    Only videos that were actually deleted are reported. Episode numbers that
+    still have a planned video on disk (a failed unlink, or a second copy) go in
+    `keep`, so a partial delete never unmonitors an episode whose media
+    remains, while the other episodes of a multi-episode file still count.
+    """
+    gone = set(deleted)
+    planned_videos = [p for p in planned if p.suffix.lower() in config.VIDEO_EXTS]
+    keep = {n for p in planned_videos if p not in gone for n in _episode_numbers(p)}
+    files = {
+        p.relative_to(title_root).as_posix(): _episode_numbers(p)
+        for p in planned_videos
+        if p in gone
+    }
+    return arr.DeletedMedia(
+        files=files,
+        keep=keep,
+        on_disk=lambda rel: (title_root / rel).exists(),
+    )
 
 
 @dataclass(frozen=True)
@@ -417,8 +458,16 @@ def delete_selection(
     selection_type: str,
     episodes: list[tuple[int, int]],
     fingerprint: str,
+    *,
+    unmonitor: bool = False,
 ) -> dict:
-    """Delete exactly the previewed files, then invalidate all affected views."""
+    """Delete exactly the previewed files, then invalidate all affected views.
+
+    `unmonitor` is the "Delete watched" intent (and a watched movie's delete):
+    the owning arr stops monitoring exactly what was deleted, so it is not
+    downloaded again. A plain selected-episode delete leaves monitoring alone,
+    so deleting a bad copy still lets the arr re-grab it.
+    """
     plan = plan_selection(lib, folder, selection_type, episodes)
     if plan.fingerprint != fingerprint:
         raise ValueError("media changed since preview; preview again")
@@ -484,9 +533,22 @@ def delete_selection(
         state.invalidate()
         maint_cache.invalidate()
     # The arr would otherwise learn of the delete only at its next full-disk
-    # rescan. Ask it to rescan just this title; a failure is reported, never
+    # rescan. Ask it to rescan just this title, after unmonitoring what was
+    # deleted when the user is done with it; a failure is reported, never
     # raised, because the files are already gone.
-    arr_rescan = arr.rescan_title(lib, folder) if deleted_source else None
+    deleted_media = _deleted_media_for_arr(
+        source_root, plan.source_files, deleted_source
+    )
+    arr_result = (
+        arr.after_source_delete(
+            lib,
+            folder,
+            unmonitor=unmonitor and bool(deleted_media.files),
+            deleted=deleted_media,
+        )
+        if deleted_source
+        else {"unmonitor": None, "rescan": None}
+    )
     return {
         "source_deleted": len(deleted_source),
         "offline_deleted": len(deleted_offline),
@@ -494,5 +556,6 @@ def delete_selection(
         "offline_bytes": deleted_offline_bytes,
         "title_remaining": source_root.exists(),
         "error": failure,
-        "arr_rescan": arr_rescan,
+        "arr_rescan": arr_result["rescan"],
+        "arr_unmonitor": arr_result["unmonitor"],
     }

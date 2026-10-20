@@ -156,6 +156,8 @@ function openDeleteMovie(): void {
             folder: detail.value.folder,
             selection_type: "movie",
             episodes: [],
+            // A watched movie's delete is the movie form of "Delete watched".
+            unmonitor: detail.value.watched === true,
         },
         scopeLabel: detail.value.name,
     }
@@ -191,6 +193,7 @@ function openDeleteWatched(): void {
             folder: detail.value.folder,
             selection_type: "episodes",
             episodes,
+            unmonitor: true,
         },
         scopeLabel: `${n} watched episode${n === 1 ? "" : "s"} of ${detail.value.name}`,
     }

@@ -107,6 +107,10 @@ export interface MediaDeleteBody {
     folder: string
     selection_type: "movie" | "episodes"
     episodes: [number, number][]
+    // "Delete watched" intent (and a watched movie's delete): Sonarr/Radarr
+    // stop monitoring what is deleted so it is not downloaded again. Left
+    // unset for a hand-picked delete, which may be a bad copy to re-grab.
+    unmonitor?: boolean
 }
 
 export interface MediaDeletePreview {
@@ -148,6 +152,15 @@ export interface MediaDeleteResult {
         command?: string
         item_id?: number
         command_id?: number | null
+        reason?: string
+    } | null
+    // What the owning arr was asked to unmonitor first; null when the delete
+    // did not ask for it or nothing was deleted from the source.
+    arr_unmonitor: {
+        requested: boolean
+        app?: string
+        item_id?: number
+        episode_ids?: number[]
         reason?: string
     } | null
 }

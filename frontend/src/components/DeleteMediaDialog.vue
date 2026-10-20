@@ -26,6 +26,9 @@ const preview = ref<MediaDeletePreview | null>(null)
 const loading = ref(true)
 const deleting = ref(false)
 const error = ref("")
+const arrName = computed(() =>
+    props.body.selection_type === "movie" ? "Radarr" : "Sonarr"
+)
 const canDelete = computed(
     () =>
         typedTitle.value === props.title &&
@@ -95,6 +98,12 @@ async function deleteMedia(): Promise<void> {
                 This removes the source media and any offline copies. Syncthing
                 will remove those copies from paired devices. Plex will update
                 after its next library scan.
+            </p>
+            <p v-if="body.unmonitor" data-testid="unmonitor-note">
+                {{ arrName }} will stop monitoring
+                {{ body.selection_type === "movie" ? "this movie" : "them" }}
+                so {{ body.selection_type === "movie" ? "it is" : "they are" }}
+                not downloaded again.
             </p>
             <p v-if="loading" class="preview-state">Checking files…</p>
             <div
