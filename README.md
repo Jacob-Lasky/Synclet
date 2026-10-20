@@ -53,7 +53,7 @@ Synclet does not list the library folders on a timer. On Unraid each library roo
 - **Synclet's own deletes** update their title directly.
 - **A full re-list** runs only as a backstop, one library at a time, every `SYNCLET_LIBRARY_RELIST` seconds (default 6 hours), or when you press Rescan in the top bar. The button waits for the re-list to finish before it says "Library rescanned". `GET /api/library` shows each library's title count and listing time.
 
-Sources with no arr (YouTube) get new channels at the next backstop or Rescan. New episodes inside a followed YouTube channel are picked up within `SYNCLET_TITLE_RESCAN` seconds (default 1 hour).
+Sources with no arr (YouTube) get new channels at the next backstop or Rescan. New episodes inside a followed YouTube channel are picked up within one to two `SYNCLET_TITLE_RESCAN` intervals (default 1 hour): each title's limit is stretched by a stable amount so the rescans spread out instead of every followed channel being walked in the same pass.
 
 After deleting source media, Synclet asks the owning arr to rescan just that series or movie (`RescanSeries` / `RescanMovie`), so the arr does not need a periodic full-disk rescan to notice. Configure one URL and API key per library in the gitignored `.env`: `SYNCLET_SONARR_URL` / `SYNCLET_SONARR_API_KEY` (TV), `SYNCLET_SONARR_4K_*` (TV 4K), `SYNCLET_RADARR_*` (Movies) and `SYNCLET_RADARR_4K_*` (Movies 4K). A library with no URL and key skips the rescan. `POST /api/arr/rescan` with `{"lib", "folder"}` runs the same rescan on demand.
 
