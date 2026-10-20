@@ -353,9 +353,9 @@ def folders(lib: str) -> list[str] | None:
             return sorted(_folders[lib])
         if lib in _listed_at:
             return None  # listed, and the root does not exist
+        # A library whose cold listing failed waits out its backoff (the
+        # backstop retries it); it is not re-listed on every read.
         now = time.time()
-        if now < _retry_at.get(lib, 0.0) and lib not in _inflight:
-            return None  # its cold listing failed; the backstop retries it
         cold = [
             other
             for other in config.LIBRARIES
