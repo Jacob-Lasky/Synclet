@@ -30,9 +30,11 @@ from pydantic import BaseModel
 
 from common.log_utils import get_logger
 from synclet import (
+    arr,
     config,
     followed,
     ignored,
+    library,
     maint_cache,
     media_delete,
     pending,
@@ -83,6 +85,11 @@ class MediaDeleteRequest(BaseModel):
 
 class MediaDeleteCommitRequest(MediaDeleteRequest):
     fingerprint: str
+
+
+class TitleRef(BaseModel):
+    lib: str
+    folder: str
 
 
 class RemoveFilesRequest(BaseModel):
@@ -153,10 +160,10 @@ async def health() -> str:
 async def api_state(refresh: bool = False) -> dict:
     from synclet.config import LIBRARIES
 
-    # get_state walks the filesystem and hits Plex; disk_usage stats the
-    # mounts. Both are blocking and must run off the event loop or a single
-    # slow/stuck call freezes every other request (see module note on
-    # to_thread offloading).
+    # get_state and disk_usage serve the background cache, but a cold first
+    # read builds (Plex HTTP, the first library listing, a SYNC_ROOT walk).
+    # Both stay off the event loop so one slow call cannot freeze every other
+    # request (see module note on to_thread offloading).
     state = await asyncio.to_thread(get_state, force=refresh)
     disk = await asyncio.to_thread(disk_usage)
     return {
@@ -546,7 +553,49 @@ async def api_refresh() -> dict:
     """
     invalidate()
     maint_cache.invalidate()
+    library.request_relist()
     return {"ok": True}
+
+
+@get("/api/library")
+async def api_library() -> dict:
+    """Library listing ages and title counts (see synclet.library). In-memory."""
+    return library.status()
+
+
+@post("/api/arr/webhook")
+async def api_arr_webhook(data: dict) -> dict:
+    """Sonarr/Radarr Connect webhook: re-check the one title the event names.
+
+    This is how new and removed titles reach the grid without Synclet listing
+    the library roots (Synclet#66). The event's series or movie path names a
+    library and a title folder; that folder gets one stat (library.note_title),
+    then the grid and badges rebuild in the background. Events with no usable
+    path (the arr's Test button, health events) are acknowledged and ignored so
+    the arr does not mark the connection failed. Same trust posture as
+    /api/refresh: the worst a caller can do is make Synclet stat one folder.
+    """
+    ref = arr.title_from_webhook(data)
+    if ref is None:
+        return {"ok": True, "ignored": data.get("eventType", "unknown")}
+    lib, folder = ref
+    present = await asyncio.to_thread(library.note_title, lib, folder)
+    logger.info(
+        "arr webhook %s: %s/%s present=%s", data.get("eventType"), lib, folder, present
+    )
+    return {"ok": True, "lib": lib, "folder": folder, "present": present}
+
+
+@post("/api/arr/rescan")
+async def api_arr_rescan(data: TitleRef) -> dict:
+    """Ask the owning arr to rescan one series or movie, now.
+
+    The same call a source delete makes (media_delete.delete_selection), exposed
+    so the integration can be exercised and re-fired without deleting media.
+    """
+    if not library.valid_folder(data.lib, data.folder):
+        raise HTTPException(status_code=400, detail="invalid library title")
+    return await asyncio.to_thread(arr.rescan_title, data.lib, data.folder)
 
 
 @get("/api/coverage")
@@ -635,6 +684,9 @@ def build_route_handlers(static_dir: Path | None = None) -> list:
         api_scrobble,
         api_resolve,
         api_refresh,
+        api_library,
+        api_arr_webhook,
+        api_arr_rescan,
         api_syncthing_overview,
         api_coverage,
     ]
@@ -693,23 +745,38 @@ async def _cache_refresh_loop() -> None:
     touches the event loop, and reads never wait on any of it. A build that
     raises keeps its last-good value (see maint_cache._rebuild); the loop logs
     and continues so one bad section can't kill the refresher.
+
+    The interval is measured from the END of a full pass. Measured from the
+    start, any pass slower than CACHE_FULL_REFRESH was followed at once by the
+    next, so a slow share got back-to-back passes (Synclet#66). The library
+    backstop re-list is only submitted here (library.start_due_relists runs it
+    on its own worker); a pass never lists a library root.
     """
     loop = asyncio.get_running_loop()
-    last_full = 0.0
-    first = True
+    last_full: float | None = None
     while True:
         try:
-            now = loop.time()
-            full = first or (now - last_full) >= config.CACHE_FULL_REFRESH
+            relisting = library.start_due_relists()
+            if relisting:
+                logger.info("library re-list started: %s", ", ".join(relisting))
+            started = loop.time()
+            full = last_full is None or started - last_full >= config.CACHE_FULL_REFRESH
             rebuilt = await asyncio.to_thread(maint_cache.run_refresh_cycle, full=full)
+            finished = loop.time()
             if full:
-                last_full = now
-                first = False
+                last_full = finished
             if rebuilt:
                 logger.info(
-                    "cache refresh (%s): %s",
+                    "cache refresh (%s, %.1fs): %s",
                     "full" if full else "dirty",
+                    finished - started,
                     ", ".join(rebuilt),
+                )
+            if full and finished - started > config.CACHE_SLOW_PASS:
+                logger.warning(
+                    "full cache pass took %.0fs (over %ss); the share or Plex is slow",
+                    finished - started,
+                    config.CACHE_SLOW_PASS,
                 )
         except Exception:
             logger.exception("cache refresh cycle failed; continuing")

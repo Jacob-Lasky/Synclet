@@ -14,8 +14,8 @@ read path entirely:
     NEVER triggers a build, except the one cold first-boot miss for a key that
     nothing has primed yet.
   - A background loop (main.cache_refresh_loop) rebuilds keys off the request
-    path: dirty keys every CACHE_DIRTY_REFRESH_S (prompt after a mutation), and
-    every registered key every CACHE_FULL_REFRESH_S (picks up external changes
+    path: dirty keys every CACHE_DIRTY_REFRESH (prompt after a mutation), and
+    every registered key every CACHE_FULL_REFRESH (picks up external changes
     from WatchState's own import poll and Syncthing propagation).
   - Mutations (sync/unsync/remove/ignore) call invalidate(), which FLAGS the
     key dirty WITHOUT dropping its value. The stale value keeps serving until
@@ -125,7 +125,7 @@ def invalidate(key: str | None = None) -> None:
     Mutations call this. The OLD contract cleared the cache so the next read
     rebuilt synchronously, which was the 25s stall. New contract: the value
     keeps serving and the background loop rebuilds it on its next pass (within
-    CACHE_DIRTY_REFRESH_S). Passing None flags every registered key.
+    CACHE_DIRTY_REFRESH). Passing None flags every registered key.
     """
     with _lock:
         keys = tuple(_builders) if key is None else (key,)

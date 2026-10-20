@@ -265,7 +265,8 @@ def section_index(section_id: int) -> dict[str, dict]:
     under-tracked 4K sections); see synclet.watchstate.
 
     Cache layers, cheapest first:
-      1. @lru_cache (this decorator) — in-process, lifetime of the worker.
+      1. @lru_cache (this decorator) — in-process, emptied by
+         expire_stale_watch_caches once PLEX_CACHE_TTL_S old, and on scrobble.
       2. PLEX_CACHE_FILE — disk JSON, survives container restart, 1h TTL.
       3. Plex network — on full miss.
       4. PLEX_CACHE_FILE past its TTL — last-good fallback when the network
@@ -463,6 +464,29 @@ def episode_watch_map(show_rating_key: str) -> dict[tuple[int, int], bool]:
     return out
 
 
+# When the in-process section caches were last emptied. lru_cache has no TTL,
+# so without expire_stale_watch_caches the disk TTL above never applied once a
+# section was in memory: Plex-direct watch counts and new titles' posters stayed
+# frozen until a scrobble or a restart.
+_lru_since = time.monotonic()
+
+
+def expire_stale_watch_caches() -> None:
+    """Drop the in-process Plex caches once they are PLEX_CACHE_TTL_S old.
+
+    Called at the start of each grid build. The next section_index read then
+    goes back through the disk layer (and Plex when that is past its TTL too).
+    Plex HTTP only; this never touches the media share.
+    """
+    global _lru_since
+    if time.monotonic() - _lru_since < PLEX_CACHE_TTL_S:
+        return
+    section_index.cache_clear()
+    _section_id_index.cache_clear()
+    episode_watch_map.cache_clear()
+    _lru_since = time.monotonic()
+
+
 def invalidate_watch_caches() -> None:
     """Bust every cached Plex-side watch-state read, in-memory AND on disk.
 
@@ -476,9 +500,11 @@ def invalidate_watch_caches() -> None:
     scrobble state isn't resurrected by a container restart inside the TTL
     window — the two layers share invalidation authority.
     """
+    global _lru_since
     section_index.cache_clear()
     _section_id_index.cache_clear()
     episode_watch_map.cache_clear()
+    _lru_since = time.monotonic()
     with contextlib.suppress(FileNotFoundError, OSError):
         PLEX_CACHE_FILE.unlink()
 

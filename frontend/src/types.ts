@@ -124,6 +124,16 @@ export interface MediaDeleteResult {
     offline_bytes: number
     title_remaining: boolean
     error: string | null
+    // What the owning Sonarr/Radarr was asked to rescan; null when nothing
+    // was deleted from the source. Informational, not shown in the UI.
+    arr_rescan: {
+        requested: boolean
+        app?: string
+        command?: string
+        item_id?: number
+        command_id?: number | null
+        reason?: string
+    } | null
 }
 
 export interface Job {

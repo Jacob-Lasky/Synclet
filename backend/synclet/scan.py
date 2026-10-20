@@ -1,9 +1,9 @@
 """Filesystem scan: turn the library directory layout into structured data.
 
-The CLI walks the filesystem on every command; we do the same but cache the
-result so the API doesn't repeat work for back-to-back requests. The scan is
-intentionally cheap , no per-file stat for the grid view; sizes get computed
-only inside title-detail responses.
+The grid's title list comes from synclet.library's cached listing, never from
+listing the library roots per request or per cache pass. The grid scan does no
+per-file stat; sizes are computed only inside title-detail responses, which
+walk one title's folder live.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from pathlib import Path
 
 from synclet.config import (
     ENGLISH_CODES,
-    EXCLUDED_DIRS,
     EXTERNAL_ID_SCHEMES,
     LIBRARIES,
     MEDIA_ROOT,
@@ -223,13 +222,15 @@ def _synced_folder_index() -> dict[str, int]:
 
 
 def scan_titles() -> list[Title]:
-    """Walk MEDIA_ROOT and return one Title per library folder.
+    """Return one Title per library folder, from the cached library listing.
 
-    Designed to run in under 2 seconds across ~4000 titles on shfs FUSE: no
-    recursion into season directories. Episode counts come from WatchState
-    (which Plex/WatchState already indexed). Sync state comes from a single
-    pass over SYNC_ROOT , much smaller tree.
+    DO NOT os.scandir the library roots here. This runs on every grid rebuild,
+    and listing a merged shfs root on a timer is what stalled the share
+    (Synclet#66). synclet.library owns the listing and keeps it current per
+    title. Episode counts come from WatchState/Plex; sync state comes from a
+    single pass over SYNC_ROOT, a much smaller tree.
     """
+    from synclet import library  # local to avoid cycle
     from synclet.watchstate import all_show_aggregates  # local to avoid cycle
 
     # {show_title_lower: total_episode_count}, merged WatchState + Plex so YouTube
@@ -240,37 +241,25 @@ def scan_titles() -> list[Title]:
 
     out: list[Title] = []
     for lib, info in LIBRARIES.items():
-        root = MEDIA_ROOT / lib
-        if not root.exists():
+        names = library.folders(lib)
+        if names is None:
             continue
-        with os.scandir(root) as it:
-            entries = sorted(
-                (
-                    e
-                    for e in it
-                    if e.is_dir(follow_symlinks=False)
-                    and e.name not in EXCLUDED_DIRS
-                    and not e.name.startswith(".")
-                ),
-                key=lambda e: e.name,
-            )
-        for entry in entries:
+        for folder in names:
             kind = info["kind"]
-            name = clean_name(entry.name)
-            ws_key = watchstate_key(entry.name)
+            ws_key = watchstate_key(folder)
             ep_count = (
                 show_ep_count.get(ws_key, 0) if kind in ("show", "youtube") else 0
             )
-            synced_files = synced_index.get(entry.name, 0)
+            synced_files = synced_index.get(folder, 0)
 
             out.append(
                 Title(
-                    id=f"{lib}/{entry.name}",
+                    id=f"{lib}/{folder}",
                     lib=lib,
-                    folder=entry.name,
-                    name=name,
+                    folder=folder,
+                    name=clean_name(folder),
                     kind=kind,
-                    year=parse_year(entry.name),
+                    year=parse_year(folder),
                     ep_count=ep_count,
                     synced_files=synced_files,
                     has_synced=synced_files > 0,

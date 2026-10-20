@@ -454,3 +454,35 @@ def test_partial_delete_reports_completed_files_and_remaining_media(
     assert result["error"] == "Stopped at 1917.fr.srt: Permission denied"
     assert result["title_remaining"] is True
     assert (title / "1917.mkv").exists()
+
+
+def test_delete_asks_the_owning_arr_to_rescan_that_title(patch_paths, monkeypatch):
+    from synclet import arr, library
+
+    folder = "1917 (2019) {tmdb-3}"
+    seen: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        arr, "rescan_title", lambda lib, f: seen.append((lib, f)) or {"requested": True}
+    )
+    library.folders("movies")
+    plan = media_delete.plan_selection("movies", folder, "movie", [])
+    result = media_delete.delete_selection(
+        "movies", folder, "movie", [], plan.fingerprint
+    )
+
+    assert seen == [("movies", folder)]
+    assert result["arr_rescan"] == {"requested": True}
+    # The listing dropped the deleted title by one stat, without re-listing.
+    assert result["title_remaining"] is False
+    assert library.peek("movies", folder) is False
+
+
+def test_refused_delete_does_not_ask_the_arr(patch_paths, monkeypatch):
+    from synclet import arr
+
+    monkeypatch.setattr(
+        arr, "rescan_title", lambda *a: pytest.fail("rescan after a refused delete")
+    )
+    folder = "1917 (2019) {tmdb-3}"
+    with pytest.raises(ValueError):
+        media_delete.delete_selection("movies", folder, "movie", [], "stale")

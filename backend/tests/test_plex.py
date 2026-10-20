@@ -874,3 +874,25 @@ class TestSectionIndexDiskCache:
             on_disk = json.load(f)
         # Every section written got persisted; no losers.
         assert set(on_disk["sections"].keys()) == {str(s) for s in section_ids}
+
+
+def test_in_memory_sections_expire_after_the_cache_ttl(monkeypatch):
+    """lru_cache has no TTL; expire_stale_watch_caches applies PLEX_CACHE_TTL_S."""
+    from synclet import plex
+
+    fetches: list[int] = []
+    monkeypatch.setattr(plex, "_load_disk_cache", lambda **kw: None)
+    monkeypatch.setattr(plex, "_save_disk_cache_entry", lambda *a: None)
+    monkeypatch.setattr(
+        plex, "_fetch_section_index_from_plex", lambda sec: fetches.append(sec) or {}
+    )
+    plex.invalidate_watch_caches()
+    plex.section_index(2)
+    plex.expire_stale_watch_caches()  # fresh: kept
+    plex.section_index(2)
+    assert fetches == [2]
+    monkeypatch.setattr(plex, "PLEX_CACHE_TTL_S", 0)
+    plex.expire_stale_watch_caches()
+    plex.section_index(2)
+    assert fetches == [2, 2]
+    plex.invalidate_watch_caches()

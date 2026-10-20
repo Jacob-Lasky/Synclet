@@ -3,25 +3,30 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
+from collections.abc import Callable
 
-from synclet import config, maint_cache
+from synclet import config, library
 from synclet.fs_helpers import iter_synced_titles
 
 _lock = threading.RLock()
-_PRESENCE_KEY = "followed_presence"
+# Called after follow intent changes; synced registers its enrichment
+# invalidation here so this module never names another module's cache key.
+_listeners: list[Callable[[], None]] = []
+
+
+def subscribe(callback: Callable[[], None]) -> None:
+    """Run `callback` after every follow or unfollow. Idempotent per callback."""
+    with _lock:
+        if callback not in _listeners:
+            _listeners.append(callback)
 
 
 def _valid_key(lib: str, folder: str) -> bool:
-    return (
-        lib in config.LIBRARIES
-        and config.LIBRARIES[lib]["kind"] in ("show", "youtube")
-        and folder not in ("", ".", "..")
-        and not folder.startswith(".")
-        and "/" not in folder
-        and "\\" not in folder
+    return library.valid_folder(lib, folder) and config.LIBRARIES[lib]["kind"] in (
+        "show",
+        "youtube",
     )
 
 
@@ -85,50 +90,17 @@ def get_followed() -> dict[tuple[str, str], float]:
         return {key: at for key, at in _read_all().items() if _valid_key(*key)}
 
 
-def _build_source_presence() -> dict[tuple[str, str], tuple[float, bool]]:
-    """Scan each source library once, away from title-detail request latency."""
-    items = get_followed()
-    names_by_lib: dict[str, set[str]] = {}
-    for lib, _folder in items:
-        if lib in names_by_lib:
-            continue
-        try:
-            with os.scandir(config.MEDIA_ROOT / lib) as entries:
-                names: set[str] = set()
-                for entry in entries:
-                    try:
-                        if entry.is_dir(follow_symlinks=False):
-                            names.add(entry.name)
-                    except OSError:
-                        # One vanishing entry must not hide every other title.
-                        continue
-                names_by_lib[lib] = names
-        except OSError:
-            # Hide unavailable titles, but keep the saved intent so a later
-            # full refresh can show them again when the source mount returns.
-            names_by_lib[lib] = set()
-    return {key: (at, key[1] in names_by_lib[key[0]]) for key, at in items.items()}
-
-
 def get_display_followed() -> dict[tuple[str, str], float]:
-    """Hide externally moved titles after background validation, keeping intent.
+    """Hide titles the library listing says are gone, keeping the saved intent.
 
-    A new Follow gesture appears immediately even if validation is still
-    rebuilding. The full refresh picks up a source folder that returns later.
+    Presence comes from synclet.library, which never lists on this path, so a
+    slow source mount cannot hold up the Synced tab. A library with no listing
+    yet shows every follow. A title that returns is shown again as soon as the
+    listing records it (arr webhook, Follow gesture or the backstop re-list).
     """
-    items = get_followed()
-    ready, presence = maint_cache.peek(_PRESENCE_KEY, _build_source_presence)
-    if not ready:
-        return items
     return {
-        key: at
-        for key, at in items.items()
-        if key not in presence or presence[key][0] != at or presence[key][1]
+        key: at for key, at in get_followed().items() if library.peek(*key) is not False
     }
-
-
-def register_presence_builder() -> None:
-    maint_cache.register(_PRESENCE_KEY, _build_source_presence)
 
 
 def set_following(lib: str, folder: str, following: bool) -> bool:
@@ -147,6 +119,12 @@ def set_following(lib: str, folder: str, following: bool) -> bool:
                 return False
             del items[key]
         _write(items)
-    maint_cache.invalidate("synced_enrichment")
-    maint_cache.invalidate(_PRESENCE_KEY)
+    if following:
+        # _valid_title just confirmed the folder, so the listing can record it
+        # without another stat on the share.
+        library.record_present(lib, folder)
+    with _lock:
+        listeners = list(_listeners)
+    for callback in listeners:
+        callback()
     return following

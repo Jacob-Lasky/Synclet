@@ -154,6 +154,11 @@ def test_external_source_move_does_not_leave_duplicate_waiting_row(
     assert ("tv", folder) in followed.get_followed()  # intent is preserved
 
     (patch_paths["tmp"] / "moved-source").rename(source)
+    # A full pass alone does not notice: passes never list the library
+    # (Synclet#66). The arr webhook or the backstop re-list reports the return.
+    from synclet import library
+
+    library.note_title("tv", folder)
     maint_cache.run_refresh_cycle(full=True)
     restored = [
         item for item in synced.get_synced()["items"] if item["folder"] == folder
