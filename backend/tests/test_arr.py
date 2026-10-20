@@ -161,3 +161,126 @@ def test_two_items_with_the_same_library_folder_are_ambiguous(sonarr_env, monkey
         "app": "sonarr",
         "reason": "title not found in arr",
     }
+
+
+def test_delete_watched_unmonitors_episodes_before_the_rescan(sonarr_env, monkeypatch):
+    calls = _fake_arr(
+        monkeypatch,
+        {
+            "GET /api/v3/series": [{"id": 7, "path": f"/data/media/tv/{BCS}"}],
+            "GET /api/v3/episode": [
+                {"id": 70, "seasonNumber": 1, "episodeNumber": 1},
+                {"id": 71, "seasonNumber": 1, "episodeNumber": 2},
+                {"id": 72, "seasonNumber": 2, "episodeNumber": 1},
+            ],
+            "PUT /api/v3/episode/monitor": [],
+            "POST /api/v3/command": {"id": 99},
+        },
+    )
+    out = arr.after_source_delete("tv", BCS, unmonitor=True, episodes={(1, 1), (2, 1)})
+
+    assert out["unmonitor"] == {
+        "requested": True,
+        "app": "sonarr",
+        "item_id": 7,
+        "episode_ids": [70, 72],
+    }
+    assert out["rescan"]["command"] == "RescanSeries"
+    methods = [(m, url.split("8989", 1)[1].split("?")[0]) for m, url, _ in calls]
+    # One lookup, then unmonitor, then rescan: the rescan that marks the files
+    # missing must never see them as wanted.
+    assert methods == [
+        ("GET", "/api/v3/series"),
+        ("GET", "/api/v3/episode"),
+        ("PUT", "/api/v3/episode/monitor"),
+        ("POST", "/api/v3/command"),
+    ]
+    assert calls[1][1].endswith("seriesId=7")
+    assert calls[2][2] == {"episodeIds": [70, 72], "monitored": False}
+
+
+def test_plain_delete_never_touches_monitoring(sonarr_env, monkeypatch):
+    calls = _fake_arr(
+        monkeypatch,
+        {
+            "GET /api/v3/series": [{"id": 7, "path": f"/data/media/tv/{BCS}"}],
+            "POST /api/v3/command": {"id": 99},
+        },
+    )
+    out = arr.after_source_delete("tv", BCS, unmonitor=False, episodes={(1, 1)})
+    assert out["unmonitor"] is None
+    assert out["rescan"]["requested"] is True
+    assert [m for m, _, _ in calls] == ["GET", "POST"]
+
+
+def test_unmonitor_movie_uses_radarr_editor(monkeypatch):
+    monkeypatch.setenv("SYNCLET_RADARR_4K_URL", "http://radarr4k:7879")
+    monkeypatch.setenv("SYNCLET_RADARR_4K_API_KEY", "k")
+    seen: list[tuple[str, str, object]] = []
+
+    def _open(request, timeout):
+        body = json.loads(request.data) if request.data else None
+        seen.append((request.get_method(), request.full_url, body))
+        if request.get_method() == "GET":
+            payload = [
+                {"id": 5, "path": "/data/media/movies-4kUHD/Dune (2021) {tmdb-438631}"}
+            ]
+        else:
+            payload = [] if request.get_method() == "PUT" else {"id": 1}
+        return FakeUrlopenResponse(json.dumps(payload).encode())
+
+    monkeypatch.setattr(arr.urllib.request, "urlopen", _open)
+    out = arr.after_source_delete(
+        "movies-4kUHD", "Dune (2021) {tmdb-438631}", unmonitor=True, episodes=set()
+    )
+    assert out["unmonitor"] == {"requested": True, "app": "radarr", "item_id": 5}
+    assert out["rescan"]["command"] == "RescanMovie"
+    assert seen[1][:3] == (
+        "PUT",
+        "http://radarr4k:7879/api/v3/movie/editor",
+        {"movieIds": [5], "monitored": False},
+    )
+
+
+def test_unmonitor_failure_still_rescans(sonarr_env, monkeypatch):
+    _fake_arr(
+        monkeypatch,
+        {
+            "GET /api/v3/series": [{"id": 7, "path": f"/data/media/tv/{BCS}"}],
+            "GET /api/v3/episode": urllib.error.URLError("timed out"),
+            "POST /api/v3/command": {"id": 99},
+        },
+    )
+    out = arr.after_source_delete("tv", BCS, unmonitor=True, episodes={(1, 1)})
+    assert out["unmonitor"]["requested"] is False
+    assert "timed out" in out["unmonitor"]["reason"]
+    assert out["rescan"]["requested"] is True
+
+
+def test_unmonitor_reports_episodes_unknown_to_the_arr(sonarr_env, monkeypatch):
+    _fake_arr(
+        monkeypatch,
+        {
+            "GET /api/v3/series": [{"id": 7, "path": f"/data/media/tv/{BCS}"}],
+            "GET /api/v3/episode": [{"id": 70, "seasonNumber": 1, "episodeNumber": 1}],
+        },
+    )
+    out = arr.unmonitor_title("tv", BCS, {(9, 9)})
+    assert out == {
+        "requested": False,
+        "app": "sonarr",
+        "reason": "episodes not found in arr",
+    }
+
+
+def test_lookup_failure_reports_both_steps(sonarr_env, monkeypatch):
+    _fake_arr(monkeypatch, {"GET /api/v3/series": urllib.error.URLError("refused")})
+    out = arr.after_source_delete("tv", BCS, unmonitor=True, episodes={(1, 1)})
+    assert out["unmonitor"]["requested"] is False
+    assert out["rescan"]["requested"] is False
+
+
+def test_unconfigured_library_skips_both_steps(monkeypatch):
+    out = arr.after_source_delete("YouTube", "Chan", unmonitor=True, episodes=set())
+    assert out["unmonitor"]["reason"] == "no arr configured for this library"
+    assert out["rescan"]["reason"] == "no arr configured for this library"

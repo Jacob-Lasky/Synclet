@@ -86,6 +86,15 @@ class MediaDeleteRequest(BaseModel):
 
 class MediaDeleteCommitRequest(MediaDeleteRequest):
     fingerprint: str
+    # "Delete watched" intent: unmonitor what is deleted in Sonarr/Radarr.
+    unmonitor: bool = False
+
+
+class UnmonitorRequest(BaseModel):
+    lib: str
+    folder: str
+    # (season, episode) pairs for a series; ignored for a movie.
+    episodes: list[tuple[int, int]] = []
 
 
 class TitleRef(BaseModel):
@@ -395,6 +404,7 @@ async def api_media_delete(
             data.selection_type,
             data.episodes or [],
             data.fingerprint,
+            unmonitor=data.unmonitor,
         )
         if result["error"]:
             return Response(content=result, status_code=207, media_type=MediaType.JSON)
@@ -605,6 +615,20 @@ async def api_arr_rescan(data: TitleRef) -> dict:
     return await asyncio.to_thread(arr.rescan_title, data.lib, data.folder)
 
 
+@post("/api/arr/unmonitor")
+async def api_arr_unmonitor(data: UnmonitorRequest) -> dict:
+    """Unmonitor episodes of one series, or one movie, in the owning arr, now.
+
+    The same call a "Delete watched" makes before its rescan, exposed so it can
+    be exercised and re-fired without deleting media.
+    """
+    if not library.valid_folder(data.lib, data.folder):
+        raise HTTPException(status_code=400, detail="invalid library title")
+    return await asyncio.to_thread(
+        arr.unmonitor_title, data.lib, data.folder, set(data.episodes)
+    )
+
+
 @get("/api/coverage")
 async def api_coverage() -> dict:
     """Per-library WatchState coverage signal.
@@ -694,6 +718,7 @@ def build_route_handlers(static_dir: Path | None = None) -> list:
         api_library,
         api_arr_webhook,
         api_arr_rescan,
+        api_arr_unmonitor,
         api_syncthing_overview,
         api_coverage,
     ]

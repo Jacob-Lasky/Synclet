@@ -6,6 +6,14 @@ a "Delete watched" only at its next periodic full-disk rescan, which takes hours
 on a cold shfs cache. Telling it per title is what lets the arrs drop those
 periodic full rescans (homelab#103 proposal A).
 
+When the delete was a "Delete watched" (or a watched movie), the deleted
+episodes or the movie are unmonitored FIRST, so the rescan that marks them
+missing cannot lead to them being downloaded again. DO NOT replace this with
+the arrs' global "Unmonitor deleted episodes/movies" setting: that also
+unmonitors files the Tdarr replacement pipeline deletes on purpose so the arr
+re-grabs a better copy (Jake, 2026-10-20). Only Synclet knows the delete meant
+"done with it", so only Synclet's delete unmonitors.
+
 In: arr Connect webhooks name the series or movie folder an event touched, so
 synclet.library can re-check that one title instead of listing the library.
 
@@ -41,13 +49,14 @@ def _request(
     *,
     params: dict | None = None,
     body: dict | None = None,
+    method: str | None = None,
 ) -> object:
     query = f"?{urllib.parse.urlencode(params)}" if params else ""
     request = urllib.request.Request(  # noqa: S310 (operator-configured arr URL)
         f"{base}{path}{query}",
         data=json.dumps(body).encode() if body is not None else None,
         headers={"X-Api-Key": key, "Content-Type": "application/json"},
-        method="POST" if body is not None else "GET",
+        method=method or ("POST" if body is not None else "GET"),
     )
     with urllib.request.urlopen(request, timeout=config.ARR_TIMEOUT_S) as r:  # noqa: S310
         return json.loads(r.read() or b"null")
@@ -93,27 +102,32 @@ def _find_item_id(app: str, base: str, key: str, lib: str, folder: str) -> int |
     return ids.pop() if len(ids) == 1 else None
 
 
-def rescan_title(lib: str, folder: str) -> dict:
-    """Tell the arr that owns `lib` to rescan the one series or movie in `folder`.
-
-    Never raises: a source delete must not fail because an arr is down. The
-    result says what happened, for the delete response and the logs.
-    """
+def _owning_item(
+    lib: str, folder: str
+) -> tuple[tuple[str, str, str, int] | None, dict | None]:
+    """((app, base, key, item_id), None) for the arr item, or (None, why not)."""
     instance = config.arr_instance(lib)
     if instance is None:
-        return {"requested": False, "reason": "no arr configured for this library"}
+        return None, {
+            "requested": False,
+            "reason": "no arr configured for this library",
+        }
     app, base, key = instance
-    try:
-        item_id = _find_item_id(app, base, key, lib, folder)
-        if item_id is None:
-            return {"requested": False, "app": app, "reason": "title not found in arr"}
-        name, id_field = _RESCAN[app]
-        command = _request(
-            base, key, "/api/v3/command", body={"name": name, id_field: item_id}
-        )
-    except (OSError, ValueError) as exc:
-        logger.warning("arr rescan for %s/%s failed: %r", lib, folder, exc)
-        return {"requested": False, "app": app, "reason": str(exc)}
+    item_id = _find_item_id(app, base, key, lib, folder)
+    if item_id is None:
+        return None, {
+            "requested": False,
+            "app": app,
+            "reason": "title not found in arr",
+        }
+    return (app, base, key, item_id), None
+
+
+def _rescan(app: str, base: str, key: str, item_id: int) -> dict:
+    name, id_field = _RESCAN[app]
+    command = _request(
+        base, key, "/api/v3/command", body={"name": name, id_field: item_id}
+    )
     command_id = command.get("id") if isinstance(command, dict) else None
     logger.info(
         "arr rescan requested: %s %s %s=%s (command %s)",
@@ -130,6 +144,114 @@ def rescan_title(lib: str, folder: str) -> dict:
         "item_id": item_id,
         "command_id": command_id,
     }
+
+
+def _unmonitor(
+    app: str, base: str, key: str, item_id: int, episodes: set[tuple[int, int]]
+) -> dict:
+    """Unmonitor the given episodes of a series, or the whole movie."""
+    if app == "radarr":
+        _request(
+            base,
+            key,
+            "/api/v3/movie/editor",
+            body={"movieIds": [item_id], "monitored": False},
+            method="PUT",
+        )
+        logger.info("arr unmonitored: radarr movieId=%s", item_id)
+        return {"requested": True, "app": app, "item_id": item_id}
+    listed = _request(base, key, "/api/v3/episode", params={"seriesId": item_id})
+    episode_ids = sorted(
+        ep["id"]
+        for ep in (listed if isinstance(listed, list) else [])
+        if (ep.get("seasonNumber"), ep.get("episodeNumber")) in episodes
+        and isinstance(ep.get("id"), int)
+    )
+    if not episode_ids:
+        return {"requested": False, "app": app, "reason": "episodes not found in arr"}
+    _request(
+        base,
+        key,
+        "/api/v3/episode/monitor",
+        body={"episodeIds": episode_ids, "monitored": False},
+        method="PUT",
+    )
+    logger.info(
+        "arr unmonitored: sonarr seriesId=%s episodeIds=%s", item_id, episode_ids
+    )
+    return {
+        "requested": True,
+        "app": app,
+        "item_id": item_id,
+        "episode_ids": episode_ids,
+    }
+
+
+def _failed(app: str | None, lib: str, folder: str, step: str, exc: Exception) -> dict:
+    logger.warning("arr %s for %s/%s failed: %r", step, lib, folder, exc)
+    out: dict = {"requested": False, "reason": str(exc)}
+    if app:
+        out["app"] = app
+    return out
+
+
+def rescan_title(lib: str, folder: str) -> dict:
+    """Tell the arr that owns `lib` to rescan the one series or movie in `folder`.
+
+    Never raises: a source delete must not fail because an arr is down. The
+    result says what happened, for the delete response and the logs.
+    """
+    try:
+        item, why_not = _owning_item(lib, folder)
+        if item is None:
+            return why_not or {}
+        return _rescan(*item)
+    except (OSError, ValueError) as exc:
+        instance = config.arr_instance(lib)
+        return _failed(instance[0] if instance else None, lib, folder, "rescan", exc)
+
+
+def unmonitor_title(lib: str, folder: str, episodes: set[tuple[int, int]]) -> dict:
+    """Unmonitor `episodes` of the series in `folder` (or the movie). Never raises."""
+    try:
+        item, why_not = _owning_item(lib, folder)
+        if item is None:
+            return why_not or {}
+        return _unmonitor(*item, episodes)
+    except (OSError, ValueError) as exc:
+        instance = config.arr_instance(lib)
+        return _failed(instance[0] if instance else None, lib, folder, "unmonitor", exc)
+
+
+def after_source_delete(
+    lib: str, folder: str, *, unmonitor: bool, episodes: set[tuple[int, int]]
+) -> dict:
+    """What a source delete tells the owning arr: unmonitor (if asked), then rescan.
+
+    One arr lookup for both steps. Unmonitor runs first so the rescan that
+    marks the files missing never sees them as wanted. Each step reports on its
+    own and neither raises: the files are already gone.
+    """
+    instance = config.arr_instance(lib)
+    app = instance[0] if instance else None
+    try:
+        item, why_not = _owning_item(lib, folder)
+    except (OSError, ValueError) as exc:
+        failed = _failed(app, lib, folder, "lookup", exc)
+        return {"unmonitor": failed if unmonitor else None, "rescan": failed}
+    if item is None:
+        return {"unmonitor": why_not if unmonitor else None, "rescan": why_not}
+    unmonitored = None
+    if unmonitor:
+        try:
+            unmonitored = _unmonitor(*item, episodes)
+        except (OSError, ValueError) as exc:
+            unmonitored = _failed(app, lib, folder, "unmonitor", exc)
+    try:
+        rescanned = _rescan(*item)
+    except (OSError, ValueError) as exc:
+        rescanned = _failed(app, lib, folder, "rescan", exc)
+    return {"unmonitor": unmonitored, "rescan": rescanned}
 
 
 def title_from_webhook(payload: dict) -> tuple[str, str] | None:

@@ -119,7 +119,7 @@ class TestMediaManagementRoutes:
         monkeypatch.setattr(
             media_delete,
             "delete_selection",
-            lambda *args: {
+            lambda *args, **kwargs: {
                 "source_deleted": 1,
                 "offline_deleted": 0,
                 "source_bytes": 2,
@@ -1426,3 +1426,56 @@ class TestRefreshLoopTiming:
                 await task
         # Next full starts >= interval after the previous one ENDED (0.3 + 0.2).
         assert fulls[1] - fulls[0] >= 0.5
+
+
+class TestUnmonitorRoute:
+    BCS = "Better Call Saul (2015) {tvdb-1}"
+
+    def test_unmonitor_route_reuses_arr_unmonitor(self, client, monkeypatch):
+        seen: list[tuple[str, str, set]] = []
+        monkeypatch.setattr(
+            "synclet.arr.unmonitor_title",
+            lambda lib, folder, eps: (
+                seen.append((lib, folder, eps)) or {"requested": True}
+            ),
+        )
+        r = client.post(
+            "/api/arr/unmonitor",
+            json={"lib": "tv", "folder": self.BCS, "episodes": [[1, 2]]},
+        )
+        assert r.status_code == 201
+        assert r.json() == {"requested": True}
+        assert seen == [("tv", self.BCS, {(1, 2)})]
+
+    def test_unmonitor_route_rejects_bad_title(self, client):
+        r = client.post("/api/arr/unmonitor", json={"lib": "tv", "folder": "../x"})
+        assert r.status_code == 400
+
+    def test_delete_route_passes_the_unmonitor_intent(self, client, monkeypatch):
+        from synclet import config
+
+        monkeypatch.setattr(config, "DELETE_KEY", "pw")
+        seen: list[bool] = []
+
+        def fake_delete(
+            lib, folder, selection_type, episodes, fingerprint, *, unmonitor
+        ):
+            seen.append(unmonitor)
+            return {"error": None}
+
+        monkeypatch.setattr("synclet.media_delete.delete_selection", fake_delete)
+        body = {
+            "lib": "tv",
+            "folder": self.BCS,
+            "selection_type": "episodes",
+            "episodes": [[1, 1]],
+            "fingerprint": "f",
+        }
+        for extra in ({}, {"unmonitor": True}):
+            r = client.post(
+                "/api/media/delete",
+                json={**body, **extra},
+                headers={"X-Synclet-Delete-Key": "pw"},
+            )
+            assert r.status_code == 201, r.text
+        assert seen == [False, True]

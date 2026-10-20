@@ -214,9 +214,13 @@ describe("DetailDrawer series deletion", () => {
                 [1, 1],
                 [2, 1],
             ],
+            unmonitor: true,
         })
         expect(wrapper.get("#delete-title").text()).toContain(
             "2 watched episodes of Test Show"
+        )
+        expect(wrapper.get('[data-testid="unmonitor-note"]').text()).toContain(
+            "Sonarr will stop monitoring them"
         )
         wrapper.unmount()
         store.detail = null
@@ -247,9 +251,54 @@ describe("DetailDrawer series deletion", () => {
             selection_type: "episodes",
             episodes: [[1, 1]],
         })
+        // A hand-picked delete may be a bad copy to re-grab: monitoring stays.
+        expect(wrapper.find('[data-testid="unmonitor-note"]').exists()).toBe(
+            false
+        )
         wrapper.unmount()
         store.detail = null
     })
+
+    it.each([
+        [true, true],
+        [false, false],
+    ])(
+        "a movie delete unmonitors in Radarr only when watched (watched=%s)",
+        async (watched, unmonitor) => {
+            const { api } = await import("./api")
+            HTMLDialogElement.prototype.showModal = vi.fn()
+            ;(api.mediaDeletePreview as ReturnType<typeof vi.fn>).mockClear()
+            ;(api.title as ReturnType<typeof vi.fn>).mockResolvedValue({
+                ...MOVIE_FIXTURE,
+                watched,
+            })
+            store.detail = { lib: "movies", folder: "M" }
+            const wrapper = mount(DetailDrawer)
+            await new Promise((r) => setTimeout(r, 50))
+            await nextTick()
+
+            await wrapper
+                .get('[data-testid="delete-movie-media"]')
+                .trigger("click")
+            await nextTick()
+            expect(api.mediaDeletePreview).toHaveBeenCalledWith({
+                lib: "movies",
+                folder: "M",
+                selection_type: "movie",
+                episodes: [],
+                unmonitor,
+            })
+            const note = wrapper.find('[data-testid="unmonitor-note"]')
+            expect(note.exists()).toBe(unmonitor)
+            if (unmonitor) {
+                expect(note.text()).toContain(
+                    "Radarr will stop monitoring this movie"
+                )
+            }
+            wrapper.unmount()
+            store.detail = null
+        }
+    )
 })
 
 describe("DetailDrawer mark-watched affordances", () => {

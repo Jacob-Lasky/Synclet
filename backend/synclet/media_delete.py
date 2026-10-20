@@ -417,8 +417,16 @@ def delete_selection(
     selection_type: str,
     episodes: list[tuple[int, int]],
     fingerprint: str,
+    *,
+    unmonitor: bool = False,
 ) -> dict:
-    """Delete exactly the previewed files, then invalidate all affected views."""
+    """Delete exactly the previewed files, then invalidate all affected views.
+
+    `unmonitor` is the "Delete watched" intent (and a watched movie's delete):
+    the owning arr stops monitoring exactly what was deleted, so it is not
+    downloaded again. A plain selected-episode delete leaves monitoring alone,
+    so deleting a bad copy still lets the arr re-grab it.
+    """
     plan = plan_selection(lib, folder, selection_type, episodes)
     if plan.fingerprint != fingerprint:
         raise ValueError("media changed since preview; preview again")
@@ -484,9 +492,26 @@ def delete_selection(
         state.invalidate()
         maint_cache.invalidate()
     # The arr would otherwise learn of the delete only at its next full-disk
-    # rescan. Ask it to rescan just this title; a failure is reported, never
-    # raised, because the files are already gone.
-    arr_rescan = arr.rescan_title(lib, folder) if deleted_source else None
+    # rescan. Ask it to rescan just this title, after unmonitoring what was
+    # deleted when the user is done with it; a failure is reported, never
+    # raised, because the files are already gone. Only episodes whose VIDEO
+    # was actually deleted are unmonitored, so a partial failure leaves the
+    # rest wanted.
+    arr_result = (
+        arr.after_source_delete(
+            lib,
+            folder,
+            unmonitor=unmonitor,
+            episodes={
+                key
+                for path in deleted_source
+                if path.suffix.lower() in config.VIDEO_EXTS
+                and (key := _episode_key(path)) is not None
+            },
+        )
+        if deleted_source
+        else {"unmonitor": None, "rescan": None}
+    )
     return {
         "source_deleted": len(deleted_source),
         "offline_deleted": len(deleted_offline),
@@ -494,5 +519,6 @@ def delete_selection(
         "offline_bytes": deleted_offline_bytes,
         "title_remaining": source_root.exists(),
         "error": failure,
-        "arr_rescan": arr_rescan,
+        "arr_rescan": arr_result["rescan"],
+        "arr_unmonitor": arr_result["unmonitor"],
     }
