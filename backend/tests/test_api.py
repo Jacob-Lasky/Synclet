@@ -1432,6 +1432,7 @@ class TestUnmonitorRoute:
     BCS = "Better Call Saul (2015) {tvdb-1}"
 
     def test_unmonitor_route_reuses_arr_unmonitor(self, client, monkeypatch):
+        monkeypatch.setattr("synclet.config.DELETE_KEY", "pw")
         seen: list[tuple[str, str, set]] = []
         monkeypatch.setattr(
             "synclet.arr.unmonitor_title",
@@ -1442,14 +1443,35 @@ class TestUnmonitorRoute:
         r = client.post(
             "/api/arr/unmonitor",
             json={"lib": "tv", "folder": self.BCS, "episodes": [[1, 2]]},
+            headers={"X-Synclet-Delete-Key": "pw"},
         )
         assert r.status_code == 201
         assert r.json() == {"requested": True}
         assert seen == [("tv", self.BCS, {(1, 2)})]
 
-    def test_unmonitor_route_rejects_bad_title(self, client):
-        r = client.post("/api/arr/unmonitor", json={"lib": "tv", "folder": "../x"})
+    def test_unmonitor_route_rejects_bad_title(self, client, monkeypatch):
+        monkeypatch.setattr("synclet.config.DELETE_KEY", "pw")
+        r = client.post(
+            "/api/arr/unmonitor",
+            json={"lib": "tv", "folder": "../x"},
+            headers={"X-Synclet-Delete-Key": "pw"},
+        )
         assert r.status_code == 400
+
+    def test_unmonitor_route_requires_the_deletion_password(self, client, monkeypatch):
+        monkeypatch.setattr("synclet.config.DELETE_KEY", "pw")
+        monkeypatch.setattr(
+            "synclet.arr.unmonitor_title",
+            lambda *a: pytest.fail("unmonitored without the password"),
+        )
+        body = {"lib": "tv", "folder": self.BCS, "episodes": [[1, 1]]}
+        assert client.post("/api/arr/unmonitor", json=body).status_code == 403
+        r = client.post(
+            "/api/arr/unmonitor", json=body, headers={"X-Synclet-Delete-Key": "nope"}
+        )
+        assert r.status_code == 403
+        monkeypatch.setattr("synclet.config.DELETE_KEY", "")
+        assert client.post("/api/arr/unmonitor", json=body).status_code == 503
 
     def test_delete_route_passes_the_unmonitor_intent(self, client, monkeypatch):
         from synclet import config

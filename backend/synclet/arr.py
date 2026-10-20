@@ -146,29 +146,7 @@ def _rescan(app: str, base: str, key: str, item_id: int) -> dict:
     }
 
 
-def _unmonitor(
-    app: str, base: str, key: str, item_id: int, episodes: set[tuple[int, int]]
-) -> dict:
-    """Unmonitor the given episodes of a series, or the whole movie."""
-    if app == "radarr":
-        _request(
-            base,
-            key,
-            "/api/v3/movie/editor",
-            body={"movieIds": [item_id], "monitored": False},
-            method="PUT",
-        )
-        logger.info("arr unmonitored: radarr movieId=%s", item_id)
-        return {"requested": True, "app": app, "item_id": item_id}
-    listed = _request(base, key, "/api/v3/episode", params={"seriesId": item_id})
-    episode_ids = sorted(
-        ep["id"]
-        for ep in (listed if isinstance(listed, list) else [])
-        if (ep.get("seasonNumber"), ep.get("episodeNumber")) in episodes
-        and isinstance(ep.get("id"), int)
-    )
-    if not episode_ids:
-        return {"requested": False, "app": app, "reason": "episodes not found in arr"}
+def _put_unmonitored(base: str, key: str, episode_ids: list[int]) -> None:
     _request(
         base,
         key,
@@ -176,6 +154,32 @@ def _unmonitor(
         body={"episodeIds": episode_ids, "monitored": False},
         method="PUT",
     )
+
+
+def _unmonitor_movie(app: str, base: str, key: str, item_id: int) -> dict:
+    _request(
+        base,
+        key,
+        "/api/v3/movie/editor",
+        body={"movieIds": [item_id], "monitored": False},
+        method="PUT",
+    )
+    logger.info("arr unmonitored: radarr movieId=%s", item_id)
+    return {"requested": True, "app": app, "item_id": item_id}
+
+
+def _episodes(base: str, key: str, item_id: int) -> list[dict]:
+    listed = _request(base, key, "/api/v3/episode", params={"seriesId": item_id})
+    return [
+        ep
+        for ep in (listed if isinstance(listed, list) else [])
+        if isinstance(ep.get("id"), int)
+    ]
+
+
+def _report(app: str, item_id: int, episode_ids: list[int]) -> dict:
+    if not episode_ids:
+        return {"requested": False, "app": app, "reason": "episodes not found in arr"}
     logger.info(
         "arr unmonitored: sonarr seriesId=%s episodeIds=%s", item_id, episode_ids
     )
@@ -185,6 +189,68 @@ def _unmonitor(
         "item_id": item_id,
         "episode_ids": episode_ids,
     }
+
+
+def _unmonitor_deleted(
+    app: str,
+    base: str,
+    key: str,
+    item_id: int,
+    files: dict[str, set[tuple[int, int]]],
+) -> dict:
+    """Unmonitor the episodes whose files a delete removed (or the movie).
+
+    `files` maps each deleted video, relative to the title folder, to the
+    (season, episode) numbers in its name. DO NOT match by those numbers
+    first: Sonarr links each episode to a file (episodeFileId), and that link
+    is the truth. A multi-episode file (S01E01E02) is linked to both episodes,
+    and a file imported under different numbering is linked to the episode
+    Sonarr thinks it is. Names are only the fallback for a deleted file Sonarr
+    has no record of, and even then an episode linked to a file that still
+    exists is never touched.
+    """
+    if app == "radarr":
+        return _unmonitor_movie(app, base, key, item_id)
+    episodes = _episodes(base, key, item_id)
+    listed = _request(base, key, "/api/v3/episodefile", params={"seriesId": item_id})
+    episode_files = listed if isinstance(listed, list) else []
+    deleted_file_ids = {
+        f["id"]
+        for f in episode_files
+        if f.get("relativePath") in files and isinstance(f.get("id"), int)
+    }
+    known = {f.get("relativePath") for f in episode_files}
+    unknown_numbers = {
+        n for rel, nums in files.items() if rel not in known for n in nums
+    }
+    ids = sorted(
+        ep["id"]
+        for ep in episodes
+        if ep.get("episodeFileId") in deleted_file_ids
+        or (
+            (ep.get("seasonNumber"), ep.get("episodeNumber")) in unknown_numbers
+            and ep.get("episodeFileId", 0) in (0, *deleted_file_ids)
+        )
+    )
+    if ids:
+        _put_unmonitored(base, key, ids)
+    return _report(app, item_id, ids)
+
+
+def _unmonitor_numbers(
+    app: str, base: str, key: str, item_id: int, numbers: set[tuple[int, int]]
+) -> dict:
+    """Unmonitor episodes by (season, episode), or the movie. On-demand path."""
+    if app == "radarr":
+        return _unmonitor_movie(app, base, key, item_id)
+    ids = sorted(
+        ep["id"]
+        for ep in _episodes(base, key, item_id)
+        if (ep.get("seasonNumber"), ep.get("episodeNumber")) in numbers
+    )
+    if ids:
+        _put_unmonitored(base, key, ids)
+    return _report(app, item_id, ids)
 
 
 def _failed(app: str | None, lib: str, folder: str, step: str, exc: Exception) -> dict:
@@ -217,20 +283,29 @@ def unmonitor_title(lib: str, folder: str, episodes: set[tuple[int, int]]) -> di
         item, why_not = _owning_item(lib, folder)
         if item is None:
             return why_not or {}
-        return _unmonitor(*item, episodes)
+        return _unmonitor_numbers(*item, episodes)
     except (OSError, ValueError) as exc:
         instance = config.arr_instance(lib)
         return _failed(instance[0] if instance else None, lib, folder, "unmonitor", exc)
 
 
 def after_source_delete(
-    lib: str, folder: str, *, unmonitor: bool, episodes: set[tuple[int, int]]
+    lib: str,
+    folder: str,
+    *,
+    unmonitor: bool,
+    files: dict[str, set[tuple[int, int]]],
 ) -> dict:
     """What a source delete tells the owning arr: unmonitor (if asked), then rescan.
 
-    One arr lookup for both steps. Unmonitor runs first so the rescan that
-    marks the files missing never sees them as wanted. Each step reports on its
-    own and neither raises: the files are already gone.
+    `files` is every deleted video, relative to the title folder, with the
+    episode numbers in its name (see _unmonitor_deleted). One arr lookup for
+    both steps. Unmonitor runs first so the rescan that marks the files missing
+    never sees them as wanted. If unmonitoring FAILS, the rescan is skipped:
+    an arr that still believes the files exist will not go looking for them,
+    while one that sees them missing and still monitored may download them
+    again, which is exactly what the unmonitor was for. Neither step raises:
+    the files are already gone.
     """
     instance = config.arr_instance(lib)
     app = instance[0] if instance else None
@@ -244,9 +319,15 @@ def after_source_delete(
     unmonitored = None
     if unmonitor:
         try:
-            unmonitored = _unmonitor(*item, episodes)
+            unmonitored = _unmonitor_deleted(*item, files)
         except (OSError, ValueError) as exc:
-            unmonitored = _failed(app, lib, folder, "unmonitor", exc)
+            failed = _failed(app, lib, folder, "unmonitor", exc)
+            skipped = {
+                "requested": False,
+                "app": app,
+                "reason": "skipped because unmonitoring failed",
+            }
+            return {"unmonitor": failed, "rescan": skipped}
     try:
         rescanned = _rescan(*item)
     except (OSError, ValueError) as exc:

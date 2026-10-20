@@ -387,15 +387,20 @@ async def api_media_delete_preview(data: MediaDeleteRequest) -> dict:
     return plan.to_dict()
 
 
-@post("/api/media/delete")
-async def api_media_delete(
-    data: MediaDeleteCommitRequest, request: Request
-) -> dict | Response:
+def _require_delete_key(request: Request) -> None:
+    """Gate a destructive or arr-state-changing call on the deletion password."""
     if not config.DELETE_KEY:
         raise HTTPException(status_code=503, detail="source deletion is not configured")
     supplied_key = request.headers.get("x-synclet-delete-key", "")
     if not hmac.compare_digest(supplied_key, config.DELETE_KEY):
         raise HTTPException(status_code=403, detail="invalid deletion password")
+
+
+@post("/api/media/delete")
+async def api_media_delete(
+    data: MediaDeleteCommitRequest, request: Request
+) -> dict | Response:
+    _require_delete_key(request)
     try:
         result = await asyncio.to_thread(
             media_delete.delete_selection,
@@ -616,12 +621,14 @@ async def api_arr_rescan(data: TitleRef) -> dict:
 
 
 @post("/api/arr/unmonitor")
-async def api_arr_unmonitor(data: UnmonitorRequest) -> dict:
+async def api_arr_unmonitor(data: UnmonitorRequest, request: Request) -> dict:
     """Unmonitor episodes of one series, or one movie, in the owning arr, now.
 
-    The same call a "Delete watched" makes before its rescan, exposed so it can
-    be exercised and re-fired without deleting media.
+    The unmonitor half of what a "Delete watched" asks of the arr, exposed so it
+    can be exercised and re-fired without deleting media. It changes what the
+    arr will download, so it takes the deletion password like the delete does.
     """
+    _require_delete_key(request)
     if not library.valid_folder(data.lib, data.folder):
         raise HTTPException(status_code=400, detail="invalid library title")
     return await asyncio.to_thread(

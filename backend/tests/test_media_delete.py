@@ -461,9 +461,9 @@ def _record_arr(monkeypatch) -> list[dict]:
 
     seen: list[dict] = []
 
-    def fake(lib, folder, *, unmonitor, episodes):
+    def fake(lib, folder, *, unmonitor, files):
         seen.append(
-            {"lib": lib, "folder": folder, "unmonitor": unmonitor, "episodes": episodes}
+            {"lib": lib, "folder": folder, "unmonitor": unmonitor, "files": files}
         )
         return {
             "unmonitor": {"requested": True} if unmonitor else None,
@@ -488,7 +488,12 @@ def test_delete_asks_the_owning_arr_to_rescan_that_title(patch_paths, monkeypatc
     # A plain delete rescans but leaves monitoring alone (a bad copy may be
     # deleted on purpose so the arr re-grabs it).
     assert seen == [
-        {"lib": "movies", "folder": folder, "unmonitor": False, "episodes": set()}
+        {
+            "lib": "movies",
+            "folder": folder,
+            "unmonitor": False,
+            "files": {"1917.mkv": set()},
+        }
     ]
     assert result["arr_rescan"] == {"requested": True}
     assert result["arr_unmonitor"] is None
@@ -507,9 +512,16 @@ def test_delete_watched_unmonitors_exactly_the_deleted_episodes(
         "tv", folder, "episodes", [(1, 1)], plan.fingerprint, unmonitor=True
     )
 
-    # Subtitles of S01E01 were deleted too; only the video's episode counts.
+    # Subtitles of S01E01 were deleted too; only the video is reported.
     assert seen == [
-        {"lib": "tv", "folder": folder, "unmonitor": True, "episodes": {(1, 1)}}
+        {
+            "lib": "tv",
+            "folder": folder,
+            "unmonitor": True,
+            "files": {
+                "Season 01/Better Call Saul - S01E01 - Uno [WEBDL-1080p].mkv": {(1, 1)}
+            },
+        }
     ]
     assert result["arr_unmonitor"] == {"requested": True}
 
@@ -535,7 +547,61 @@ def test_partial_delete_unmonitors_only_episodes_whose_video_went(
 
     assert result["error"]
     assert any("S01E02" in p.name for p in season.iterdir())
-    assert seen[0]["episodes"] == {(1, 1)}
+    assert seen[0]["files"] == {
+        "Season 01/Better Call Saul - S01E01 - Uno [WEBDL-1080p].mkv": {(1, 1)}
+    }
+
+
+def test_watched_movie_whose_video_survives_is_not_unmonitored(
+    patch_paths, monkeypatch
+):
+    """Subtitle deleted, video unlink failed: Radarr must keep the movie wanted."""
+    folder = "1917 (2019) {tmdb-3}"
+    seen = _record_arr(monkeypatch)
+    original_unlink = Path.unlink
+
+    def fail_video(self, *args, **kwargs):
+        if self.suffix == ".mkv":
+            raise OSError(13, "Permission denied")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_video)
+    plan = media_delete.plan_selection("movies", folder, "movie", [])
+    result = media_delete.delete_selection(
+        "movies", folder, "movie", [], plan.fingerprint, unmonitor=True
+    )
+    assert result["error"]
+    assert result["source_deleted"] >= 1
+    assert seen[0]["unmonitor"] is False
+
+
+def test_episode_numbers_cover_multi_episode_names():
+    assert media_delete._episode_numbers(Path("Show - S01E01E02.mkv")) == {
+        (1, 1),
+        (1, 2),
+    }
+    assert media_delete._episode_numbers(Path("Show - S01E01-E02 - x.mkv")) == {
+        (1, 1),
+        (1, 2),
+    }
+    assert media_delete._episode_numbers(Path("Show - S00E05.mkv")) == {(0, 5)}
+    assert media_delete._episode_numbers(Path("Show - 1080p.mkv")) == set()
+
+
+def test_a_surviving_copy_keeps_its_episode_number(tmp_path):
+    root = tmp_path / "Show"
+    gone = root / "Season 01" / "Show - S01E01.mkv"
+    kept = root / "Season 01" / "Show - S01E01 - copy.mkv"
+    files, all_gone = media_delete._deleted_videos_for_arr(
+        root, (gone, kept, root / "Season 01" / "Show - S01E01.srt"), [gone]
+    )
+    assert files == {}
+    assert all_gone is False
+    other = root / "Season 01" / "Show - S01E02.mkv"
+    files, _ = media_delete._deleted_videos_for_arr(
+        root, (gone, kept, other), [gone, other]
+    )
+    assert files == {"Season 01/Show - S01E02.mkv": {(1, 2)}}
 
 
 def test_refused_delete_does_not_ask_the_arr(patch_paths, monkeypatch):

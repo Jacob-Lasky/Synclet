@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
+import re
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,46 @@ _SEASON_SIDECAR_EXTS = _TRICKPLAY_IMAGE_EXTS | config.SUBTITLE_EXTS | {".nfo", "
 def _episode_key(path: Path) -> tuple[int, int] | None:
     match = _EP_PAT.search(path.name)
     return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+# Every episode a file name claims: S01E01, S01E01E02, S01E01-E02 (Sonarr's
+# repeat and scene styles). Used only to tell the arr which episodes a deleted
+# file it has no record of covered; the arr's own file links come first.
+_MULTI_EP = re.compile(r"[Ss](\d+)((?:-?[Ee]\d+)+)")
+_EP_NUM = re.compile(r"[Ee](\d+)")
+
+
+def _episode_numbers(path: Path) -> set[tuple[int, int]]:
+    match = _MULTI_EP.search(path.name)
+    if not match:
+        return set()
+    season = int(match.group(1))
+    return {(season, int(e)) for e in _EP_NUM.findall(match.group(2))}
+
+
+def _deleted_videos_for_arr(
+    title_root: Path, planned: tuple[Path, ...], deleted: list[Path]
+) -> tuple[dict[str, set[tuple[int, int]]], bool]:
+    """What the arr should forget: ({relative video path: episode numbers}, all gone).
+
+    Only videos that were actually deleted count, and a deleted video is left
+    out entirely when an episode it carries still has a planned video on disk
+    (a failed unlink, or a second copy): the arr would otherwise unmonitor,
+    through that file's link, an episode whose media remains. `all gone` is
+    True only when every planned video was deleted, which is what a movie's
+    unmonitor requires.
+    """
+    gone = set(deleted)
+    planned_videos = [p for p in planned if p.suffix.lower() in config.VIDEO_EXTS]
+    still_there = {
+        n for p in planned_videos if p not in gone for n in _episode_numbers(p)
+    }
+    files = {
+        p.relative_to(title_root).as_posix(): numbers
+        for p in planned_videos
+        if p in gone and not ((numbers := _episode_numbers(p)) & still_there)
+    }
+    return files, bool(planned_videos) and all(p in gone for p in planned_videos)
 
 
 @dataclass(frozen=True)
@@ -494,20 +535,19 @@ def delete_selection(
     # The arr would otherwise learn of the delete only at its next full-disk
     # rescan. Ask it to rescan just this title, after unmonitoring what was
     # deleted when the user is done with it; a failure is reported, never
-    # raised, because the files are already gone. Only episodes whose VIDEO
-    # was actually deleted are unmonitored, so a partial failure leaves the
-    # rest wanted.
+    # raised, because the files are already gone.
+    files, all_videos_gone = _deleted_videos_for_arr(
+        source_root, plan.source_files, deleted_source
+    )
+    is_movie = config.LIBRARIES[lib]["kind"] == "movie"
     arr_result = (
         arr.after_source_delete(
             lib,
             folder,
-            unmonitor=unmonitor,
-            episodes={
-                key
-                for path in deleted_source
-                if path.suffix.lower() in config.VIDEO_EXTS
-                and (key := _episode_key(path)) is not None
-            },
+            # A movie is unmonitored only once its every video is gone; an
+            # episode only for the files that went (see _deleted_videos_for_arr).
+            unmonitor=unmonitor and bool(files) and (all_videos_gone or not is_movie),
+            files=files,
         )
         if deleted_source
         else {"unmonitor": None, "rescan": None}
