@@ -30,6 +30,7 @@ import os
 import stat
 import threading
 import time
+import zlib
 from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
@@ -52,9 +53,11 @@ _lock = threading.RLock()
 _save_lock = threading.Lock()
 # lib -> folder names, as of the last listing plus per-title updates since.
 _folders: dict[str, set[str]] = {}
-# lib -> wall-clock time of the last completed full listing.
+# lib -> wall-clock START time of the last listing that committed. Start, not
+# end: a listing that read the directory before a Rescan click must not count
+# as fresh for that click, however late it finishes.
 _listed_at: dict[str, float] = {}
-# lib -> wall-clock time of the last failed listing (kept last-good instead).
+# lib -> wall-clock start time of the last listing that failed (last-good kept).
 _failed_at: dict[str, float] = {}
 _loaded = False
 # Libraries the user asked to re-list (/api/refresh), served by start_due_relists.
@@ -63,32 +66,34 @@ _relist_requested: set[str] = set()
 _inflight: dict[str, tuple[Future, float]] = {}
 # lib -> earliest time a failed listing may be retried by the backstop.
 _retry_at: dict[str, float] = {}
-# lib -> {folder: present} for title events that arrived while that library's
-# listing was running. The listing may have read the directory before the
-# event, so these are replayed on top of its result instead of being lost.
-_events_during_listing: dict[str, dict[str, bool]] = {}
+# lib -> {folder: (present, seq)} for title events that arrived while that
+# library's listing was running. The listing may have read the directory before
+# the event, so events newer than the listing's start are replayed on top of
+# its result instead of being lost.
+_events_during_listing: dict[str, dict[str, tuple[bool, int]]] = {}
 # Bumped when a title's source content may have changed (an event, or a re-list
 # that found it added or removed). title_detail() memos key on it.
 _title_gen: dict[tuple[str, str], int] = {}
-# Per-title stat ordering: a stat result is applied only if no later-started
-# stat of the same title has already been applied.
-_stat_seq = 0
+# One clock orders every observation of the share: each stat and each listing
+# takes a sequence number when it STARTS. A result is applied only if nothing
+# that started later has already been applied: per title for stats, and per
+# library for a committed listing (_seq_floor), so a stat that began before a
+# re-list cannot resurrect a title that re-list found gone.
+_seq = 0
 _applied_seq: dict[tuple[str, str], int] = {}
+_seq_floor: dict[str, int] = {}
 _detail_memo: dict[tuple[str, str], tuple[int, float, TitleDetail | None]] = {}
 _listeners: list[Callable[[], None]] = []
 # Listing threads that have not yet finished saving and notifying. Lets
 # wait_for_listings() see a listing through its listeners, not just its commit.
 _active_listings = 0
 _listings_idle = threading.Condition(_lock)
-# Libraries whose listing thread has not finished saving and notifying. status()
-# reports these as listing, so a client never sees a fresh listed_at before the
-# grid has been flagged for its rebuild.
-_busy_libs: set[str] = set()
 
-# Bounds threads parked on a hung share by single-title stats. When all are
-# stuck, further events return "unknown" at once instead of piling up threads.
-_MAX_STATS_IN_FLIGHT = 4
-_stat_slots = threading.BoundedSemaphore(_MAX_STATS_IN_FLIGHT)
+# Bounds threads parked on a hung share by single-title stats, per library so a
+# stuck disk under one library cannot silence events for the others. When a
+# library's slots are all stuck, its events return "unknown" at once.
+_MAX_STATS_IN_FLIGHT = 2
+_stat_slots: dict[str, threading.BoundedSemaphore] = {}
 
 
 def _in_daemon_thread[T](name: str, fn: Callable[[], T]) -> Future[T]:
@@ -107,6 +112,13 @@ def _in_daemon_thread[T](name: str, fn: Callable[[], T]) -> Future[T]:
 
     threading.Thread(target=run, name=name, daemon=True).start()
     return future
+
+
+def _next_seq() -> int:
+    global _seq
+    with _lock:
+        _seq += 1
+        return _seq
 
 
 def valid_folder(lib: str, folder: str) -> bool:
@@ -193,34 +205,36 @@ def _save() -> None:
             logger.warning("could not persist library listing to %s", path)
 
 
-def _list_library(lib: str) -> set[str] | None:
-    """The one full listing of a library root. None when the root is missing."""
+def _list_library(lib: str) -> tuple[set[str], set[str]] | None:
+    """The one full listing of a library root: (titles, unreadable entries).
+
+    None when the root does not exist. An entry whose type cannot be read
+    (EIO on one disk) is reported as unreadable rather than dropped, so the
+    commit keeps whatever the last listing knew about it.
+    """
     root = config.MEDIA_ROOT / lib
     names: set[str] = set()
+    unreadable: set[str] = set()
     try:
         with os.scandir(root) as entries:
             for entry in entries:
+                if not valid_folder(lib, entry.name):
+                    continue
                 try:
-                    if entry.is_dir(follow_symlinks=False) and valid_folder(
-                        lib, entry.name
-                    ):
+                    if entry.is_dir(follow_symlinks=False):
                         names.add(entry.name)
                 except OSError:
-                    # One vanishing entry must not drop the whole library.
-                    continue
+                    unreadable.add(entry.name)
     except FileNotFoundError:
         return None
-    return names
+    return names, unreadable
 
 
-def _listing_failed(lib: str, reason: str) -> set[str] | None:
+def _listing_failed(lib: str, started_at: float, reason: str) -> set[str] | None:
     """Keep the last-good copy and back off before the backstop retries."""
-    now = time.time()
     with _lock:
-        _retry_at[lib] = now + config.LIBRARY_RETRY_S
-        _failed_at[lib] = now
-        _inflight.pop(lib, None)
-        _events_during_listing.pop(lib, None)
+        _retry_at[lib] = time.time() + config.LIBRARY_RETRY_S
+        _failed_at[lib] = started_at
         last_good = set(_folders[lib]) if lib in _folders else None
     logger.warning("library listing for %s failed: %s; keeping last-good", lib, reason)
     return last_good
@@ -231,52 +245,57 @@ def _run_listing(lib: str) -> set[str] | None:
 
     A failed listing keeps the last-good copy and is not retried before
     LIBRARY_RETRY_S, so a broken share is not hammered every loop wake. A root
-    that vanishes after it was listed with titles counts as a failure too: an
-    unmounted disk or a share hiccup must not erase the catalog for six hours.
+    that is missing when a library already has titles counts as a failure
+    too: an unmounted disk or a share hiccup must not erase the catalog for six
+    hours.
     """
     started = time.monotonic()
+    started_at = time.time()
+    start_seq = _next_seq()
     try:
-        names = _list_library(lib)
+        listed = _list_library(lib)
     except OSError as exc:
-        return _listing_failed(lib, repr(exc))
+        return _listing_failed(lib, started_at, repr(exc))
+    names: set[str] = set()
+    changed = 0
     with _lock:
-        events = _events_during_listing.pop(lib, {})
-        if names is None and any(events.values()):
-            names = set()  # the root appeared after the listing looked
-        changed = 0
-        if names is None and _folders.get(lib):
+        old = set(_folders.get(lib, set()))
+        if listed is None and old:
             vanished = True
         else:
             vanished = False
-            old = _folders.get(lib, set())
-            if names is not None:
-                for folder, present in events.items():
+            names, unreadable = listed if listed is not None else (set(), set())
+            names |= unreadable & old
+            for folder, (present, seq) in _events_during_listing.pop(lib, {}).items():
+                if seq > start_seq:
                     if present:
                         names.add(folder)
                     else:
                         names.discard(folder)
-                _folders[lib] = names
-            else:
+            if listed is None and not names:
                 _folders.pop(lib, None)
-            for folder in old ^ (names or set()):
+            else:
+                _folders[lib] = names
+            for folder in old ^ names:
                 key = (lib, folder)
                 _title_gen[key] = _title_gen.get(key, 0) + 1
-            changed = len(old ^ (names or set()))
-            _listed_at[lib] = time.time()
+            changed = len(old ^ names)
+            _listed_at[lib] = started_at
+            _seq_floor[lib] = max(_seq_floor.get(lib, 0), start_seq)
             _retry_at.pop(lib, None)
-            _inflight.pop(lib, None)
+        has_root = lib in _folders
     if vanished:
-        return _listing_failed(lib, "library root is missing")
+        return _listing_failed(lib, started_at, "library root is missing")
     logger.info(
         "library listing: %s, %s titles (%d changed) in %.1fs",
         lib,
-        "no root" if names is None else len(names),
+        len(names) if has_root else "no root",
         changed,
         time.monotonic() - started,
     )
     _save()
     _notify()
-    return names
+    return names if has_root else None
 
 
 def _tracked_listing(lib: str) -> set[str] | None:
@@ -284,9 +303,15 @@ def _tracked_listing(lib: str) -> set[str] | None:
     try:
         return _run_listing(lib)
     finally:
+        # Only now, after saving and notifying, is the listing over: status()
+        # reports `listing` from _inflight, so a client never sees a fresh
+        # listed_at before the grid has been flagged for its rebuild, and the
+        # library cannot be listed twice at once. Events in the commit-to-here
+        # window were applied directly, so their replay buffer is dropped.
         with _lock:
+            _inflight.pop(lib, None)
+            _events_during_listing.pop(lib, None)
             _active_listings -= 1
-            _busy_libs.discard(lib)
             _listings_idle.notify_all()
 
 
@@ -302,7 +327,6 @@ def _submit_listing(lib: str) -> Future:
         running = _inflight.get(lib)
         if running is None:
             _active_listings += 1
-            _busy_libs.add(lib)
             running = (
                 _in_daemon_thread(f"library-list-{lib}", lambda: _tracked_listing(lib)),
                 time.monotonic(),
@@ -329,10 +353,15 @@ def folders(lib: str) -> list[str] | None:
             return sorted(_folders[lib])
         if lib in _listed_at:
             return None  # listed, and the root does not exist
+        now = time.time()
+        if now < _retry_at.get(lib, 0.0) and lib not in _inflight:
+            return None  # its cold listing failed; the backstop retries it
         cold = [
             other
             for other in config.LIBRARIES
-            if other not in _folders and other not in _listed_at
+            if other not in _folders
+            and other not in _listed_at
+            and now >= _retry_at.get(other, 0.0)
         ]
     for other in cold:
         _submit_listing(other)
@@ -380,17 +409,16 @@ def source_lib(folder: str) -> str | None:
     return None
 
 
-def _record(lib: str, folder: str, present: bool, seq: int | None = None) -> bool:
-    """Apply one title's presence. Returns False if a newer stat already won."""
+def _record(lib: str, folder: str, present: bool, seq: int) -> bool:
+    """Apply one title observation taken at `seq`. False if a newer one won."""
     with _lock:
         key = (lib, folder)
-        if seq is not None:
-            if seq <= _applied_seq.get(key, -1):
-                return False
-            _applied_seq[key] = seq
+        if seq <= max(_applied_seq.get(key, 0), _seq_floor.get(lib, 0)):
+            return False
+        _applied_seq[key] = seq
         _title_gen[key] = _title_gen.get(key, 0) + 1
         if lib in _inflight:
-            _events_during_listing.setdefault(lib, {})[folder] = present
+            _events_during_listing.setdefault(lib, {})[folder] = (present, seq)
         # DO NOT start a listing from one event. A library with no listing yet
         # would then read as complete with a single title; its cold listing
         # captures this title anyway.
@@ -413,7 +441,12 @@ def _stat_is_dir(path: Path) -> bool | None:
     try:
         return stat.S_ISDIR(path.stat().st_mode)
     except FileNotFoundError, NotADirectoryError:
-        return False
+        # Gone, unless the whole library root is gone too: an unmounted disk
+        # or share says nothing about this one title.
+        try:
+            return False if path.parent.stat() else None
+        except OSError:
+            return None
     except OSError:
         return None
 
@@ -426,23 +459,24 @@ def note_title(lib: str, folder: str) -> bool | None:
     None when the stat timed out or failed (the listing is left as it was and
     the backstop re-list reconciles it).
     """
-    global _stat_seq
     if not valid_folder(lib, folder):
         raise ValueError("invalid library title")
     _load()
-    if not _stat_slots.acquire(blocking=False):
-        logger.warning("stats are stuck on the share; %s/%s left as is", lib, folder)
-        return None
     with _lock:
-        _stat_seq += 1
-        seq = _stat_seq
+        slots = _stat_slots.setdefault(
+            lib, threading.BoundedSemaphore(_MAX_STATS_IN_FLIGHT)
+        )
+    if not slots.acquire(blocking=False):
+        logger.warning("stats are stuck on %s; %s left as is", lib, folder)
+        return None
+    seq = _next_seq()
     path = config.MEDIA_ROOT / lib / folder
 
     def stat_then_release() -> bool | None:
         try:
             return _stat_is_dir(path)
         finally:
-            _stat_slots.release()
+            slots.release()
 
     future = _in_daemon_thread("library-stat", stat_then_release)
     try:
@@ -463,9 +497,9 @@ def record_present(lib: str, folder: str) -> None:
     if not valid_folder(lib, folder):
         raise ValueError("invalid library title")
     _load()
-    _record(lib, folder, True)
-    _save()
-    _notify()
+    if _record(lib, folder, True, _next_seq()):
+        _save()
+        _notify()
 
 
 def request_relist(lib: str | None = None) -> None:
@@ -516,16 +550,23 @@ def title_version(lib: str, folder: str) -> int:
         return _title_gen.get((lib, folder), 0)
 
 
-def _detail_max_age(lib: str) -> float:
+def _detail_max_age(lib: str, folder: str) -> float:
     """How long a memoized episode tree may be reused with no event for it.
 
     Libraries with an arr get a Connect webhook on every import and delete, so
-    their trees are reused until that event (bounded by the re-list backstop).
-    Libraries without one (YouTube) have no event, so TITLE_RESCAN_S applies.
+    their trees are reused until that event, with the re-list interval as the
+    backstop. Libraries without one (YouTube) have no event, so TITLE_RESCAN_S
+    applies. Each title's limit is stretched by a stable 0 to 100 percent so
+    the backstop rescans spread across the interval instead of every followed
+    show being walked in the same pass.
     """
-    if config.LIBRARIES.get(lib, {}).get("arr"):
-        return config.LIBRARY_RELIST_S
-    return config.TITLE_RESCAN_S
+    base = (
+        config.LIBRARY_RELIST_S
+        if config.LIBRARIES.get(lib, {}).get("arr")
+        else config.TITLE_RESCAN_S
+    )
+    spread = zlib.crc32(f"{lib}/{folder}".encode()) % 1000 / 1000
+    return base * (1 + spread)
 
 
 def title_detail(lib: str, folder: str) -> TitleDetail | None:
@@ -543,7 +584,11 @@ def title_detail(lib: str, folder: str) -> TitleDetail | None:
     now = time.monotonic()
     with _lock:
         hit = _detail_memo.get(key)
-    if hit is not None and hit[0] == version and now - hit[1] < _detail_max_age(lib):
+    if (
+        hit is not None
+        and hit[0] == version
+        and now - hit[1] < _detail_max_age(lib, folder)
+    ):
         return hit[2]
     detail = scan_title_detail(lib, folder)
     with _lock:
@@ -577,7 +622,7 @@ def status() -> dict:
                     "age_s": round(now - _listed_at[lib])
                     if lib in _listed_at
                     else None,
-                    "listing": lib in _busy_libs,
+                    "listing": lib in _inflight,
                 }
                 for lib in config.LIBRARIES
             },
@@ -593,7 +638,8 @@ def reset() -> None:
         _relist_requested.clear()
         _inflight.clear()
         _failed_at.clear()
-        _busy_libs.clear()
+        _stat_slots.clear()
+        _seq_floor.clear()
         _retry_at.clear()
         _events_during_listing.clear()
         _title_gen.clear()

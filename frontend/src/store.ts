@@ -369,13 +369,45 @@ export function relistSettled(
     )
 }
 
-export async function waitForRelist(requestedAt: number): Promise<boolean> {
+export interface RelistOutcome {
+    // Every library listed or failed since the click, and the grid rebuilt.
+    settled: boolean
+    // Libraries whose re-list failed since the click; the backend kept their
+    // last-good list, so the grid is not freshly scanned for them.
+    failed: string[]
+}
+
+export function relistFailures(
+    status: LibraryStatus,
+    requestedAt: number
+): string[] {
+    return Object.entries(status.libraries)
+        .filter(([, lib]) => (lib.failed_at ?? 0) >= requestedAt)
+        .filter(([, lib]) => (lib.listed_at ?? 0) < (lib.failed_at ?? 0))
+        .map(([id]) => id)
+}
+
+// One poll may not outlive the remaining budget: a fetch that never answers
+// must not hold the Rescan toast open forever.
+function withDeadline<T>(p: Promise<T>, ms: number): Promise<T | null> {
+    return Promise.race([p, sleep(Math.max(0, ms)).then(() => null)])
+}
+
+export async function waitForRelist(
+    requestedAt: number
+): Promise<RelistOutcome> {
     const deadline = Date.now() + RELIST_WAIT_MS
     while (Date.now() < deadline) {
-        if (relistSettled(await api.library(), requestedAt)) return true
+        const status = await withDeadline(api.library(), deadline - Date.now())
+        if (status && relistSettled(status, requestedAt)) {
+            return {
+                settled: true,
+                failed: relistFailures(status, requestedAt),
+            }
+        }
         await sleep(RELIST_POLL_MS)
     }
-    return false
+    return { settled: false, failed: [] }
 }
 
 function sleep(ms: number): Promise<void> {

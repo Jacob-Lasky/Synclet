@@ -4,7 +4,7 @@ const { libraryMock } = vi.hoisted(() => ({ libraryMock: vi.fn() }))
 
 vi.mock("./api", () => ({ api: { library: libraryMock } }))
 
-import { relistSettled, waitForRelist } from "./store"
+import { relistFailures, relistSettled, waitForRelist } from "./store"
 import type { LibraryStatus } from "./types"
 
 const ASKED = 1000
@@ -83,7 +83,7 @@ describe("waitForRelist", () => {
             .mockResolvedValueOnce(status({ tv: { listed_at: 1001 } }))
         const done = waitForRelist(ASKED)
         await vi.advanceTimersByTimeAsync(1000)
-        await expect(done).resolves.toBe(true)
+        await expect(done).resolves.toEqual({ settled: true, failed: [] })
         expect(libraryMock).toHaveBeenCalledTimes(2)
     })
 
@@ -91,6 +91,41 @@ describe("waitForRelist", () => {
         libraryMock.mockResolvedValue(status({ tv: { listing: true } }))
         const done = waitForRelist(ASKED)
         await vi.advanceTimersByTimeAsync(181_000)
-        await expect(done).resolves.toBe(false)
+        await expect(done).resolves.toEqual({ settled: false, failed: [] })
+    })
+
+    it("gives up even when one poll never answers", async () => {
+        libraryMock.mockReturnValue(new Promise(() => {}))
+        const done = waitForRelist(ASKED)
+        await vi.advanceTimersByTimeAsync(181_000)
+        await expect(done).resolves.toEqual({ settled: false, failed: [] })
+    })
+
+    it("reports libraries whose re-list failed", async () => {
+        libraryMock.mockResolvedValue(
+            status({
+                tv: { listed_at: 1001 },
+                movies: { listed_at: 10, failed_at: 1002 },
+            })
+        )
+        await expect(waitForRelist(ASKED)).resolves.toEqual({
+            settled: true,
+            failed: ["movies"],
+        })
+    })
+})
+
+describe("relistFailures", () => {
+    it("ignores a failure older than the click or than a later success", () => {
+        expect(
+            relistFailures(
+                status({
+                    old: { listed_at: 1003, failed_at: 999 },
+                    recovered: { listed_at: 1005, failed_at: 1001 },
+                    failed: { listed_at: 1001, failed_at: 1004 },
+                }),
+                ASKED
+            )
+        ).toEqual(["failed"])
     })
 })

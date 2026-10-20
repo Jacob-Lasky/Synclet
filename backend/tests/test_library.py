@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pathlib
 import threading
+import time
 from typing import cast
 
 import pytest
@@ -182,7 +183,7 @@ def test_inflight_listing_is_never_stacked(patch_paths, monkeypatch):
     def slow(lib):
         calls.append(lib)
         release.wait(5)
-        return set()
+        return set(), set()
 
     monkeypatch.setattr(library, "_list_library", slow)
     library.request_relist("tv")
@@ -278,7 +279,7 @@ def test_event_during_a_listing_is_not_lost(patch_paths, monkeypatch):
         names = {AFTER_LIFE, BCS}  # read the directory before the new title
         started.set()
         release.wait(5)
-        return names
+        return names, set()
 
     monkeypatch.setattr(library, "_list_library", slow)
     library.request_relist("tv")
@@ -446,3 +447,171 @@ def test_saves_never_write_an_older_snapshot_last(patch_paths, monkeypatch):
     saver.join(5)
     saved = json.loads(config.LIBRARY_LISTING_FILE.read_text())
     assert new.name in saved["libs"]["tv"]["folders"]
+
+
+def test_missing_root_with_a_late_event_still_keeps_the_catalog(
+    patch_paths, monkeypatch
+):
+    """Root gone during the re-list, back for one webhook: B must not vanish."""
+    library.folders("tv")
+    _drain()
+    started, release = threading.Event(), threading.Event()
+
+    def root_missing(lib):
+        started.set()
+        release.wait(5)
+        return None
+
+    monkeypatch.setattr(library, "_list_library", root_missing)
+    library.request_relist("tv")
+    library.start_due_relists()
+    assert started.wait(5)
+    library.note_title("tv", AFTER_LIFE)
+    release.set()
+    _drain()
+    assert library.folders("tv") == sorted([AFTER_LIFE, BCS])
+
+
+def test_unmounted_library_root_makes_a_title_stat_unknown(patch_paths, monkeypatch):
+    monkeypatch.setattr(config, "MEDIA_ROOT", patch_paths["tmp"] / "unmounted")
+    assert library._stat_is_dir(config.MEDIA_ROOT / "tv" / BCS) is None
+
+
+def test_unreadable_entry_keeps_its_last_known_presence(patch_paths, monkeypatch):
+    library.folders("tv")
+    _drain()
+    original = library._list_library
+
+    def one_entry_eio(lib):
+        listed = original(lib)
+        assert listed is not None
+        names, unreadable = listed
+        names.discard(BCS)
+        return names, unreadable | {BCS}
+
+    monkeypatch.setattr(library, "_list_library", one_entry_eio)
+    library.request_relist("tv")
+    library.start_due_relists()
+    _drain()
+    assert library.peek("tv", BCS) is True
+
+
+def test_failed_cold_listing_is_not_retried_on_every_read(patch_paths, monkeypatch):
+    calls: list[str] = []
+
+    def broken(lib):
+        calls.append(lib)
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(library, "_list_library", broken)
+    assert library.folders("tv") is None
+    _drain()
+    assert library.folders("tv") is None
+    assert library.source_lib(BCS) is None
+    _drain()
+    assert calls.count("tv") == 1
+
+
+def test_stat_started_before_a_relist_cannot_resurrect_a_title(
+    patch_paths, monkeypatch
+):
+    library.folders("tv")
+    _drain()
+    stat_started, stat_release = threading.Event(), threading.Event()
+
+    def slow_present(path):
+        stat_started.set()
+        stat_release.wait(5)
+        return True
+
+    monkeypatch.setattr(library, "_stat_is_dir", slow_present)
+    results: list[bool | None] = []
+    stat = threading.Thread(
+        target=lambda: results.append(library.note_title("tv", BCS))
+    )
+    stat.start()
+    assert stat_started.wait(5)
+    original = library._list_library
+
+    def without_bcs(lib):
+        listed = original(lib)
+        assert listed is not None
+        listed[0].discard(BCS)
+        return listed
+
+    monkeypatch.setattr(library, "_list_library", without_bcs)
+    library.request_relist("tv")
+    library.start_due_relists()
+    _drain()
+    stat_release.set()
+    stat.join(5)
+    assert results == [True]
+    assert library.peek("tv", BCS) is False
+
+
+def test_stuck_stats_in_one_library_do_not_silence_another(patch_paths, monkeypatch):
+    library.folders("tv")
+    _drain()
+    release = threading.Event()
+    original = library._stat_is_dir
+
+    def tv_hangs(path):
+        if path.parent.name == "tv":
+            release.wait(5)
+        return original(path)
+
+    monkeypatch.setattr(config, "LIBRARY_STAT_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(library, "_stat_is_dir", tv_hangs)
+    try:
+        for _ in range(library._MAX_STATS_IN_FLIGHT + 1):
+            assert library.note_title("tv", BCS) is None
+        monkeypatch.setattr(config, "LIBRARY_STAT_TIMEOUT_S", 5)
+        assert library.note_title("movies", "1917 (2019) {tmdb-3}") is True
+    finally:
+        release.set()
+
+
+def test_listing_stays_reported_until_listeners_ran(patch_paths, monkeypatch):
+    library.folders("tv")
+    _drain()
+    in_listener, release = threading.Event(), threading.Event()
+    seen: list[bool] = []
+
+    def listener():
+        seen.append(library.status()["libraries"]["tv"]["listing"])
+        in_listener.set()
+        release.wait(5)
+
+    library.subscribe(listener)
+    library.request_relist("tv")
+    library.start_due_relists()
+    assert in_listener.wait(5)
+    # Same library cannot start a second listing while the first notifies.
+    library.request_relist("tv")
+    assert "tv" not in library.start_due_relists()
+    release.set()
+    _drain()
+    assert seen == [True]
+    assert library.status()["libraries"]["tv"]["listing"] is False
+
+
+def test_listed_at_is_when_the_listing_started(patch_paths, monkeypatch):
+    original = library._list_library
+    before = []
+
+    def slow(lib):
+        before.append(time.time())
+        time.sleep(0.2)
+        return original(lib)
+
+    monkeypatch.setattr(library, "_list_library", slow)
+    library.folders("tv")
+    _drain()
+    assert library._listed_at["tv"] <= before[0] + 0.05
+
+
+def test_backstop_rescans_spread_across_the_interval(patch_paths):
+    ages = {library._detail_max_age("tv", f"Show {i}") for i in range(20)}
+    assert len(ages) > 10
+    assert all(config.LIBRARY_RELIST_S <= a < 2 * config.LIBRARY_RELIST_S for a in ages)
+    assert library._detail_max_age("YouTube", "Chan") < 2 * config.TITLE_RESCAN_S
