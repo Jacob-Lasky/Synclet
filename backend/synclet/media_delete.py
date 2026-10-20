@@ -14,7 +14,16 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-from synclet import config, followed, maint_cache, pending, state, sync_ops
+from synclet import (
+    arr,
+    config,
+    followed,
+    library,
+    maint_cache,
+    pending,
+    state,
+    sync_ops,
+)
 from synclet.scan import _EP_PAT, Episode, scan_title_detail
 
 # Generated trickplay trees contain image frames. An extension allowlist keeps
@@ -58,20 +67,15 @@ class DeletePlan:
 def _title_root(lib: str, folder: str) -> Path:
     if lib not in config.LIBRARIES:
         raise ValueError("unknown library")
-    if (
-        folder in ("", ".", "..")
-        or folder.startswith(".")
-        or "/" in folder
-        or "\\" in folder
-    ):
+    if not library.valid_folder(lib, folder):
         raise ValueError("invalid title folder")
-    library = config.MEDIA_ROOT / lib
-    title = library / folder
-    if library.is_symlink() or title.is_symlink():
+    library_root = config.MEDIA_ROOT / lib
+    title = library_root / folder
+    if library_root.is_symlink() or title.is_symlink():
         raise ValueError("symlinked library or title is not deletable")
     if not title.is_dir():
         raise ValueError("title does not exist")
-    if not title.resolve(strict=True).is_relative_to(library.resolve(strict=True)):
+    if not title.resolve(strict=True).is_relative_to(library_root.resolve(strict=True)):
         raise ValueError("title escapes library")
     return title
 
@@ -474,8 +478,15 @@ def delete_selection(
         _prune_empty_parents(tuple(deleted_source), source_root, plan.source_dirs)
         if not source_root.exists():
             followed.set_following(lib, folder, False)
+        # Update the library listing for this one title (it may be gone now)
+        # and drop its memoized episode tree, without listing the library.
+        library.note_title(lib, folder)
         state.invalidate()
         maint_cache.invalidate()
+    # The arr would otherwise learn of the delete only at its next full-disk
+    # rescan. Ask it to rescan just this title; a failure is reported, never
+    # raised, because the files are already gone.
+    arr_rescan = arr.rescan_title(lib, folder) if deleted_source else None
     return {
         "source_deleted": len(deleted_source),
         "offline_deleted": len(deleted_offline),
@@ -483,4 +494,5 @@ def delete_selection(
         "offline_bytes": deleted_offline_bytes,
         "title_remaining": source_root.exists(),
         "error": failure,
+        "arr_rescan": arr_rescan,
     }

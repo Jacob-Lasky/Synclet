@@ -26,6 +26,20 @@ from synclet import config as _config
 
 _config.CACHE_BACKGROUND_REFRESH = False
 
+
+@pytest.fixture(autouse=True)
+def _refuse_unmocked_plex(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make any Plex call a test forgot to mock fail at once, not after a timeout.
+
+    CI cannot reach the committed default PLEX_URL, so an unmocked fetch used to
+    sit out its full 30 s timeout (several tests did, adding minutes to the
+    suite). Port 9 on localhost refuses immediately, which exercises the same
+    fetch-failure path. Tests that need a Plex answer mock _get_xml or urlopen
+    as before; this only changes how fast a forgotten call fails.
+    """
+    monkeypatch.setattr("synclet.plex.PLEX_URL", "http://127.0.0.1:9")
+
+
 # ── WatchState schema (matches v02 , keep in sync with the real DB) ────────
 
 WATCHSTATE_SCHEMA = """
@@ -198,6 +212,18 @@ def patch_paths(
     monkeypatch.setattr(
         "synclet.config.FOLLOWED_FILE", media_tree["tmp"] / "followed.json"
     )
+    # The library listing persists next to the other app state; keep it in tmp
+    # and start each test cold so it lists the fixture tree on first use.
+    monkeypatch.setattr(
+        "synclet.config.LIBRARY_LISTING_FILE",
+        media_tree["tmp"] / ".library-listing.json",
+    )
+    from synclet import library, state, synced
+
+    library.reset()
+    # reset() drops listeners too; restore the production wiring.
+    state.register_builders()
+    synced.register_builders()
 
     # The in-process cache holds previous-test data keyed off the prior
     # tmp_path. invalidate() now only flags dirty (it preserves last-good for
@@ -210,3 +236,4 @@ def patch_paths(
     yield media_tree
     maint_cache.clear()
     watchstate.invalidate_cache()
+    library.reset()

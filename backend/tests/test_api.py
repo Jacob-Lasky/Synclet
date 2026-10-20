@@ -5,6 +5,7 @@ renamed or its shape changes, the contract breaks here loudly instead of
 in the user's browser silently.
 """
 
+import time
 from typing import cast
 from urllib.parse import quote
 
@@ -785,9 +786,13 @@ class TestMaintenanceWatchedAndHanging:
 
 class TestRefreshRoute:
     def test_invalidates_and_returns_ok(self, client):
+        before = time.time()
         r = client.post("/api/refresh", json={})
         assert r.status_code == 201
-        assert r.json() == {"ok": True}
+        body = r.json()
+        assert body["ok"] is True
+        # Server-clock stamp the refresh button compares listed_at against.
+        assert before <= body["requested_at"] <= time.time()
 
     def test_flags_all_caches_dirty_keeping_last_good(self, client):
         """/api/refresh flags every cache for background rebuild without
@@ -1314,3 +1319,110 @@ class TestEventLoopNotBlockedByHandlers:
             release.set()
             server.should_exit = True
             server_thread.join(timeout=10)
+
+
+class TestLibraryRoutes:
+    """Arr webhooks and the on-demand rescan replace timer-driven listing (#66)."""
+
+    BCS = "Better Call Saul (2015) {tvdb-1}"
+
+    def test_webhook_rechecks_one_title_and_grid_picks_it_up(
+        self, client, patch_paths, monkeypatch
+    ):
+        from synclet import library, maint_cache
+
+        client.get("/api/state")  # cold listing
+        new = patch_paths["media"] / "tv" / "Severance (2022) {tvdb-9}"
+        (new / "Season 01").mkdir(parents=True)
+
+        def no_listing(lib):
+            raise AssertionError("webhook listed a library")
+
+        monkeypatch.setattr(library, "_list_library", no_listing)
+        r = client.post(
+            "/api/arr/webhook",
+            json={
+                "eventType": "Download",
+                "series": {"path": f"/data/media/tv/{new.name}"},
+            },
+        )
+        assert r.status_code == 201, r.text
+        assert r.json() == {
+            "ok": True,
+            "lib": "tv",
+            "folder": new.name,
+            "present": True,
+        }
+        assert maint_cache.is_dirty("state")
+        maint_cache.run_refresh_cycle(full=False)
+        folders = {t["folder"] for t in client.get("/api/state").json()["titles"]}
+        assert new.name in folders
+
+    def test_webhook_acknowledges_test_and_unusable_events(self, client):
+        r = client.post("/api/arr/webhook", json={"eventType": "Test"})
+        assert r.status_code == 201
+        assert r.json() == {"ok": True, "ignored": "Test"}
+
+    def test_rescan_route_reuses_arr_rescan(self, client, monkeypatch):
+        seen: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            "synclet.arr.rescan_title",
+            lambda lib, folder: seen.append((lib, folder)) or {"requested": True},
+        )
+        r = client.post("/api/arr/rescan", json={"lib": "tv", "folder": self.BCS})
+        assert r.status_code == 201
+        assert r.json() == {"requested": True}
+        assert seen == [("tv", self.BCS)]
+
+    def test_rescan_route_rejects_bad_title(self, client):
+        r = client.post("/api/arr/rescan", json={"lib": "tv", "folder": "../x"})
+        assert r.status_code == 400
+
+    def test_library_status_and_refresh_requests_relist(self, client):
+        from synclet import library
+
+        client.get("/api/state")
+        status = client.get("/api/library").json()
+        assert status["libraries"]["tv"]["titles"] == 2
+        client.post("/api/refresh", json={})
+        assert library._relist_requested == set(library.config.LIBRARIES)
+
+
+class TestRefreshLoopTiming:
+    @pytest.mark.asyncio
+    async def test_interval_runs_from_end_of_a_slow_pass(self, monkeypatch):
+        """A pass slower than the interval must not be followed by another at once."""
+        import asyncio
+        import contextlib
+        import threading
+        import time
+
+        import main
+        from synclet import config
+
+        monkeypatch.setattr(config, "CACHE_DIRTY_REFRESH", 0)
+        monkeypatch.setattr(config, "CACHE_FULL_REFRESH", 0.2)
+        monkeypatch.setattr(config, "CACHE_SLOW_PASS", 0.1)
+        monkeypatch.setattr(main.library, "start_due_relists", list)
+        fulls: list[float] = []
+
+        two_fulls = threading.Event()
+
+        def _cycle(*, full):
+            if full:
+                fulls.append(time.monotonic())
+                if len(fulls) == 2:
+                    two_fulls.set()
+                time.sleep(0.3)  # slower than CACHE_FULL_REFRESH
+            return ["k"] if full else []
+
+        monkeypatch.setattr(main.maint_cache, "run_refresh_cycle", _cycle)
+        task = asyncio.create_task(main._cache_refresh_loop())
+        try:
+            assert await asyncio.to_thread(two_fulls.wait, 5)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        # Next full starts >= interval after the previous one ENDED (0.3 + 0.2).
+        assert fulls[1] - fulls[0] >= 0.5

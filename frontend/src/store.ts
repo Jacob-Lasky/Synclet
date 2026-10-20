@@ -6,6 +6,7 @@ import type {
     DiskUsage,
     Job,
     LibraryInfo,
+    LibraryStatus,
     Tab,
     Title,
 } from "./types"
@@ -345,6 +346,68 @@ export function trackJob(jobId: string, label: JobLabel): void {
             setTimeout(() => dismissToast(toastId), 4500)
         }
     })()
+}
+
+// The Refresh button's library re-list runs in the background, one library at
+// a time: the backend never lists a library on the request path (Synclet#66).
+// Wait until every library has listed, or failed, since the click and the grid
+// has rebuilt, so "Library rescanned" is true when it is shown.
+export const RELIST_POLL_MS = 1000
+export const RELIST_WAIT_MS = 180_000
+
+export function relistSettled(
+    status: LibraryStatus,
+    requestedAt: number
+): boolean {
+    return (
+        !status.grid_pending &&
+        Object.values(status.libraries).every(
+            (lib) =>
+                !lib.listing &&
+                Math.max(lib.listed_at ?? 0, lib.failed_at ?? 0) >= requestedAt
+        )
+    )
+}
+
+export interface RelistOutcome {
+    // Every library listed or failed since the click, and the grid rebuilt.
+    settled: boolean
+    // Libraries whose re-list failed since the click; the backend kept their
+    // last-good list, so the grid is not freshly scanned for them.
+    failed: string[]
+}
+
+export function relistFailures(
+    status: LibraryStatus,
+    requestedAt: number
+): string[] {
+    return Object.entries(status.libraries)
+        .filter(([, lib]) => (lib.failed_at ?? 0) >= requestedAt)
+        .filter(([, lib]) => (lib.listed_at ?? 0) < (lib.failed_at ?? 0))
+        .map(([id]) => id)
+}
+
+// One poll may not outlive the remaining budget: a fetch that never answers
+// must not hold the Rescan toast open forever.
+function withDeadline<T>(p: Promise<T>, ms: number): Promise<T | null> {
+    return Promise.race([p, sleep(Math.max(0, ms)).then(() => null)])
+}
+
+export async function waitForRelist(
+    requestedAt: number
+): Promise<RelistOutcome> {
+    const deadline = Date.now() + RELIST_WAIT_MS
+    while (Date.now() < deadline) {
+        const status = await withDeadline(api.library(), deadline - Date.now())
+        if (status && relistSettled(status, requestedAt)) {
+            return {
+                settled: true,
+                failed: relistFailures(status, requestedAt),
+            }
+        }
+        await sleep(RELIST_POLL_MS)
+    }
+    return { settled: false, failed: [] }
 }
 
 function sleep(ms: number): Promise<void> {

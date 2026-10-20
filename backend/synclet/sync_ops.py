@@ -398,11 +398,15 @@ def start_unsync(targets: list[Path], title: str = "") -> Job:
 
 
 def find_source_lib(folder_name: str) -> str | None:
-    """Return the library name whose media folder contains `folder_name`."""
-    for lib in LIBRARIES:
-        if (MEDIA_ROOT / lib / folder_name).exists():
-            return lib
-    return None
+    """Return the library name whose media folder contains `folder_name`.
+
+    Answered from the library listing, not a stat per library: the background
+    builders call this once per synced title on every pass (see
+    synclet.library for why passes must not touch the share).
+    """
+    from synclet import library  # local to avoid cycle
+
+    return library.source_lib(folder_name)
 
 
 def _find_watched_synced_files_uncached() -> list[dict]:

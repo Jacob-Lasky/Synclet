@@ -117,6 +117,22 @@ export interface MediaDeletePreview {
     fingerprint: string
 }
 
+// GET /api/library: the source-library listing (backend synclet/library.py).
+// listed_at / failed_at are epoch seconds on the server clock.
+export interface LibraryListingStatus {
+    titles: number | null
+    listed_at: number | null
+    failed_at: number | null
+    age_s: number | null
+    listing: boolean
+}
+
+export interface LibraryStatus {
+    relist_interval_s: number
+    libraries: Record<string, LibraryListingStatus>
+    grid_pending: boolean
+}
+
 export interface MediaDeleteResult {
     source_deleted: number
     offline_deleted: number
@@ -124,6 +140,16 @@ export interface MediaDeleteResult {
     offline_bytes: number
     title_remaining: boolean
     error: string | null
+    // What the owning Sonarr/Radarr was asked to rescan; null when nothing
+    // was deleted from the source. Informational, not shown in the UI.
+    arr_rescan: {
+        requested: boolean
+        app?: string
+        command?: string
+        item_id?: number
+        command_id?: number | null
+        reason?: string
+    } | null
 }
 
 export interface Job {

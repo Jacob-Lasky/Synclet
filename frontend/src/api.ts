@@ -4,6 +4,7 @@ import type {
     IgnoredGrouped,
     IgnoreOp,
     Job,
+    LibraryStatus,
     MaintenanceCounts,
     MediaDeleteBody,
     MediaDeletePreview,
@@ -134,7 +135,13 @@ export const api = {
             body: JSON.stringify({ url }),
         }),
 
-    refresh: () => json<{ ok: true }>("/api/refresh", { method: "POST" }),
+    // requested_at is the server-clock stamp waitForRelist compares against.
+    refresh: () =>
+        json<{ ok: true; requested_at: number }>("/api/refresh", {
+            method: "POST",
+        }),
+
+    library: () => json<LibraryStatus>("/api/library"),
 
     scrobble: (body: ScrobbleBody) =>
         json<ScrobbleResponse>(`/api/scrobble`, {

@@ -43,7 +43,19 @@ docker compose -f docker-compose.dev.yml down --rmi local && docker compose -f d
 
 Shows and YouTube channels can be followed so Synclet keeps surfacing their new unwatched episodes. Syncing any episode follows the title automatically; you can also toggle it from the title drawer or the Synced tab. A followed title stays listed after its last offline episode is removed — shown as "Waiting for new episodes" — until you choose "Stop following". Follow state lives in `followed.json` alongside the other persistent app data (`SYNCLET_FOLLOWED_FILE`), seeded on first run from the shows already synced offline; titles that match more than one source library are left for an explicit Follow.
 
-Following is stored as intent: reading it never stats the source library, so a slow or unmounted source cannot hold up title-detail requests. A background check notices when a source folder has been moved or deleted outside Synclet and hides that waiting row from the Synced tab, but the saved follow is kept — the row comes back on its own once the source folder reappears. Deleting a title's source media through Synclet does drop its follow entry. An open Synced tab re-polls every 60 seconds so these background results land without a manual refresh.
+Following is stored as intent: reading it never stats the source library, so a slow or unmounted source cannot hold up title-detail requests. When the library listing (below) says a source folder has been moved or deleted outside Synclet, that waiting row is hidden from the Synced tab, but the saved follow is kept, and the row comes back once the listing sees the folder again. Deleting a title's source media through Synclet does drop its follow entry. An open Synced tab re-polls every 60 seconds so these background results land without a manual refresh.
+
+## Library listing and arr integration
+
+Synclet does not list the library folders on a timer. On Unraid each library root is a directory merged across every array disk, and listing one on a cold cache takes tens of seconds while Plex, Jellyfin and SMB wait behind it. Instead the title list is kept in `.library-listing.json` (`SYNCLET_LIBRARY_LISTING_FILE`, persisted beside the other app data) and updated one title at a time:
+
+- **Sonarr/Radarr webhooks.** Add a Webhook connection in each arr (Settings, Connect) pointing at `http://<synclet-host>:1313/api/arr/webhook`, method POST, with On Import, On Series/Movie Add, On Series/Movie Delete, On File Delete and On Rename enabled. Each event makes Synclet check that one folder.
+- **Synclet's own deletes** update their title directly.
+- **A full re-list** runs only as a backstop, one library at a time, every `SYNCLET_LIBRARY_RELIST` seconds (default 6 hours), or when you press Rescan in the top bar. The button waits for the re-list to finish before it says "Library rescanned". `GET /api/library` shows each library's title count and listing time.
+
+Sources with no arr (YouTube) get new channels at the next backstop or Rescan. New episodes inside a followed YouTube channel are picked up within one to two `SYNCLET_TITLE_RESCAN` intervals (default 1 hour): each title's limit is stretched by a stable amount so the rescans spread out instead of every followed channel being walked in the same pass.
+
+After deleting source media, Synclet asks the owning arr to rescan just that series or movie (`RescanSeries` / `RescanMovie`), so the arr does not need a periodic full-disk rescan to notice. Configure one URL and API key per library in the gitignored `.env`: `SYNCLET_SONARR_URL` / `SYNCLET_SONARR_API_KEY` (TV), `SYNCLET_SONARR_4K_*` (TV 4K), `SYNCLET_RADARR_*` (Movies) and `SYNCLET_RADARR_4K_*` (Movies 4K). A library with no URL and key skips the rescan. `POST /api/arr/rescan` with `{"lib", "folder"}` runs the same rescan on demand.
 
 ## Permanent media deletion
 

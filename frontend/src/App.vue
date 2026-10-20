@@ -17,9 +17,12 @@ import {
     loadCoverage,
     loadMaintenanceCount,
     loadState,
+    libraryLabel,
     loadWatchlistCount,
     pushToast,
     store,
+    updateToast,
+    waitForRelist,
 } from "./store"
 
 const showPaste = ref(false)
@@ -59,13 +62,35 @@ const counts = computed(() => ({
             : undefined,
 }))
 
+function rescanToast(
+    settled: boolean,
+    failed: string[]
+): { kind: "success" | "info" | "error"; text: string } {
+    if (!settled) {
+        return {
+            kind: "info",
+            text: "Library rescan is still running. Refresh again in a minute to see it.",
+        }
+    }
+    if (failed.length) {
+        const names = failed.map(libraryLabel).join(", ")
+        return {
+            kind: "error",
+            text: `Could not rescan ${names}; showing the last good list.`,
+        }
+    }
+    return { kind: "success", text: "Library rescanned." }
+}
+
 async function refresh(): Promise<void> {
+    const toastId = pushToast({ kind: "info", text: "Rescanning library…" })
     try {
-        await api.refresh()
+        const { requested_at } = await api.refresh()
+        const { settled, failed } = await waitForRelist(requested_at)
         await loadState(true)
-        pushToast({ kind: "success", text: "Library rescanned." })
+        updateToast(toastId, rescanToast(settled, failed))
     } catch (e) {
-        pushToast({ kind: "error", text: (e as Error).message })
+        updateToast(toastId, { kind: "error", text: (e as Error).message })
     }
 }
 

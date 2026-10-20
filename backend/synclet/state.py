@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from synclet import maint_cache
+from synclet import library, maint_cache
 from synclet.config import SYNC_ROOT
 from synclet.fs_helpers import synced_title_sizes
-from synclet.plex import find_in_library
+from synclet.plex import expire_stale_watch_caches, find_in_library
 from synclet.scan import Title, scan_titles, watchstate_key
 from synclet.watchstate import (
     all_movie_watched,
@@ -61,6 +61,7 @@ def _lookup_watch[T](t: Title, table: dict[str, T]) -> T | None:
 
 def _build() -> list[TitleWithState]:
     invalidate_cache()  # force fresh watchstate read
+    expire_stale_watch_caches()  # and Plex-side counts, at most PLEX_CACHE_TTL old
     shows = all_show_aggregates()
     movies = all_movie_watched()
 
@@ -103,6 +104,11 @@ def get_state(force: bool = False) -> list[TitleWithState]:
     if force:
         maint_cache.invalidate(_STATE_KEY)
     return maint_cache.get_cached(_STATE_KEY, _build)
+
+
+def rebuild_pending() -> bool:
+    """True while the grid state awaits its background rebuild."""
+    return maint_cache.is_dirty(_STATE_KEY)
 
 
 def invalidate() -> None:
@@ -149,3 +155,4 @@ def register_builders() -> None:
     """
     maint_cache.register(_STATE_KEY, _build)
     maint_cache.register(_DISK_KEY, _disk_usage_build)
+    library.subscribe(invalidate)

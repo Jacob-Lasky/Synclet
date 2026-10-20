@@ -33,32 +33,43 @@ WATCHLIST_RSS = os.environ.get(
     "https://rss.plex.tv/f7c0b144-fc95-4a26-bbfe-1d29c2c78f15",
 )
 
-# library folder under MEDIA_ROOT -> (sync-folder under SYNC_ROOT, content kind, plex section id, display label)
+# library folder under MEDIA_ROOT -> (sync-folder under SYNC_ROOT, content kind,
+# plex section id, display label, arr env prefix or None; see arr_instance)
 LIBRARIES: dict[str, dict] = {
-    "tv": {"sync_sub": "tv", "kind": "show", "plex_section": 2, "label": "TV"},
+    "tv": {
+        "sync_sub": "tv",
+        "kind": "show",
+        "plex_section": 2,
+        "label": "TV",
+        "arr": "SONARR",
+    },
     "tv-4kUHD": {
         "sync_sub": "tv",
         "kind": "show",
         "plex_section": 12,
         "label": "TV 4K",
+        "arr": "SONARR_4K",
     },
     "movies": {
         "sync_sub": "movies",
         "kind": "movie",
         "plex_section": 1,
         "label": "Movies",
+        "arr": "RADARR",
     },
     "movies-4kUHD": {
         "sync_sub": "movies",
         "kind": "movie",
         "plex_section": 7,
         "label": "Movies 4K",
+        "arr": "RADARR_4K",
     },
     "YouTube": {
         "sync_sub": "youtube",
         "kind": "youtube",
         "plex_section": 6,
         "label": "YouTube",
+        "arr": None,
     },
 }
 
@@ -84,6 +95,25 @@ SUBTITLE_QUALIFIERS = {"forced", "sdh", "hi", "cc", "default", "full"}
 # blocks on a build.
 CACHE_DIRTY_REFRESH = int(os.environ.get("SYNCLET_CACHE_DIRTY_REFRESH", "3"))
 CACHE_FULL_REFRESH = int(os.environ.get("SYNCLET_CACHE_FULL_REFRESH", "300"))
+# A full pass slower than this is logged as a warning, naming the share as slow.
+CACHE_SLOW_PASS = int(os.environ.get("SYNCLET_CACHE_SLOW_PASS", "30"))
+
+# Source-library listing (see synclet.library). The full pass above does NOT
+# list MEDIA_ROOT: library roots are merged shfs directories that cost seconds
+# to minutes cold and stall Plex, Jellyfin and SMB while they run (Synclet#66).
+# Titles are updated one stat at a time from arr webhooks and Synclet's own
+# deletes; LIBRARY_RELIST is only the backstop for changes nothing reported.
+LIBRARY_LISTING_FILE = Path(
+    os.environ.get("SYNCLET_LIBRARY_LISTING_FILE", "/app/data/.library-listing.json"),
+)
+LIBRARY_RELIST_S = int(os.environ.get("SYNCLET_LIBRARY_RELIST", "21600"))
+LIBRARY_RETRY_S = int(os.environ.get("SYNCLET_LIBRARY_RETRY", "900"))
+LIBRARY_LIST_TIMEOUT_S = int(os.environ.get("SYNCLET_LIBRARY_LIST_TIMEOUT", "120"))
+LIBRARY_STAT_TIMEOUT_S = int(os.environ.get("SYNCLET_LIBRARY_STAT_TIMEOUT", "10"))
+# Per-title episode tree reuse by background builders (library.title_detail).
+# Arr webhooks invalidate a title at once; this bounds staleness for sources
+# without one (YouTube).
+TITLE_RESCAN_S = int(os.environ.get("SYNCLET_TITLE_RESCAN", "3600"))
 
 # Whether to run the background refresh loop + startup prewarm. On in
 # production. Tests set SYNCLET_CACHE_BACKGROUND_REFRESH=0 so no live timer
@@ -129,6 +159,27 @@ DELETE_KEY = os.environ.get("SYNCLET_DELETE_KEY", "")
 # new secrets do not get fallbacks.
 SYNCTHING_URL = os.environ.get("SYNCTHING_URL")
 SYNCTHING_API_KEY = os.environ.get("SYNCTHING_API_KEY")
+
+# Sonarr/Radarr per source library, so a source delete can ask the owning arr
+# to rescan just that series or movie (synclet.arr). Opt-in like Syncthing: no
+# committed defaults, and a library with no URL+key skips the rescan. The env
+# prefix per library lives in LIBRARIES[lib]["arr"].
+ARR_TIMEOUT_S = int(os.environ.get("SYNCLET_ARR_TIMEOUT", "10"))
+
+
+def arr_instance(lib: str) -> tuple[str, str, str] | None:
+    """(app, base_url, api_key) for the arr that owns `lib`, or None."""
+    info = LIBRARIES.get(lib) or {}
+    prefix = info.get("arr")
+    if not prefix:
+        return None
+    url = os.environ.get(f"SYNCLET_{prefix}_URL")
+    key = os.environ.get(f"SYNCLET_{prefix}_API_KEY")
+    if not url or not key:
+        return None
+    app = "sonarr" if info["kind"] == "show" else "radarr"
+    return app, url.rstrip("/"), key
+
 
 # Production: the Vite-built frontend (vite build -> dist/) ships inside the
 # backend image and is served by the same Litestar process at /. Set via env

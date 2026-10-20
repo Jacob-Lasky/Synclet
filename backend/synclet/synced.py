@@ -23,10 +23,10 @@ maint_cache.invalidate(); no new invalidation hooks needed.
 
 from __future__ import annotations
 
-from synclet import followed, maint_cache
+from synclet import followed, library, maint_cache
 from synclet.config import LIBRARIES
 from synclet.fs_helpers import iter_synced_titles, synced_title_stats
-from synclet.scan import clean_name, scan_title_detail
+from synclet.scan import clean_name
 from synclet.sync_ops import find_source_lib
 from synclet.watchstate import show_watch_map
 
@@ -70,9 +70,11 @@ def _build_local() -> list[dict]:
 def _build_enrichment() -> dict[tuple[str, str], list[dict]]:
     """Slow phase: {(lib, folder): new episodes} for show/youtube titles.
 
-    Per show: scan_title_detail (FS walk) + show_watch_map (WatchState SQLite
-    with a Plex per-episode fallback for sections WatchState does not index).
-    Runs only in the background loop, never under a user click.
+    Per show: the title's episode tree + show_watch_map (WatchState SQLite with
+    a Plex per-episode fallback for sections WatchState does not index). Runs
+    only in the background loop, never under a user click. The episode tree is
+    library.title_detail, reused until that title has an event, so a full pass
+    does not re-walk every followed show on the share (Synclet#66).
     """
     enrichment: dict[tuple[str, str], list[dict]] = {}
     targets = set(followed.get_followed())
@@ -82,7 +84,7 @@ def _build_enrichment() -> dict[tuple[str, str], list[dict]]:
             targets.add((source_lib, item.name))
     for source_lib, folder in targets:
         display = clean_name(folder)
-        detail = scan_title_detail(source_lib, folder)
+        detail = library.title_detail(source_lib, folder)
         if not detail:
             continue
         ws_map = show_watch_map(display, lib=source_lib, folder=folder)
@@ -99,6 +101,7 @@ def _build_enrichment() -> dict[tuple[str, str], list[dict]]:
         ]
         if new_eps:
             enrichment[source_lib, folder] = new_eps
+    library.retain_details(targets)
     return enrichment
 
 
@@ -156,4 +159,16 @@ def register_builders() -> None:
     """
     maint_cache.register(_LOCAL_KEY, _build_local)
     maint_cache.register(_ENRICH_KEY, _build_enrichment)
-    followed.register_presence_builder()
+    library.subscribe(_invalidate_local_and_enrichment)
+    followed.subscribe(_invalidate_enrichment)
+
+
+def _invalidate_enrichment() -> None:
+    """A follow changed: rebuild the new-episode badges in the background."""
+    maint_cache.invalidate(_ENRICH_KEY)
+
+
+def _invalidate_local_and_enrichment() -> None:
+    """A source title changed: its row's library/kind and its badges may too."""
+    maint_cache.invalidate(_LOCAL_KEY)
+    maint_cache.invalidate(_ENRICH_KEY)

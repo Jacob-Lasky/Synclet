@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mount, type VueWrapper } from "@vue/test-utils"
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils"
 import { nextTick } from "vue"
 
 // App.vue subscribes to a shared reactive store singleton. A mounted-and-never-
@@ -38,6 +38,8 @@ const {
     coverageMock,
     syncthingOverviewMock,
     syncedMock,
+    refreshMock,
+    libraryMock,
 } = vi.hoisted(() => ({
     stateMock: vi.fn(),
     countsMock: vi.fn(),
@@ -45,6 +47,8 @@ const {
     coverageMock: vi.fn(),
     syncthingOverviewMock: vi.fn(),
     syncedMock: vi.fn(),
+    refreshMock: vi.fn(),
+    libraryMock: vi.fn(),
 }))
 
 vi.mock("./api", () => ({
@@ -58,7 +62,8 @@ vi.mock("./api", () => ({
         // during mount; return safe empties so the grid render doesn't crash.
         artUrl: () => "",
         thumbUrl: () => "",
-        refresh: vi.fn().mockResolvedValue({ ok: true }),
+        refresh: refreshMock,
+        library: libraryMock,
         synced: syncedMock,
         title: vi.fn().mockResolvedValue(null),
         maintWatched: vi.fn().mockResolvedValue({ items: [] }),
@@ -262,5 +267,55 @@ describe("deleted catalog title overlay", () => {
         })
         await loadState(true)
         expect(store.titles).toHaveLength(1)
+    })
+})
+
+describe("Rescan button", () => {
+    it("reports done only after the background re-list and grid rebuild", async () => {
+        stateMock.mockResolvedValue({ titles: [], disk: null, libraries: [] })
+        countsMock.mockResolvedValue({
+            watched_titles: 0,
+            hanging_files: 0,
+            pending_items: 0,
+            total: 0,
+        })
+        watchlistMock.mockResolvedValue({ items: [] })
+        coverageMock.mockResolvedValue({ libraries: [] })
+        refreshMock.mockResolvedValue({ ok: true, requested_at: 1000 })
+        const lib = {
+            titles: 2,
+            failed_at: null,
+            age_s: 0,
+        }
+        libraryMock
+            .mockResolvedValueOnce({
+                relist_interval_s: 21600,
+                grid_pending: false,
+                libraries: { tv: { ...lib, listed_at: 10, listing: true } },
+            })
+            .mockResolvedValueOnce({
+                relist_interval_s: 21600,
+                grid_pending: false,
+                libraries: { tv: { ...lib, listed_at: 1001, listing: false } },
+            })
+        const { store } = await import("./store")
+        store.toasts.splice(0)
+        const { default: App } = await import("./App.vue")
+        const wrapper = track(mount(App))
+        await flushPromises()
+        stateMock.mockClear()
+
+        await wrapper.get('[aria-label="Rescan library"]').trigger("click")
+        await flushPromises()
+        expect(store.toasts.map((t) => t.text)).toEqual(["Rescanning library…"])
+        expect(stateMock).not.toHaveBeenCalled()
+
+        await new Promise((r) => setTimeout(r, 1100))
+        await flushPromises()
+        expect(libraryMock).toHaveBeenCalledTimes(2)
+        expect(stateMock).toHaveBeenCalledWith(true)
+        expect(store.toasts.map((t) => [t.kind, t.text])).toEqual([
+            ["success", "Library rescanned."],
+        ])
     })
 })
