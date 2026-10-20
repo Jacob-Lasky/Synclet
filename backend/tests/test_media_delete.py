@@ -555,13 +555,14 @@ def test_partial_delete_unmonitors_only_episodes_whose_video_went(
 def test_watched_movie_whose_video_survives_is_not_unmonitored(
     patch_paths, monkeypatch
 ):
-    """Subtitle deleted, video unlink failed: Radarr must keep the movie wanted."""
+    """Part 2 deleted, part 1's unlink failed: Radarr must keep the movie wanted."""
     folder = "1917 (2019) {tmdb-3}"
+    (patch_paths["media"] / "movies" / folder / "1917 - part2.mkv").write_bytes(b"\0")
     seen = _record_arr(monkeypatch)
     original_unlink = Path.unlink
 
     def fail_video(self, *args, **kwargs):
-        if self.suffix == ".mkv":
+        if self.name == "1917.mkv":  # deleted after part2 (name order)
             raise OSError(13, "Permission denied")
         return original_unlink(self, *args, **kwargs)
 
@@ -571,7 +572,7 @@ def test_watched_movie_whose_video_survives_is_not_unmonitored(
         "movies", folder, "movie", [], plan.fingerprint, unmonitor=True
     )
     assert result["error"]
-    assert result["source_deleted"] >= 1
+    assert "1917 - part2.mkv" in seen[0]["files"]  # part 2 did go
     assert seen[0]["unmonitor"] is False
 
 
