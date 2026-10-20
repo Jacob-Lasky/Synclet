@@ -55,7 +55,7 @@ Synclet does not list the library folders on a timer. On Unraid each library roo
 
 Sources with no arr (YouTube) get new channels at the next backstop or Rescan. New episodes inside a followed YouTube channel are picked up within one to two `SYNCLET_TITLE_RESCAN` intervals (default 1 hour): each title's limit is stretched by a stable amount so the rescans spread out instead of every followed channel being walked in the same pass.
 
-After deleting source media, Synclet asks the owning arr to rescan just that series or movie (`RescanSeries` / `RescanMovie`), so the arr does not need a periodic full-disk rescan to notice. Configure one URL and API key per library in the gitignored `.env`: `SYNCLET_SONARR_URL` / `SYNCLET_SONARR_API_KEY` (TV), `SYNCLET_SONARR_4K_*` (TV 4K), `SYNCLET_RADARR_*` (Movies) and `SYNCLET_RADARR_4K_*` (Movies 4K). A library with no URL and key skips the rescan. `POST /api/arr/rescan` with `{"lib", "folder"}` runs the same rescan on demand.
+After deleting source media, Synclet asks the owning arr to rescan just that series or movie (`RescanSeries` / `RescanMovie`), so the arr does not need a periodic full-disk rescan to notice. Configure one URL and API key per library in the gitignored `.env`: `SYNCLET_SONARR_URL` / `SYNCLET_SONARR_API_KEY` (TV), `SYNCLET_SONARR_4K_*` (TV 4K), `SYNCLET_RADARR_*` (Movies) and `SYNCLET_RADARR_4K_*` (Movies 4K). A library with no URL and key skips the rescan. Point those URLs at the host's LAN IP (or the docker bridge gateway), not `host.docker.internal`: Sonarr and Radarr reject that Host header with `400 Bad Request`, so every rescan would fail. `POST /api/arr/rescan` with `{"lib", "folder"}` runs the same rescan on demand.
 
 ## Permanent media deletion
 
