@@ -117,6 +117,22 @@ export interface MediaDeletePreview {
     fingerprint: string
 }
 
+// GET /api/library: the source-library listing (backend synclet/library.py).
+// listed_at / failed_at are epoch seconds on the server clock.
+export interface LibraryListingStatus {
+    titles: number | null
+    listed_at: number | null
+    failed_at: number | null
+    age_s: number | null
+    listing: boolean
+}
+
+export interface LibraryStatus {
+    relist_interval_s: number
+    libraries: Record<string, LibraryListingStatus>
+    grid_pending: boolean
+}
+
 export interface MediaDeleteResult {
     source_deleted: number
     offline_deleted: number

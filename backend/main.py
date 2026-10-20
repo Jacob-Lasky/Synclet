@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hmac
+import time
 from pathlib import Path
 
 from litestar import Litestar, MediaType, Request, Response, get, post
@@ -553,14 +554,20 @@ async def api_refresh() -> dict:
     """
     invalidate()
     maint_cache.invalidate()
+    requested_at = time.time()
     library.request_relist()
-    return {"ok": True}
+    return {"ok": True, "requested_at": requested_at}
 
 
 @get("/api/library")
 async def api_library() -> dict:
-    """Library listing ages and title counts (see synclet.library). In-memory."""
-    return library.status()
+    """Library listing times and title counts (see synclet.library). In-memory.
+
+    `grid_pending` says the grid state still awaits its background rebuild, so
+    the refresh button can wait for the re-list AND the grid before it reports
+    done.
+    """
+    return {**library.status(), "grid_pending": state.rebuild_pending()}
 
 
 @post("/api/arr/webhook")

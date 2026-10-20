@@ -53,7 +53,12 @@ def test_two_phase_list_first_then_enrichment(
     # mtime rides the same local phase: a synced file exists, so it is positive.
     assert al["mtime"] > 0
 
-    # The background loop builds the enrichment phase.
+    # The background loop builds the enrichment phase. First boot's other
+    # library listings land in the background and flag a rebuild when they do,
+    # so let them finish first (production simply re-polls).
+    from synclet import library
+
+    assert library.wait_for_listings(5)
     maint_cache.run_refresh_cycle(full=True)
     enriched = synced.get_synced()
     assert enriched["enriched"] is True
@@ -192,3 +197,17 @@ def test_follow_bootstrap_skips_ambiguous_tv_and_4k_source(patch_paths):
 
     assert ("tv", folder) not in followed.get_followed()
     assert ("tv-4kUHD", folder) not in followed.get_followed()
+
+
+def test_library_event_rebuilds_the_synced_rows(patch_paths, patch_watchstate):
+    """A webhook that adds a synced title's source fixes its lib/kind promptly."""
+    from synclet import library
+
+    synced.register_builders()
+    library.folders("tv")
+    assert library.wait_for_listings(5)
+    synced.get_synced()
+    assert not maint_cache.is_dirty("synced_local")
+    library.note_title("tv", "After Life (2019) {tvdb-2}")
+    assert maint_cache.is_dirty("synced_local")
+    assert maint_cache.is_dirty("synced_enrichment")

@@ -5,6 +5,7 @@ renamed or its shape changes, the contract breaks here loudly instead of
 in the user's browser silently.
 """
 
+import time
 from typing import cast
 from urllib.parse import quote
 
@@ -785,9 +786,13 @@ class TestMaintenanceWatchedAndHanging:
 
 class TestRefreshRoute:
     def test_invalidates_and_returns_ok(self, client):
+        before = time.time()
         r = client.post("/api/refresh", json={})
         assert r.status_code == 201
-        assert r.json() == {"ok": True}
+        body = r.json()
+        assert body["ok"] is True
+        # Server-clock stamp the refresh button compares listed_at against.
+        assert before <= body["requested_at"] <= time.time()
 
     def test_flags_all_caches_dirty_keeping_last_good(self, client):
         """/api/refresh flags every cache for background rebuild without

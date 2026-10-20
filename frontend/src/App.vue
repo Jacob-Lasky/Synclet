@@ -20,6 +20,8 @@ import {
     loadWatchlistCount,
     pushToast,
     store,
+    updateToast,
+    waitForRelist,
 } from "./store"
 
 const showPaste = ref(false)
@@ -60,12 +62,22 @@ const counts = computed(() => ({
 }))
 
 async function refresh(): Promise<void> {
+    const toastId = pushToast({ kind: "info", text: "Rescanning library…" })
     try {
-        await api.refresh()
+        const { requested_at } = await api.refresh()
+        const settled = await waitForRelist(requested_at)
         await loadState(true)
-        pushToast({ kind: "success", text: "Library rescanned." })
+        updateToast(
+            toastId,
+            settled
+                ? { kind: "success", text: "Library rescanned." }
+                : {
+                      kind: "info",
+                      text: "Library rescan is still running. Refresh again in a minute to see it.",
+                  }
+        )
     } catch (e) {
-        pushToast({ kind: "error", text: (e as Error).message })
+        updateToast(toastId, { kind: "error", text: (e as Error).message })
     }
 }
 

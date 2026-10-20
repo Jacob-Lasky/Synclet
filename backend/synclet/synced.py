@@ -159,10 +159,16 @@ def register_builders() -> None:
     """
     maint_cache.register(_LOCAL_KEY, _build_local)
     maint_cache.register(_ENRICH_KEY, _build_enrichment)
-    library.subscribe(_invalidate_enrichment)
+    library.subscribe(_invalidate_local_and_enrichment)
     followed.subscribe(_invalidate_enrichment)
 
 
 def _invalidate_enrichment() -> None:
-    """A title or follow changed: rebuild the new-episode badges in the background."""
+    """A follow changed: rebuild the new-episode badges in the background."""
+    maint_cache.invalidate(_ENRICH_KEY)
+
+
+def _invalidate_local_and_enrichment() -> None:
+    """A source title changed: its row's library/kind and its badges may too."""
+    maint_cache.invalidate(_LOCAL_KEY)
     maint_cache.invalidate(_ENRICH_KEY)

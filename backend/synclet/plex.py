@@ -265,11 +265,11 @@ def section_index(section_id: int) -> dict[str, dict]:
     under-tracked 4K sections); see synclet.watchstate.
 
     Cache layers, cheapest first:
-      1. @lru_cache (this decorator) — in-process, emptied by
+      1. @lru_cache (this decorator): in-process, emptied by
          expire_stale_watch_caches once PLEX_CACHE_TTL_S old, and on scrobble.
-      2. PLEX_CACHE_FILE — disk JSON, survives container restart, 1h TTL.
-      3. Plex network — on full miss.
-      4. PLEX_CACHE_FILE past its TTL — last-good fallback when the network
+      2. PLEX_CACHE_FILE: disk JSON, survives container restart, 1h TTL.
+      3. Plex network: on full miss.
+      4. PLEX_CACHE_FILE past its TTL: last-good fallback when the network
          fetch fails, so a transient Plex outage serves the previous index
          instead of blanking the library.
 

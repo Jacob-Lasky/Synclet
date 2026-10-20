@@ -68,7 +68,8 @@ def _find_item_id(app: str, base: str, key: str, lib: str, folder: str) -> int |
     Tries the external-ID filter first (one small response), then the full
     collection. Either way library and folder must both match, so a 4K and a
     1080p copy of one title never resolve to each other and a mis-tagged
-    folder is never rescanned under another title.
+    folder is never rescanned under another title. More than one match is
+    ambiguous and returns None.
     """
     collection = f"/api/v3/{_COLLECTION[app]}"
     scheme, param = _ID_FILTER[app]
@@ -81,10 +82,15 @@ def _find_item_id(app: str, base: str, key: str, lib: str, folder: str) -> int |
     if not any(_item_ref(c) == want for c in candidates):
         found = _request(base, key, collection)
         candidates = found if isinstance(found, list) else []
-    for item in candidates:
-        if _item_ref(item) == want and isinstance(item.get("id"), int):
-            return item["id"]
-    return None
+    ids = {
+        item["id"]
+        for item in candidates
+        if _item_ref(item) == want and isinstance(item.get("id"), int)
+    }
+    # Two arr items ending in the same library/folder (two root folders with the
+    # same layout) cannot be told apart from Synclet's side. Rescan neither
+    # rather than guess.
+    return ids.pop() if len(ids) == 1 else None
 
 
 def rescan_title(lib: str, folder: str) -> dict:

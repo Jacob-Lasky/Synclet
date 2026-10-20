@@ -6,6 +6,7 @@ import type {
     DiskUsage,
     Job,
     LibraryInfo,
+    LibraryStatus,
     Tab,
     Title,
 } from "./types"
@@ -345,6 +346,36 @@ export function trackJob(jobId: string, label: JobLabel): void {
             setTimeout(() => dismissToast(toastId), 4500)
         }
     })()
+}
+
+// The Refresh button's library re-list runs in the background, one library at
+// a time: the backend never lists a library on the request path (Synclet#66).
+// Wait until every library has listed, or failed, since the click and the grid
+// has rebuilt, so "Library rescanned" is true when it is shown.
+export const RELIST_POLL_MS = 1000
+export const RELIST_WAIT_MS = 180_000
+
+export function relistSettled(
+    status: LibraryStatus,
+    requestedAt: number
+): boolean {
+    return (
+        !status.grid_pending &&
+        Object.values(status.libraries).every(
+            (lib) =>
+                !lib.listing &&
+                Math.max(lib.listed_at ?? 0, lib.failed_at ?? 0) >= requestedAt
+        )
+    )
+}
+
+export async function waitForRelist(requestedAt: number): Promise<boolean> {
+    const deadline = Date.now() + RELIST_WAIT_MS
+    while (Date.now() < deadline) {
+        if (relistSettled(await api.library(), requestedAt)) return true
+        await sleep(RELIST_POLL_MS)
+    }
+    return false
 }
 
 function sleep(ms: number): Promise<void> {

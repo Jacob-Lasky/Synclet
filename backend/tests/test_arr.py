@@ -143,3 +143,21 @@ def test_rescan_skips_unconfigured_library(monkeypatch):
 )
 def test_title_from_webhook(payload, expected):
     assert arr.title_from_webhook(payload) == expected
+
+
+def test_two_items_with_the_same_library_folder_are_ambiguous(sonarr_env, monkeypatch):
+    _fake_arr(
+        monkeypatch,
+        {
+            "GET /api/v3/series": [
+                {"id": 1, "path": "/archive/tv/Some Channel"},
+                {"id": 2, "path": "/data/media/tv/Some Channel"},
+            ]
+        },
+    )
+    out = arr.rescan_title("tv", "Some Channel")
+    assert out == {
+        "requested": False,
+        "app": "sonarr",
+        "reason": "title not found in arr",
+    }

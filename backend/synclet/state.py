@@ -106,6 +106,11 @@ def get_state(force: bool = False) -> list[TitleWithState]:
     return maint_cache.get_cached(_STATE_KEY, _build)
 
 
+def rebuild_pending() -> bool:
+    """True while the grid state awaits its background rebuild."""
+    return maint_cache.is_dirty(_STATE_KEY)
+
+
 def invalidate() -> None:
     """Flag the grid state (and its watchstate inputs) for background rebuild."""
     maint_cache.invalidate(_STATE_KEY)
