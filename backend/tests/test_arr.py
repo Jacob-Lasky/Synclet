@@ -329,6 +329,9 @@ def test_failed_unmonitor_skips_the_rescan(sonarr_env, monkeypatch):
         {
             "GET /api/v3/series": [{"id": 7, "path": f"/data/media/tv/{BCS}"}],
             "GET /api/v3/episode": urllib.error.URLError("timed out"),
+            # Routed so a regression shows up as the assertion below, not a
+            # KeyError from the fake.
+            "POST /api/v3/command": {"id": 99},
         },
     )
     out = arr.after_source_delete("tv", BCS, unmonitor=True, files={E1: {(1, 1)}})
