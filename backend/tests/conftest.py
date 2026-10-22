@@ -237,6 +237,7 @@ def patch_paths(
     # Job registry and refresh backoff are process-wide; start each test empty.
     sync_ops._JOBS.clear()
     sync_ops._FOLDER_LOCKS.clear()
+    sync_ops._FOLDER_USERS.clear()
     refresh._failed_at.clear()
     yield media_tree
     maint_cache.clear()

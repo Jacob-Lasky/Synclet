@@ -423,7 +423,9 @@ def test_delete_refuses_active_copy(patch_paths, monkeypatch):
     folder = "1917 (2019) {tmdb-3}"
     movie = patch_paths["media"] / "movies" / folder / "1917.mkv"
     plan = media_delete.plan_selection("movies", folder, "movie", [])
-    monkeypatch.setattr(sync_ops, "active_jobs_for_folder", lambda folder: [object()])
+    monkeypatch.setattr(
+        sync_ops, "active_jobs_on_folder", lambda lib, folder: [object()]
+    )
 
     with pytest.raises(ValueError, match="active sync job"):
         media_delete.delete_selection("movies", folder, "movie", [], plan.fingerprint)

@@ -42,6 +42,7 @@ network). Every refresh logs what it copies.
 from __future__ import annotations
 
 import asyncio
+import re
 import stat
 import time
 from collections.abc import Callable
@@ -73,13 +74,15 @@ REFRESH_EVENTS = frozenset({"Download", "Rename", "ImportComplete"})
 _MEDIA_EXTS = VIDEO_EXTS | SUBTITLE_EXTS
 _MOVIE = "movie"
 _STALE_KEY = "stale"
-# A library file counts as newer than its synced copy only past this margin.
-# Copies keep the library mtime (shutil.copy2), so equal files compare equal;
-# the margin absorbs filesystems that keep mtimes at coarser precision. DO NOT
-# compare mtimes for plain inequality: a copy made by something that did not
-# keep the mtime would then be re-copied for nothing, and only a NEWER library
-# file means its bytes may have changed under the same name and size.
-_MTIME_SLACK_S = 1.0
+# Change detection compares size, then mtime in nanoseconds: copies keep the
+# library mtime (shutil.copy2), measured ns-exact on every same-name pair on
+# Tower (275 of 275, 2026-10-22), so a library file with a NEWER mtime may have
+# new bytes under the same name and size. DO NOT compare for plain inequality:
+# a copy made by something that did not keep the mtime would be re-copied for
+# nothing. A rewrite that keeps both size and mtime is invisible without
+# hashing every file, which a background pass over the share cannot afford.
+# Matches a 4K release name. Arr naming puts the resolution in every file name.
+_UHD = re.compile(r"2160p|\b4k\b|\buhd\b", re.IGNORECASE)
 # synced folder -> when its last refresh failed. The background pass leaves such
 # a title alone for REFRESH_RETRY_S: a copy that keeps failing (a full disk)
 # must not be retried as a multi-gigabyte copy on every pass. Webhooks and the
@@ -111,9 +114,13 @@ class RefreshPlan:
         return bool(self.copies or self.removals)
 
     @property
+    def lib(self) -> str:
+        """The library to name jobs after: the first owner, else any sharing."""
+        return (self.libs or config.libs_for_sync_sub(self.sync_sub))[0]
+
+    @property
     def job_title(self) -> str:
-        libs = self.libs or config.libs_for_sync_sub(self.sync_sub)
-        return sync_ops.job_title(libs[0], self.folder)
+        return sync_ops.job_title(self.lib, self.folder)
 
     def to_dict(self) -> dict:
         return {
@@ -155,17 +162,21 @@ def _source_items(detail: TitleDetail) -> dict[str, list[Path]]:
     return out
 
 
-def _file_stat(path: Path) -> tuple[int, float] | None:
-    """(size, mtime) of a regular file; None if missing or not a regular file."""
+def _file_stat(path: Path) -> tuple[int, int] | None:
+    """(size, mtime_ns) of a regular file; None if missing or not a regular file."""
     try:
         st = path.stat()
     except FileNotFoundError:
         return None
-    return (st.st_size, st.st_mtime) if stat.S_ISREG(st.st_mode) else None
+    return (st.st_size, st.st_mtime_ns) if stat.S_ISREG(st.st_mode) else None
 
 
 def _owner(
-    item: str, synced_videos: set[str], sources: dict[str, dict[str, list[Path]]]
+    item: str,
+    synced_videos: set[str],
+    sources: dict[str, dict[str, list[Path]]],
+    *,
+    shared: bool,
 ) -> tuple[str | None, str]:
     """(library this synced item came from, why not when None).
 
@@ -176,8 +187,10 @@ def _owner(
     video for this item count. With two, the owner is the one holding a file by
     a synced VIDEO's name (subtitles are named alike across releases, so they
     prove nothing); if an upgrade renamed it, the item is left alone. With one,
-    it is the owner: a name match cannot be required there, because an upgrade
-    renames the file.
+    it is the owner, since an upgrade renames the file and a name match cannot
+    be required, unless the folder is `shared` and the synced video and the
+    library's differ in being 4K: then the synced copy came from the other
+    library, whose file is gone, and it is kept as the offline copy.
     """
     candidates = [
         lib
@@ -187,7 +200,19 @@ def _owner(
     if not candidates:
         return None, "no library video; offline copy kept"
     if len(candidates) == 1:
-        return candidates[0], ""
+        lib = candidates[0]
+        source_videos = [p.name for p in sources[lib][item] if _is_video(p)]
+        if (
+            shared
+            and not synced_videos & set(source_videos)
+            and {bool(_UHD.search(n)) for n in synced_videos}
+            != {bool(_UHD.search(n)) for n in source_videos}
+        ):
+            return None, (
+                f"synced copy and {lib} differ in 4K; the library it came "
+                "from no longer has it, offline copy kept"
+            )
+        return lib, ""
     by_name = [
         lib
         for lib in candidates
@@ -201,13 +226,11 @@ def _owner(
     )
 
 
-def _synced_items(sync_sub: str, folder: str) -> dict[Path, list[str]]:
+def _synced_items(lib: str, folder: str, *, movie: bool) -> dict[Path, list[str]]:
     """{synced video or subtitle: the items it holds}, for items with a video."""
-    libs = config.libs_for_sync_sub(sync_sub)
-    movie = LIBRARIES[libs[0]]["kind"] == "movie"
     synced = {
         f: items
-        for f in sync_ops.synced_title_files(libs[0], folder)
+        for f in sync_ops.synced_title_files(lib, folder)
         if f.suffix.lower() in _MEDIA_EXTS
         if (items := _items_of(f.name, movie=movie))
     }
@@ -224,7 +247,8 @@ def _plan(
     libs = config.libs_for_sync_sub(sync_sub)
     if not libs or not library.valid_folder(libs[0], folder):
         return plan
-    synced = _synced_items(sync_sub, folder)
+    movie = LIBRARIES[libs[0]]["kind"] == "movie"
+    synced = _synced_items(libs[0], folder, movie=movie)
     if not synced:
         return plan
     items = sorted({i for its in synced.values() for i in its})
@@ -243,11 +267,25 @@ def _plan(
     skipped: dict[str, str] = {}
     for item in items:
         videos = {f.name for f, its in synced.items() if item in its and _is_video(f)}
-        lib, why = _owner(item, videos, sources)
+        lib, why = _owner(item, videos, sources, shared=len(libs) > 1)
         if lib is None:
             skipped[item] = why
             continue
-        src_stats: dict[Path, tuple[int, float]] = {}
+        extra = {
+            other
+            for p in sources[lib][item]
+            for other in _items_of(p.name, movie=movie)
+            if other not in items
+        }
+        if extra:
+            # The library merged this episode into a file with others the user
+            # did not sync (S01E02 is now S01E01E02); copying it would add them.
+            skipped[item] = (
+                f"library file also holds {', '.join(sorted(extra))}, "
+                "which is not synced"
+            )
+            continue
+        src_stats: dict[Path, tuple[int, int]] = {}
         for src in sources[lib][item]:
             st = _file_stat(src)
             if st is None:
@@ -258,11 +296,10 @@ def _plan(
             src_stats[src] = st
         if item in skipped:
             continue
-        newest = max(mtime for _size, mtime in src_stats.values())
-        if 0 <= now - newest < settle_s:
+        age = now - max(mtime for _size, mtime in src_stats.values()) / 1e9
+        if 0 <= age < settle_s:
             skipped[item] = (
-                f"library file changed {int(now - newest)}s ago; "
-                "waiting for it to settle"
+                f"library file changed {int(age)}s ago; waiting for it to settle"
             )
             continue
         if lib not in plan.libs:
@@ -271,7 +308,7 @@ def _plan(
             dst = sync_ops.sync_dest(src, lib)
             wanted.add(dst)
             have = _file_stat(dst)
-            if have is None or have[0] != size or mtime > have[1] + _MTIME_SLACK_S:
+            if have is None or have[0] != size or mtime > have[1]:
                 copies.setdefault(
                     dst,
                     {
@@ -428,7 +465,7 @@ def start_refresh(plan: RefreshPlan, *, settle_s: float = 0) -> sync_ops.Job | N
     """
     if not plan.needed:
         return None
-    for job in sync_ops.active_jobs_for_folder(plan.folder):
+    for job in sync_ops.active_jobs_on_folder(plan.lib, plan.folder):
         if job.op == "refresh" and job.status == "queued":
             return job
     job = sync_ops.new_job("refresh", plan.job_title, plan.copies)

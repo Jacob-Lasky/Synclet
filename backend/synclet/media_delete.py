@@ -459,7 +459,7 @@ def delete_selection(
     plan = plan_selection(lib, folder, selection_type, episodes)
     if plan.fingerprint != fingerprint:
         raise ValueError("media changed since preview; preview again")
-    if sync_ops.active_jobs_for_folder(folder):
+    if sync_ops.active_jobs_on_folder(lib, folder):
         raise ValueError("wait for the active sync job before deleting media")
     source_root = _title_root(lib, folder)
     offline_root = config.SYNC_ROOT / config.LIBRARIES[lib]["sync_sub"] / folder

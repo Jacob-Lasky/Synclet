@@ -287,7 +287,7 @@ async def api_sync(data: SyncRequest) -> dict:
     # resolve_selection does a full title scan (FS walk); offload it. start_sync
     # stays on the event loop because it calls asyncio.create_task to spawn the
     # background job, which requires a running loop in the current thread.
-    pairs = await asyncio.to_thread(
+    resolve = functools.partial(
         sync_ops.resolve_selection,
         data.lib,
         data.folder,
@@ -296,6 +296,7 @@ async def api_sync(data: SyncRequest) -> dict:
         episodes=data.episodes,
         unwatched_only=data.unwatched_only,
     )
+    pairs = await asyncio.to_thread(resolve)
     if not pairs:
         return {"error": "no files matched", "job_id": None}
     if config.LIBRARIES.get(data.lib, {}).get("kind") in ("show", "youtube"):
@@ -303,7 +304,9 @@ async def api_sync(data: SyncRequest) -> dict:
         # that intent even after the last offline copy is later removed.
         await asyncio.to_thread(followed.set_following, data.lib, data.folder, True)
     items = await asyncio.to_thread(sync_ops.sync_items, pairs)
-    job = sync_ops.start_sync(items, title=sync_ops.job_title(data.lib, data.folder))
+    job = sync_ops.start_sync(
+        items, title=sync_ops.job_title(data.lib, data.folder), resolve=resolve
+    )
     return {
         "job_id": job.id,
         "total_files": job.total_files,
@@ -327,7 +330,9 @@ async def api_unsync(data: SyncRequest) -> dict:
         episodes=data.episodes,
     )
     items = await asyncio.to_thread(lambda: sync_ops.unsync_items(resolve()))
-    if not items:
+    # Nothing synced yet, but a queued or running sync may be about to land
+    # some: queue behind it (the job re-selects) instead of dropping the request.
+    if not items and not sync_ops.active_jobs_on_folder(data.lib, data.folder):
         return {"error": "no files matched", "job_id": None}
     job = sync_ops.start_unsync(
         items, title=sync_ops.job_title(data.lib, data.folder), resolve=resolve
@@ -408,15 +413,18 @@ async def api_media_delete(
 ) -> dict | Response:
     _require_delete_key(request)
     try:
-        result = await asyncio.to_thread(
-            media_delete.delete_selection,
-            data.lib,
-            data.folder,
-            data.selection_type,
-            data.episodes or [],
-            data.fingerprint,
-            unmonitor=data.unmonitor,
-        )
+        # Hold the synced folder so no sync, unsync or refresh job can start
+        # between delete_selection's active-job check and its deletes.
+        async with sync_ops.folder_lock(data.lib, data.folder):
+            result = await asyncio.to_thread(
+                media_delete.delete_selection,
+                data.lib,
+                data.folder,
+                data.selection_type,
+                data.episodes or [],
+                data.fingerprint,
+                unmonitor=data.unmonitor,
+            )
         if result["error"]:
             return Response(content=result, status_code=207, media_type=MediaType.JSON)
         return result

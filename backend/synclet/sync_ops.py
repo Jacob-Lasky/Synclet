@@ -14,7 +14,7 @@ import contextlib
 import re
 import time
 import uuid
-from collections.abc import Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import Any
@@ -89,8 +89,14 @@ def job_title(lib: str, folder: str) -> str:
     return f"{lib}/{folder}"
 
 
-def _job_folder(title: str) -> str:
-    return title.rpartition("/")[2]
+def _folder_key(title: str) -> str:
+    """The synced folder a job title works on, as `<sync_sub>/<folder>`.
+
+    Libraries sharing a sync folder (tv and tv-4kUHD) map to one key; the same
+    folder name under different sync folders (movies/X, youtube/X) does not.
+    """
+    lib, _, folder = title.rpartition("/")
+    return f"{LIBRARIES.get(lib, {}).get('sync_sub', lib)}/{folder}"
 
 
 def set_items(job: Job, items: list[dict]) -> None:
@@ -108,21 +114,48 @@ def new_job(op: str, title: str, items: list[dict]) -> Job:
     return job
 
 
-# folder -> lock held by the one job working on that synced folder. Sync,
-# unsync and refresh jobs on the same folder run one after another: a refresh
-# removes files an unsync is about to target and copies files back that an
-# unsync just removed, so letting them overlap loses either the refresh or the
-# unsync. Keyed by folder, not library, because tv and tv-4kUHD (movies and
-# movies-4kUHD) share one synced folder per title.
+# synced folder (_folder_key) -> lock held by the one operation working on it,
+# and how many operations hold or wait for it. Sync, unsync and refresh jobs and
+# source media deletes on the same synced folder run one after another: a
+# refresh removes files an unsync is about to target and copies files back that
+# an unsync or a delete just removed, so letting them overlap loses one of
+# them. A lock is dropped once nobody holds or waits for it, so the map stays
+# small and no lock outlives the event loop it was used on.
 _FOLDER_LOCKS: dict[str, asyncio.Lock] = {}
+_FOLDER_USERS: dict[str, int] = {}
+
+
+@contextlib.asynccontextmanager
+async def _held(key: str) -> AsyncIterator[None]:
+    lock = _FOLDER_LOCKS.setdefault(key, asyncio.Lock())
+    _FOLDER_USERS[key] = _FOLDER_USERS.get(key, 0) + 1
+    try:
+        async with lock:
+            yield
+    finally:
+        _FOLDER_USERS[key] -= 1
+        if not _FOLDER_USERS[key]:
+            del _FOLDER_USERS[key], _FOLDER_LOCKS[key]
+
+
+def folder_lock(lib: str, folder: str) -> contextlib.AbstractAsyncContextManager[None]:
+    """Hold the synced folder of `lib/folder` against every job (see _held)."""
+    return _held(_folder_key(job_title(lib, folder)))
 
 
 async def _run_locked(
     job: Job, run: Callable[[Job], Coroutine[Any, Any, None]]
 ) -> None:
-    lock = _FOLDER_LOCKS.setdefault(_job_folder(job.title), asyncio.Lock())
-    async with lock:
-        await run(job)
+    try:
+        async with _held(_folder_key(job.title)):
+            await run(job)
+    except Exception as exc:
+        # The runners record their own failures; this catches one before the
+        # runner started (taking the lock), so the job never sits "queued".
+        if job.status in ("queued", "running"):
+            job.status = "error"
+            job.error = str(exc)
+            job.ended_at = time.time()
 
 
 def launch(job: Job, run: Callable[[Job], Coroutine[Any, Any, None]]) -> Job:
@@ -149,13 +182,14 @@ def active_jobs() -> list[Job]:
     return [job for job in _JOBS.values() if job.status in ("queued", "running")]
 
 
-def active_jobs_for_folder(folder: str) -> list[Job]:
-    """Active jobs on `folder`, in any library sharing its sync folder.
+def active_jobs_on_folder(lib: str, folder: str) -> list[Job]:
+    """Active jobs on the synced folder of `lib/folder`, from any library sharing it.
 
-    Source deletion refuses while one runs, and a refresh joins a queued one
-    instead of queueing another.
+    Source deletion refuses while one is queued, unsync queues behind one
+    instead of reporting nothing to remove, and a refresh joins a queued one.
     """
-    return [job for job in active_jobs() if _job_folder(job.title) == folder]
+    key = _folder_key(job_title(lib, folder))
+    return [job for job in active_jobs() if _folder_key(job.title) == key]
 
 
 # ── Selector → file pairs ─────────────────────────────────────────────────────
@@ -316,10 +350,16 @@ def resolve_unsync_selection(
 # ── Job execution ─────────────────────────────────────────────────────────────
 
 
-async def _run_sync(job: Job) -> None:
+async def _run_sync(
+    job: Job, resolve: Callable[[], list[tuple[Path, Path]]] | None
+) -> None:
     job.status = "running"
     job.started_at = time.time()
     try:
+        if resolve is not None:
+            # Re-select under the folder lock: an unsync or refresh that ran
+            # while this job was queued changed what is already synced.
+            set_items(job, await asyncio.to_thread(lambda: sync_items(resolve())))
         for item in job.items:
             src = Path(item["src"])
             dst = Path(item["dst"])
@@ -426,9 +466,17 @@ def sync_items(pairs: list[tuple[Path, Path]]) -> list[dict]:
     return items
 
 
-def start_sync(items: list[dict], title: str = "") -> Job:
-    """Copy `items` (from sync_items) in the background. Call on the event loop."""
-    return launch(new_job("sync", title, items), _run_sync)
+def start_sync(
+    items: list[dict],
+    title: str = "",
+    resolve: Callable[[], list[tuple[Path, Path]]] | None = None,
+) -> Job:
+    """Copy `items` (from sync_items) in the background. Call on the event loop.
+
+    `resolve` re-selects the (src, dst) pairs once the job holds its folder;
+    without it the job copies `items` as given.
+    """
+    return launch(new_job("sync", title, items), lambda j: _run_sync(j, resolve))
 
 
 def unsync_items(targets: list[Path]) -> list[dict]:

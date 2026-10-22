@@ -565,3 +565,137 @@ class TestEdges:
         maint_cache.run_refresh_cycle(full=True)
         refresh._failed_at[MOVIE] = time.time()
         assert await refresh.start_due_refreshes() == []
+
+
+class TestSecondReviewRound:
+    def test_4k_copy_is_not_refreshed_from_the_hd_library(self, patch_paths):
+        """The 4K library dropped the title; HD has it. Keep the 4K copy."""
+        from synclet.refresh import plan_refresh
+
+        synced = patch_paths["sync"] / "movies" / MOVIE
+        _write(synced / "1917 [Remux-2160p].mkv", 100)
+        plan = plan_refresh("movies", MOVIE)
+        assert not plan.needed
+        assert "differ in 4K" in plan.skipped[0]["reason"]
+
+    def test_combined_library_file_with_an_unsynced_episode_is_skipped(
+        self, patch_paths
+    ):
+        from synclet.refresh import plan_refresh
+
+        season = patch_paths["media"] / "tv" / SHOW / "Season 01"
+        (season / BCS_E01).unlink()
+        (season / BCS_E02).rename(season / "Better Call Saul - S01E01E02.mkv")
+        synced = patch_paths["sync"] / "tv" / SHOW / "Season 01"
+        _write(synced / "Better Call Saul - S01E02 - Mijo [HDTV].mkv", 10)
+        plan = plan_refresh("tv", SHOW)
+        assert not plan.needed
+        assert plan.skipped == [
+            {
+                "item": "S01E02",
+                "reason": "library file also holds S01E01, which is not synced",
+            }
+        ]
+
+    def test_sub_second_newer_library_mtime_is_a_change(
+        self, current_movie, patch_paths
+    ):
+        from synclet.refresh import plan_refresh
+
+        src = patch_paths["media"] / "movies" / MOVIE / "1917.mkv"
+        st = src.stat()
+        os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns + 500_000_000))
+        copies = plan_refresh("movies", MOVIE).copies
+        assert [Path(c["dst"]).name for c in copies] == ["1917.mkv"]
+
+
+class TestFolderLock:
+    def test_lock_key_is_the_synced_folder(self):
+        from synclet.sync_ops import _folder_key
+
+        assert _folder_key("tv/X") == _folder_key("tv-4kUHD/X") == "tv/X"
+        assert _folder_key("movies/X") != _folder_key("YouTube/X")
+
+    @pytest.mark.asyncio
+    async def test_sync_queued_behind_unsync_reselects(self, patch_paths):
+        from synclet import sync_ops
+
+        folder = "After Life (2019) {tvdb-2}"
+        synced = patch_paths["sync"] / "tv" / folder / "Season 01"
+        title = sync_ops.job_title("tv", folder)
+        resolve = lambda: sync_ops.resolve_selection(  # noqa: E731
+            "tv", folder, selection_type="all"
+        )
+        unsync = sync_ops.start_unsync(
+            sync_ops.unsync_items(sync_ops.synced_title_files("tv", folder)), title
+        )
+        # Built now, the sync has nothing to copy: the file is still there.
+        sync = sync_ops.start_sync(
+            sync_ops.sync_items(resolve()), title, resolve=resolve
+        )
+        assert sync.total_files == 0
+        await _drain()
+        assert (unsync.status, sync.status) == ("done", "done")
+        assert (synced / "After Life - S01E01 - Episode 1.mkv").exists()
+        assert sync_ops._FOLDER_LOCKS == {}  # idle locks are dropped
+
+    @pytest.mark.asyncio
+    async def test_failure_before_the_runner_marks_the_job_failed(
+        self, patch_paths, monkeypatch
+    ):
+        from synclet import sync_ops
+
+        def broken(key):
+            raise RuntimeError("lock bound to another loop")
+
+        monkeypatch.setattr(sync_ops, "_held", broken)
+        job = sync_ops.start_sync([], "tv/X")
+        await _finish(job)
+        assert (job.status, job.error) == ("error", "lock bound to another loop")
+
+    def test_unsync_queues_behind_a_sync_that_has_not_landed(
+        self, client, patch_paths, monkeypatch
+    ):
+        import threading
+
+        from synclet import sync_ops
+        from synclet.fs_helpers import copy_into_place
+
+        release = threading.Event()
+
+        def slow_copy(src, dst):
+            release.wait(5)
+            copy_into_place(src, dst)
+
+        monkeypatch.setattr(sync_ops, "copy_into_place", slow_copy)
+        body = {"lib": "tv", "folder": SHOW, "selection_type": "all"}
+        assert client.post("/api/sync", json=body).json()["job_id"]
+        unsync = client.post("/api/unsync", json=body).json()
+        assert unsync["job_id"], unsync
+        release.set()
+        _wait_jobs(client)
+        assert not list((patch_paths["sync"] / "tv").glob(f"{SHOW}/**/*.mkv"))
+
+    def test_media_delete_runs_holding_the_folder(self, client, monkeypatch):
+        from synclet import media_delete, sync_ops
+
+        held: list[int] = []
+
+        def record(*args, **kwargs):
+            held.append(sync_ops._FOLDER_USERS.get(f"movies/{MOVIE}", 0))
+            return {"error": "", "source_deleted": 0}
+
+        monkeypatch.setattr("synclet.config.DELETE_KEY", "test-key")
+        monkeypatch.setattr(media_delete, "delete_selection", record)
+        r = client.post(
+            "/api/media/delete",
+            json={
+                "lib": "movies-4kUHD",
+                "folder": MOVIE,
+                "selection_type": "movie",
+                "fingerprint": "x",
+            },
+            headers={"X-Synclet-Delete-Key": "test-key"},
+        )
+        assert r.status_code == 201, r.text
+        assert held == [1]
