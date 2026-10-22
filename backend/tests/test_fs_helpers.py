@@ -158,3 +158,50 @@ class TestCopyIntoPlace:
             copy_into_place(src, dst)
         assert dst.read_bytes() == b"old"
         assert sorted(p.name for p in tmp_path.iterdir()) == ["dst.mkv", "src.mkv"]
+
+    def test_source_changing_during_the_copy_is_not_published(
+        self, tmp_path, monkeypatch
+    ):
+        from synclet.fs_helpers import SourceChangedError
+
+        src = tmp_path / "src.mkv"
+        src.write_bytes(b"new")
+        dst = tmp_path / "dst.mkv"
+        dst.write_bytes(b"old")
+        real_copy = shutil.copy2
+
+        def copy_then_grow(s, d):
+            real_copy(s, d)
+            src.write_bytes(b"newer and longer")
+
+        monkeypatch.setattr(shutil, "copy2", copy_then_grow)
+        with pytest.raises(SourceChangedError, match="changed during the copy"):
+            copy_into_place(src, dst)
+        assert dst.read_bytes() == b"old"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["dst.mkv", "src.mkv"]
+
+    def test_directory_destination_is_refused_before_copying(
+        self, tmp_path, monkeypatch
+    ):
+        src = tmp_path / "src.mkv"
+        src.write_bytes(b"new")
+        (tmp_path / "dst.mkv").mkdir()
+        monkeypatch.setattr(shutil, "copy2", lambda s, d: pytest.fail("copied"))
+        with pytest.raises(IsADirectoryError):
+            copy_into_place(src, tmp_path / "dst.mkv")
+
+    def test_temp_names_are_unique_per_copy(self, tmp_path, monkeypatch):
+        temps: list[str] = []
+        real_copy = shutil.copy2
+
+        def record(s, d):
+            temps.append(Path(d).name)
+            real_copy(s, d)
+
+        monkeypatch.setattr(shutil, "copy2", record)
+        src = tmp_path / "src.mkv"
+        src.write_bytes(b"x")
+        copy_into_place(src, tmp_path / "dst.mkv")
+        copy_into_place(src, tmp_path / "dst.mkv")
+        assert len(set(temps)) == 2
+        assert all(t.startswith(".syncthing.") and t.endswith(".tmp") for t in temps)

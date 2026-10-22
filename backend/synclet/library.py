@@ -393,26 +393,20 @@ def peek(lib: str, folder: str) -> bool | None:
         return folder in names
 
 
-def source_libs(folder: str) -> list[str]:
-    """Every library (config order) whose listing holds `folder`.
+def source_lib(folder: str) -> str | None:
+    """The first library (config order) whose listing holds `folder`.
 
     A set lookup per library; folders() is consulted only to prime a library
     that has no listing yet.
     """
-    found = []
     for lib in config.LIBRARIES:
         present = peek(lib, folder)
         if present is None:
             folders(lib)
             present = peek(lib, folder)
         if present:
-            found.append(lib)
-    return found
-
-
-def source_lib(folder: str) -> str | None:
-    """The first library (config order) whose listing holds `folder`."""
-    return next(iter(source_libs(folder)), None)
+            return lib
+    return None
 
 
 def _record(lib: str, folder: str, present: bool, seq: int) -> bool:

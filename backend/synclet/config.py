@@ -73,6 +73,12 @@ LIBRARIES: dict[str, dict] = {
     },
 }
 
+
+def libs_for_sync_sub(sync_sub: str) -> list[str]:
+    """Libraries (config order) whose titles sync into SYNC_ROOT/<sync_sub>."""
+    return [lib for lib, info in LIBRARIES.items() if info["sync_sub"] == sync_sub]
+
+
 # External metadata-agent ID schemes Synclet can join a synced folder to its
 # Plex entry on. Single source of truth: scan.py parses them from a folder's
 # {tvdb-...} cruft and plex.py parses them from a Plex <Guid id="tvdb://..."/>.

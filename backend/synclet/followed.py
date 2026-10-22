@@ -55,8 +55,8 @@ def _bootstrap() -> dict[tuple[str, str], float]:
     for sub, title in iter_synced_titles():
         candidates = [
             lib
-            for lib, info in config.LIBRARIES.items()
-            if info["sync_sub"] == sub.name and _valid_title(lib, title.name)
+            for lib in config.libs_for_sync_sub(sub.name)
+            if _valid_title(lib, title.name)
         ]
         # Shared sync folders cannot identify which source library was copied.
         # Leave ambiguous titles for an explicit Follow gesture.

@@ -11,15 +11,16 @@ call (e.g. a stalled FUSE walk, which no socket timeout can interrupt) made
 every request, including /api/health, hang, flipping the container unhealthy
 and presenting as "isn't loading". Handlers that touch only in-memory state
 (health, jobs registry, cache invalidation) stay on the loop; the genuinely
-async syncthing handler awaits its own coroutine. The two job-spawning
-handlers (sync/unsync) keep their asyncio.create_task call on the loop and
-offload only the blocking pre-scan.
+async syncthing handler awaits its own coroutine. The job-spawning handlers
+(sync, unsync, refresh) spawn on the loop and offload the blocking selection
+and job-item building (both stat the share).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hmac
 import time
 from pathlib import Path
@@ -301,7 +302,8 @@ async def api_sync(data: SyncRequest) -> dict:
         # Syncing an episode expresses ongoing interest in the series. Keep
         # that intent even after the last offline copy is later removed.
         await asyncio.to_thread(followed.set_following, data.lib, data.folder, True)
-    job = sync_ops.start_sync(pairs, title=f"{data.lib}/{data.folder}")
+    items = await asyncio.to_thread(sync_ops.sync_items, pairs)
+    job = sync_ops.start_sync(items, title=sync_ops.job_title(data.lib, data.folder))
     return {
         "job_id": job.id,
         "total_files": job.total_files,
@@ -316,7 +318,7 @@ async def api_unsync(data: SyncRequest) -> dict:
     # name mapping (see sync_ops.resolve_unsync_selection). A source re-encode
     # renames the file, so name-based resolution would remove 0 and orphan the
     # synced copy.
-    targets = await asyncio.to_thread(
+    resolve = functools.partial(
         sync_ops.resolve_unsync_selection,
         data.lib,
         data.folder,
@@ -324,9 +326,12 @@ async def api_unsync(data: SyncRequest) -> dict:
         season=data.season,
         episodes=data.episodes,
     )
-    if not targets:
+    items = await asyncio.to_thread(lambda: sync_ops.unsync_items(resolve()))
+    if not items:
         return {"error": "no files matched", "job_id": None}
-    job = sync_ops.start_unsync(targets, title=f"{data.lib}/{data.folder}")
+    job = sync_ops.start_unsync(
+        items, title=sync_ops.job_title(data.lib, data.folder), resolve=resolve
+    )
     return {
         "job_id": job.id,
         "total_files": job.total_files,
@@ -593,10 +598,14 @@ async def api_arr_webhook(data: dict) -> dict:
     This is how new and removed titles reach the grid without Synclet listing
     the library roots (Synclet#66). The event's series or movie path names a
     library and a title folder; that folder gets one stat (library.note_title),
-    then the grid and badges rebuild in the background. Events with no usable
-    path (the arr's Test button, health events) are acknowledged and ignored so
-    the arr does not mark the connection failed. Same trust posture as
-    /api/refresh: the worst a caller can do is make Synclet stat one folder.
+    then the grid and badges rebuild in the background. When the event can have
+    changed the title's files (refresh.REFRESH_EVENTS) and the title is synced,
+    its synced copy is refreshed from the library (synclet.refresh): one scan
+    of that title, plus copies only where the library differs. Events with no
+    usable path (the arr's Test button, health events) are acknowledged and
+    ignored so the arr does not mark the connection failed. Same trust posture
+    as /api/refresh: the worst a caller can do is make Synclet re-check one
+    title and bring its synced copy in line with the library.
     """
     ref = arr.title_from_webhook(data)
     if ref is None:

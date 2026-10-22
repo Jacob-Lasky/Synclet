@@ -423,7 +423,7 @@ def test_delete_refuses_active_copy(patch_paths, monkeypatch):
     folder = "1917 (2019) {tmdb-3}"
     movie = patch_paths["media"] / "movies" / folder / "1917.mkv"
     plan = media_delete.plan_selection("movies", folder, "movie", [])
-    monkeypatch.setattr(sync_ops, "has_active_job_for_title", lambda title: True)
+    monkeypatch.setattr(sync_ops, "active_jobs_for_folder", lambda folder: [object()])
 
     with pytest.raises(ValueError, match="active sync job"):
         media_delete.delete_selection("movies", folder, "movie", [], plan.fingerprint)
@@ -598,19 +598,6 @@ def test_movie_delete_reports_what_survived_for_radarr_to_judge(
     assert seen[0]["files"] == {"1917 - part2.mkv": set()}
     assert _deleted[0].on_disk("1917.mkv") is True
     assert _deleted[0].on_disk("1917 - part2.mkv") is False
-
-
-def test_episode_numbers_cover_multi_episode_names():
-    assert media_delete._episode_numbers(Path("Show - S01E01E02.mkv")) == {
-        (1, 1),
-        (1, 2),
-    }
-    assert media_delete._episode_numbers(Path("Show - S01E01-E02 - x.mkv")) == {
-        (1, 1),
-        (1, 2),
-    }
-    assert media_delete._episode_numbers(Path("Show - S00E05.mkv")) == {(0, 5)}
-    assert media_delete._episode_numbers(Path("Show - 1080p.mkv")) == set()
 
 
 def test_a_surviving_copy_keeps_its_episode_number(tmp_path):
