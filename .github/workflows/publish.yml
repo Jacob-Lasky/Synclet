@@ -9,7 +9,7 @@ name: publish
 #   - push to dev:  ghcr.io/jacob-lasky/synclet:dev    + :<sha>
 #   - push to main: ghcr.io/jacob-lasky/synclet:latest + :<sha>
 #
-# Redeploy on Tower is manual via the /ship skill — there is no auto-pull
+# Redeploy on Tower is manual via the /ship skill; there is no auto-pull
 # (no Watchtower, no SSH webhook). See memory/project_synclet_deploy_shape.md.
 
 on:
@@ -60,7 +60,7 @@ jobs:
                       main) channel=latest ;;
                       dev)  channel=dev ;;
                       *)
-                          echo "unexpected branch '$branch' — refusing to publish"
+                          echo "unexpected branch '$branch'; refusing to publish"
                           exit 1
                           ;;
                   esac
@@ -82,7 +82,7 @@ jobs:
                   file: Dockerfile
                   push: true
                   tags: ${{ steps.tags.outputs.tags }}
-                  # GHA cache for buildx — speeds up subsequent builds when
+                  # GHA cache for buildx: it speeds up subsequent builds when
                   # only source changes, not deps.
                   cache-from: type=gha
                   cache-to: type=gha,mode=max

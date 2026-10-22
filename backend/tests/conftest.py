@@ -79,7 +79,7 @@ def watchstate_db(tmp_path: Path) -> Path:
         ("movie", 0, 1, "plex", "The Boys", 2019, None, None),
         ("movie", 0, 0, "plex", "1917", 2019, None, None),
         # Year embedded IN the title string (not just the separate `year`
-        # column) — this is how WatchState actually stores shows/movies Plex
+        # column): this is how WatchState actually stores shows/movies Plex
         # disambiguates by year ("Bluey (2018)", "Doctor Who (2005)"). The
         # section_index side strips the year via watchstate_key, so the WS side
         # must too or these rows never join. Regression fixtures for the

@@ -3,7 +3,7 @@ name: Auto-Document PR
 # Keeps README/CLAUDE.md/docs/skills markdown in sync with code changes.
 #
 # Architecture: PREVENTION, not detection. Claude gets read tools plus
-# Edit/Write scoped to **/*.md only — no shell, no git. After it finishes,
+# Edit/Write scoped to **/*.md only (no shell, no git). After it finishes,
 # a trusted step asserts HEAD did not move, validates every worktree change
 # (unstaged, staged, untracked; NUL-delimited so odd filenames can't hide),
 # and only then commits and pushes. A non-markdown change aborts the job
