@@ -67,7 +67,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             You are updating documentation for a pull request. The full diff of
-            this PR (branch vs base) is in the file ${{ runner.temp }}/pr.diff —
+            this PR (branch vs base) is in the file ${{ runner.temp }}/pr.diff.
             Read that file first.
 
             Determine whether any documentation in this repository is now stale
@@ -81,6 +81,9 @@ jobs:
             - Keep edits surgical: update what the diff made stale, add what it
               made necessary. Do not rewrite unrelated sections or restructure
               documents.
+            - Never write an em dash or a double hyphen as punctuation. Use a
+              comma, a colon, parentheses or a new sentence. This repository's
+              prose does not use dashes.
             - If the documentation is already accurate, change nothing and say so.
           claude_args: >-
             --model claude-opus-5
