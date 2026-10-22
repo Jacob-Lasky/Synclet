@@ -52,7 +52,10 @@ def copy_into_place(src: Path, dst: Path) -> None:
 
     The source check (size and mtime_ns before and after) is what keeps a file
     an import or Tdarr is still writing from being published: the copy is
-    discarded and SourceChangedError raised, leaving `dst` as it was.
+    discarded and SourceChangedError raised, leaving `dst` as it was. It only
+    sees changes DURING the copy. A writer that pauses for longer than the copy
+    and resumes afterwards is not caught here; synclet.refresh's background
+    check sees the source's new size or mtime once it settles and copies again.
 
     The temp name has Syncthing's own temporary-file shape
     (`.syncthing.<x>.tmp`). Syncthing's scanner never syncs such a file and
