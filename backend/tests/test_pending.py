@@ -30,17 +30,9 @@ from synclet.pending import (
 
 
 @pytest.fixture
-def patch_snapshot(monkeypatch, tmp_path: Path) -> Path:
-    """Point SNAPSHOT_FILE at a temp dir.
-
-    Re-binds every module that imported the constant. Without this the test
-    would write to /app/data/snapshot.json, which (a) may not exist on
-    pocket-dev and (b) would leak state between tests.
-    """
-    snap = tmp_path / "snapshot.json"
-    monkeypatch.setattr("synclet.config.SNAPSHOT_FILE", snap)
-    monkeypatch.setattr("synclet.pending.SNAPSHOT_FILE", snap)
-    return snap
+def patch_snapshot(tmp_path: Path) -> Path:
+    """The snapshot file conftest._no_real_share points every module at."""
+    return tmp_path / "snapshot.json"
 
 
 # ── path_to_snapshot_key ────────────────────────────────────────────────────

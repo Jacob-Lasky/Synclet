@@ -114,7 +114,7 @@ def iter_synced_titles() -> Iterator[tuple[Path, Path]]:
 def synced_title_stats() -> dict[str, SyncedTitleStats]:
     """Return {title_dir_name: SyncedTitleStats} across every synced title.
 
-    Single os.walk per sync-sub instead of one rglob+stat per title — same
+    Single os.walk per sync-sub instead of one rglob+stat per title: same
     big-O but ~half the wall time on shfs FUSE because scandir-backed walks
     avoid repeated Path allocations and reuse stat buffers within a
     directory. One walk yields both the byte total and the video-file
@@ -146,7 +146,7 @@ def synced_title_stats() -> dict[str, SyncedTitleStats]:
             # os.walk uses scandir internally and emits (dirpath, dirnames,
             # filenames). One walk per title beats rglob+stat per file
             # because scandir reuses inode buffers across siblings on the
-            # same directory — material on shfs FUSE where the inode lookup
+            # same directory; that is material on shfs FUSE where the inode lookup
             # is the dominant cost.
             for dirpath, _dirnames, filenames in os.walk(top_entry.path):
                 dir_path_obj = Path(dirpath)

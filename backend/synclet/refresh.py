@@ -14,9 +14,11 @@ it holds). For each item:
   - the library it comes from is the one library sharing its sync folder that
     has a video for it; when two do (tv and tv-4kUHD), the one holding a file
     by a synced video's name; otherwise the item is left alone,
-  - a wanted library file (scan.is_wanted_file, the filter a sync copies with)
-    is copied when its synced copy is missing, a different size, or older than
-    the library file,
+  - when a video or subtitle differs (its synced copy is missing, a different
+    size, or older than the library file, or a synced one is superseded), every
+    wanted library file for the item that differs is copied (scan.is_wanted_file,
+    the filter a sync copies with), sidecars included; a sidecar alone never
+    starts a refresh,
   - a synced video or subtitle the library no longer has is superseded and is
     removed, but only after every copy for each item it holds has landed.
 A refresh never adds an episode the user did not sync, and never touches an
@@ -296,7 +298,14 @@ def _plan(
             src_stats[src] = st
         if item in skipped:
             continue
-        age = now - max(mtime for _size, mtime in src_stats.values()) / 1e9
+        # Only media files settle the item: a sidecar Jellyfin rewrites every
+        # few minutes must not hold back a changed video indefinitely.
+        media_mtimes = [
+            mtime
+            for src, (_size, mtime) in src_stats.items()
+            if src.suffix.lower() in _MEDIA_EXTS
+        ]
+        age = now - max(media_mtimes) / 1e9
         if 0 <= age < settle_s:
             skipped[item] = (
                 f"library file changed {int(age)}s ago; waiting for it to settle"
@@ -321,7 +330,6 @@ def _plan(
                     },
                 )["items"].append(item)
 
-    plan.copies = list(copies.values())
     plan.skipped = [{"item": i, "reason": r} for i, r in sorted(skipped.items())]
     for f, its in sorted(synced.items()):
         # A file holding any skipped item stays: removing it would remove that
@@ -329,8 +337,20 @@ def _plan(
         if f in wanted or any(i in skipped for i in its):
             continue
         plan.removals.append(
-            {"items": its, "path": str(f), "size": (_file_stat(f) or (0, 0.0))[0]}
+            {"items": its, "path": str(f), "size": (_file_stat(f) or (0, 0))[0]}
         )
+    # Sidecars (.nfo, -thumb.jpg, _chapters.xml) ride along with an item's
+    # refresh but never start one. DO NOT let a sidecar alone mark an item
+    # changed: Jellyfin and Tdarr rewrite them routinely, so every metadata
+    # pass would re-send them and keep the background check busy for nothing.
+    changed = {i for r in plan.removals for i in r["items"]}
+    changed |= {
+        i
+        for c in copies.values()
+        if Path(c["dst"]).suffix.lower() in _MEDIA_EXTS
+        for i in c["items"]
+    }
+    plan.copies = [c for c in copies.values() if any(i in changed for i in c["items"])]
     return plan
 
 

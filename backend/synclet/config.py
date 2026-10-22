@@ -87,7 +87,11 @@ EXTERNAL_ID_SCHEMES = ("imdb", "tmdb", "tvdb")
 
 EXCLUDED_DIRS = {".Recycle.Bin", ".recycle", ".trash", ".stfolder", ".stversions"}
 VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".m4v", ".webm"}
-SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".sub", ".vtt"}
+# Every subtitle format a library holds, text and image (.sup is Blu-ray PGS,
+# .idx pairs with VobSub .sub). scan.is_wanted_file applies the English filter
+# only to these, so a format missing here is synced in every language, and
+# synclet.refresh treats a change to one as a media change.
+SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".sub", ".idx", ".sup", ".vtt"}
 ENGLISH_CODES = {"en", "eng"}
 SUBTITLE_QUALIFIERS = {"forced", "sdh", "hi", "cc", "default", "full"}
 

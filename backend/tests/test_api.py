@@ -991,6 +991,7 @@ class TestStartupWiring:
             "watched",
             "hanging",
             "pending",
+            "stale",
         ):
             assert key in maint_cache._builders
         # No loop task was created.
@@ -1201,12 +1202,12 @@ class TestSyncedAndWatchlistCacheBehavior:
 class TestEventLoopNotBlockedByHandlers:
     """Regression for the production hang: a blocking handler froze uvicorn's
     single event loop, so one slow/stuck call (e.g. a stalled FUSE walk that no
-    socket timeout can interrupt) made every request — including /api/health —
+    socket timeout can interrupt) made every request (including /api/health)
     hang, flipping the container unhealthy and presenting as "isn't loading".
 
     The fix offloads blocking handler work via asyncio.to_thread. This test
     pins that contract against a REAL uvicorn server on a socket (an in-process
-    AsyncTestClient cannot detect loop-blocking — issuing the concurrent probe
+    AsyncTestClient cannot detect loop-blocking; issuing the concurrent probe
     also needs the very loop that's blocked). While /api/synced is stuck in its
     blocking body, /api/health must still answer promptly over a second
     connection. If a future refactor drops the to_thread (running the blocking

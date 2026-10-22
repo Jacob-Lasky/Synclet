@@ -1,7 +1,7 @@
 [project]
 name = "synclet"
 version = "0.1.0"
-description = "Synclet — visual Plex media sync for Syncthing-shared libraries"
+description = "Synclet: visual Plex media sync for Syncthing-shared libraries"
 authors = [{ name = "Jacob Lasky", email = "jacob.s.lasky@gmail.com" }]
 readme = "README.md"
 requires-python = ">=3.14"
@@ -18,7 +18,7 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "httpx>=0.28.0",
     "pytest-cov>=7.1.0",
-    # Lint toolchain — pocket-dev has these pre-installed globally, but CI
+    # Lint toolchain: pocket-dev has these pre-installed globally, but CI
     # and other dev machines need them via uv sync. Pinned to current
     # working versions; bump together when the toolchain shifts.
     "ruff>=0.14.4",
@@ -61,21 +61,21 @@ show_missing = true
 skip_covered = false
 
 [tool.ruff]
-# Curated rule families — each chosen because it catches real defects in a
+# Curated rule families, each chosen because it catches real defects in a
 # small Litestar + Pydantic homelab app. We do NOT select = ["ALL"]; that
 # approach forces an ever-growing ignore list and surfaces enterprise-style
 # docstring/annotation theater that hurts readability rather than helps.
 lint.preview = true
 lint.select = [
-    "F",       # pyflakes — undefined names, unused imports, unused vars
+    "F",       # pyflakes: undefined names, unused imports, unused vars
     "E", "W",  # pycodestyle errors and warnings
-    "B",       # bugbear — mutable defaults, bare except, real footguns
-    "S",       # bandit — security smells (we touch a Plex token + filesystem)
-    "I",       # isort — pure auto-fix signal
-    "UP",      # pyupgrade — keep syntax aligned with py3.14
-    "SIM",     # simplify — collapse redundant if/else, etc.
-    "RUF",     # ruff-native — catches RUF006 (unawaited tasks) and similar
-    "ASYNC",   # async footguns — blocking sleep/io in async ctx
+    "B",       # bugbear: mutable defaults, bare except, real footguns
+    "S",       # bandit: security smells (we touch a Plex token + filesystem)
+    "I",       # isort: pure auto-fix signal
+    "UP",      # pyupgrade: keep syntax aligned with py3.14
+    "SIM",     # simplify: collapse redundant if/else, etc.
+    "RUF",     # ruff-native: catches RUF006 (unawaited tasks) and similar
+    "ASYNC",   # async footguns: blocking sleep/io in async ctx
     "PIE",     # misc cleanup
     "C4",      # comprehensions
     "N",       # naming
@@ -84,13 +84,13 @@ lint.select = [
     "LOG",     # logging-format issues
     "G",       # logging-format string issues
     "ANN",     # type annotations on source (tests exempted below)
-    "TID252",  # ban relative imports — already the convention
+    "TID252",  # ban relative imports: already the convention
 ]
 lint.ignore = [
-    "E501",    # line too long — the formatter handles wrapping
-    "RUF029",  # async-no-await — Litestar requires `async def` for handlers
+    "E501",    # line too long: the formatter handles wrapping
+    "RUF029",  # async-no-await: Litestar requires `async def` for handlers
     "ANN401",  # any-type escape hatch is sometimes the right answer
-    "S608",    # hardcoded SQL — revisit when watchstate query layer changes
+    "S608",    # hardcoded SQL: revisit when watchstate query layer changes
 ]
 
 [tool.ruff.lint.per-file-ignores]

@@ -87,7 +87,7 @@ export interface CoverageEntry {
     // What WatchState would have if it indexed the section fully: sum of
     // Plex's leafCount for show sections, count of Video items for movie
     // sections. The banner triggers on a significant gap between observed
-    // and expected — that is the user-visible "Plex direct is doing real
+    // and expected: that is the user-visible "Plex direct is doing real
     // work for this library" signal.
     expected_rows: number
 }

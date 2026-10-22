@@ -6,7 +6,7 @@ read like a contract: every endpoint the frontend touches is listed here.
 Concurrency rule: handlers are `async def`, but the work they do (Plex HTTP,
 SYNC_ROOT/MEDIA_ROOT walks over shfs FUSE) is BLOCKING and synchronous. Any
 such call MUST be offloaded with `await asyncio.to_thread(...)`. Calling it
-directly on the event loop freezes the entire server — a single slow or stuck
+directly on the event loop freezes the entire server: a single slow or stuck
 call (e.g. a stalled FUSE walk, which no socket timeout can interrupt) made
 every request, including /api/health, hang, flipping the container unhealthy
 and presenting as "isn't loading". Handlers that touch only in-memory state
@@ -733,12 +733,12 @@ def build_route_handlers(static_dir: Path | None = None) -> list:
     appended LAST so Litestar's path specificity prefers the literal /api/...
     matches over the static catchall rooted at /. If you reorder this list
     so the static router comes first, /api/* requests will be poached and
-    return HTML instead of JSON — the contract test in tests/test_api.py
+    return HTML instead of JSON; the contract test in tests/test_api.py
     pins this ordering.
 
     static_dir: the built Vue dist. None (dev) means no static handler is
     added; the dev frontend runs separately on :1313. A non-None Path that
-    doesn't exist on disk is also ignored — saves a startup crash if the
+    doesn't exist on disk is also ignored, which saves a startup crash if the
     env var points somewhere stale.
     """
     handlers: list = [
@@ -803,7 +803,7 @@ async def _warm_sections() -> None:
     fetches in parallel up front (asyncio.to_thread keeps the sync urlopen
     client off the event loop) means the first builds don't each pay a cold
     section RTT. return_exceptions=True so a single broken section (Plex offline
-    at boot, rotated token, network blip) doesn't block startup — that section
+    at boot, rotated token, network blip) doesn't block startup; that section
     just rebuilds on demand. Container health depends on the API being
     reachable, not on Plex being live.
     """

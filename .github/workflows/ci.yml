@@ -12,7 +12,7 @@ on:
     push:
         branches: [main, dev]
 
-# Cancel in-flight runs when a new push lands on the same ref — saves
+# Cancel in-flight runs when a new push lands on the same ref; this saves
 # minutes when force-pushing during PR review.
 concurrency:
     group: ci-${{ github.ref }}
@@ -34,7 +34,7 @@ jobs:
                   version: "0.11.15"
                   enable-cache: true
 
-            # uv manages the Python toolchain itself — pyproject.toml pins
+            # uv manages the Python toolchain itself: pyproject.toml pins
             # >=3.14, uv resolves and installs the matching interpreter.
             - name: Sync deps
               run: uv sync --frozen
