@@ -699,3 +699,19 @@ class TestFolderLock:
         )
         assert r.status_code == 201, r.text
         assert held == [1]
+
+
+class TestSidecars:
+    def test_sidecar_only_difference_does_not_refresh(self, current_movie, patch_paths):
+        """Jellyfin and Tdarr rewrite .nfo/-thumb.jpg/_chapters.xml routinely."""
+        from synclet.refresh import plan_refresh
+
+        _write(patch_paths["media"] / "movies" / MOVIE / "movie.nfo", 50, age_s=0)
+        assert not plan_refresh("movies", MOVIE).needed
+
+    def test_sidecars_ride_along_with_a_media_refresh(self, stale_movie, patch_paths):
+        from synclet.refresh import plan_refresh
+
+        _write(patch_paths["media"] / "movies" / MOVIE / "movie.nfo", 50, age_s=0)
+        names = {Path(c["dst"]).name for c in plan_refresh("movies", MOVIE).copies}
+        assert names == {"1917.mkv", "1917.en.srt", "movie.nfo"}

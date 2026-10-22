@@ -991,6 +991,7 @@ class TestStartupWiring:
             "watched",
             "hanging",
             "pending",
+            "stale",
         ):
             assert key in maint_cache._builders
         # No loop task was created.

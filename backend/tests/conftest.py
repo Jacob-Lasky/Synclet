@@ -162,19 +162,13 @@ def media_tree(tmp_path: Path) -> dict[str, Path]:
     }
 
 
-@pytest.fixture
-def patch_paths(
-    monkeypatch: pytest.MonkeyPatch, media_tree: dict[str, Path]
-) -> Generator[dict[str, Path]]:
-    """Repoint every module's MEDIA_ROOT / SYNC_ROOT binding at the fixture tree.
+def _point_paths(monkeypatch: pytest.MonkeyPatch, media: Path, sync: Path) -> None:
+    """Point every module's MEDIA_ROOT / SYNC_ROOT binding at `media` / `sync`.
 
     Each module imports the path once at module-load, so config-level patching
-    alone is not enough. This fixture is the single source of truth for "all
-    the places the path leaks into" , if a new module is added, add it here.
+    alone is not enough. This is the single source of truth for "all the places
+    the path leaks into" , if a new module binds one, add it here.
     """
-    media = media_tree["media"]
-    sync = media_tree["sync"]
-
     monkeypatch.setattr("synclet.config.MEDIA_ROOT", media)
     monkeypatch.setattr("synclet.config.SYNC_ROOT", sync)
     monkeypatch.setattr("synclet.scan.MEDIA_ROOT", media)
@@ -184,6 +178,37 @@ def patch_paths(
     monkeypatch.setattr("synclet.state.SYNC_ROOT", sync)
     monkeypatch.setattr("synclet.fs_helpers.SYNC_ROOT", sync)
     monkeypatch.setattr("synclet.pending.SYNC_ROOT", sync)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_share(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Point every test at an empty, nonexistent share unless it uses patch_paths.
+
+    The production defaults (/data/media, /data/others/synced-media) exist on
+    the dev box, which is the Unraid server itself. A test that ran the real
+    startup or refresh loop without patch_paths listed the live library roots
+    (merged shfs directories that stall Plex while listed, Synclet#66) from a
+    daemon thread, and that listing landed in a later test. patch_paths
+    repoints these again onto its fixture tree.
+    """
+    _point_paths(monkeypatch, tmp_path / "no-media", tmp_path / "no-sync")
+    monkeypatch.setattr(
+        "synclet.config.LIBRARY_LISTING_FILE", tmp_path / "no-listing.json"
+    )
+
+
+@pytest.fixture
+def patch_paths(
+    monkeypatch: pytest.MonkeyPatch, media_tree: dict[str, Path]
+) -> Generator[dict[str, Path]]:
+    """Repoint every module's MEDIA_ROOT / SYNC_ROOT binding at the fixture tree.
+
+    See _point_paths for the bindings; this adds the fixture tree and the
+    per-module state files on top.
+    """
+    media = media_tree["media"]
+    sync = media_tree["sync"]
+    _point_paths(monkeypatch, media, sync)
     # plex.py imports THUMB_CACHE at module-load, so we have to patch BOTH
     # the config binding and the per-module re-import. Without the plex.py
     # patch, fetch_thumb_bytes mkdirs the production-default path, which
