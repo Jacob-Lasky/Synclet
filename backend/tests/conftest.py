@@ -182,9 +182,10 @@ def _point_paths(monkeypatch: pytest.MonkeyPatch, media: Path, sync: Path) -> No
 
 @pytest.fixture(autouse=True)
 def _no_real_share(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Point every test at an empty, nonexistent share unless it uses patch_paths.
+    """Point every test at an empty share and private app state.
 
-    The production defaults (/data/media, /data/others/synced-media) exist on
+    patch_paths repoints the share onto its fixture tree; the state files stay
+    here, in the test's own tmp_path. The production defaults (/data/media, /data/others/synced-media) exist on
     the dev box, which is the Unraid server itself. A test that ran the real
     startup or refresh loop without patch_paths listed the live library roots
     (merged shfs directories that stall Plex while listed, Synclet#66) from a
@@ -192,9 +193,23 @@ def _no_real_share(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     repoints these again onto its fixture tree.
     """
     _point_paths(monkeypatch, tmp_path / "no-media", tmp_path / "no-sync")
-    monkeypatch.setattr(
-        "synclet.config.LIBRARY_LISTING_FILE", tmp_path / "no-listing.json"
-    )
+    # App state under /app/data and the WatchState DB under /appdata: every
+    # module binding of each, so no test reads or writes the live copies.
+    # patch_watchstate points the WatchState DB at its fixture DB instead.
+    for target, path in (
+        ("synclet.config.THUMB_CACHE", ".thumb-cache"),
+        ("synclet.plex.THUMB_CACHE", ".thumb-cache"),
+        ("synclet.plex.PLEX_CACHE_FILE", ".plex-section-cache.json"),
+        ("synclet.config.SNAPSHOT_FILE", "snapshot.json"),
+        ("synclet.pending.SNAPSHOT_FILE", "snapshot.json"),
+        ("synclet.config.IGNORED_FILE", "ignored.json"),
+        ("synclet.ignored.IGNORED_FILE", "ignored.json"),
+        ("synclet.config.FOLLOWED_FILE", "followed.json"),
+        ("synclet.config.LIBRARY_LISTING_FILE", ".library-listing.json"),
+        ("synclet.config.WATCHSTATE_DB", "no-watchstate.db"),
+        ("synclet.watchstate.WATCHSTATE_DB", "no-watchstate.db"),
+    ):
+        monkeypatch.setattr(target, tmp_path / path)
 
 
 @pytest.fixture
@@ -209,41 +224,6 @@ def patch_paths(
     media = media_tree["media"]
     sync = media_tree["sync"]
     _point_paths(monkeypatch, media, sync)
-    # plex.py imports THUMB_CACHE at module-load, so we have to patch BOTH
-    # the config binding and the per-module re-import. Without the plex.py
-    # patch, fetch_thumb_bytes mkdirs the production-default path, which
-    # raises and surfaces as a 500 on the route.
-    thumb_cache = media_tree["tmp"] / ".thumb-cache"
-    monkeypatch.setattr("synclet.config.THUMB_CACHE", thumb_cache)
-    monkeypatch.setattr("synclet.plex.THUMB_CACHE", thumb_cache)
-    # Disk cache for section_index. Default lives under /app/data inside the
-    # container; point at tmp so the test suite never reads or writes the
-    # production-default path. Existing tests stub _get_xml, so the write
-    # branch wasn't hit before — this patch is defensive for future tests
-    # that exercise the full section_index path.
-    monkeypatch.setattr(
-        "synclet.plex.PLEX_CACHE_FILE",
-        media_tree["tmp"] / ".plex-section-cache.json",
-    )
-    # Snapshot file for the pending module. Default lives under /app/data
-    # which only exists inside the backend container; point at tmp so sync_ops
-    # tests that mutate the snapshot don't try to write into that path.
-    snapshot = media_tree["tmp"] / "snapshot.json"
-    monkeypatch.setattr("synclet.config.SNAPSHOT_FILE", snapshot)
-    monkeypatch.setattr("synclet.pending.SNAPSHOT_FILE", snapshot)
-    # Same treatment for the ignored-entries store (see synclet.ignored).
-    ignored_file = media_tree["tmp"] / "ignored.json"
-    monkeypatch.setattr("synclet.config.IGNORED_FILE", ignored_file)
-    monkeypatch.setattr("synclet.ignored.IGNORED_FILE", ignored_file)
-    monkeypatch.setattr(
-        "synclet.config.FOLLOWED_FILE", media_tree["tmp"] / "followed.json"
-    )
-    # The library listing persists next to the other app state; keep it in tmp
-    # and start each test cold so it lists the fixture tree on first use.
-    monkeypatch.setattr(
-        "synclet.config.LIBRARY_LISTING_FILE",
-        media_tree["tmp"] / ".library-listing.json",
-    )
     from synclet import library, state, synced
 
     library.reset()
@@ -281,13 +261,6 @@ def client(patch_paths, patch_watchstate, tmp_path, monkeypatch):
 
     section_index.cache_clear()
     episode_rating_keys.cache_clear()
-
-    # Point the snapshot at a tmp file so the test does not write into
-    # /app/data on the dev machine (which may not exist or may collide with
-    # the live stack).
-    snap = tmp_path / "snapshot.json"
-    monkeypatch.setattr("synclet.config.SNAPSHOT_FILE", snap)
-    monkeypatch.setattr("synclet.pending.SNAPSHOT_FILE", snap)
 
     from main import app
 

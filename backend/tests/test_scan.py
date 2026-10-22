@@ -263,3 +263,14 @@ class TestScanTitleDetail:
         assert "1917.fr.srt" not in names
         # English sub kept
         assert "1917.en.srt" in names
+
+
+def test_image_subtitles_get_the_english_filter():
+    from pathlib import Path
+
+    from synclet.scan import is_wanted_file
+
+    assert is_wanted_file(Path("Film.en.sup"))
+    assert is_wanted_file(Path("Film.eng.forced.idx"))
+    assert not is_wanted_file(Path("Film.fre.sup"))
+    assert not is_wanted_file(Path("Film.ger.idx"))

@@ -298,7 +298,14 @@ def _plan(
             src_stats[src] = st
         if item in skipped:
             continue
-        age = now - max(mtime for _size, mtime in src_stats.values()) / 1e9
+        # Only media files settle the item: a sidecar Jellyfin rewrites every
+        # few minutes must not hold back a changed video indefinitely.
+        media_mtimes = [
+            mtime
+            for src, (_size, mtime) in src_stats.items()
+            if src.suffix.lower() in _MEDIA_EXTS
+        ]
+        age = now - max(media_mtimes) / 1e9
         if 0 <= age < settle_s:
             skipped[item] = (
                 f"library file changed {int(age)}s ago; waiting for it to settle"

@@ -715,3 +715,21 @@ class TestSidecars:
         _write(patch_paths["media"] / "movies" / MOVIE / "movie.nfo", 50, age_s=0)
         names = {Path(c["dst"]).name for c in plan_refresh("movies", MOVIE).copies}
         assert names == {"1917.mkv", "1917.en.srt", "movie.nfo"}
+
+    def test_a_fresh_sidecar_does_not_hold_back_a_changed_video(
+        self, stale_movie, patch_paths
+    ):
+        from synclet.refresh import plan_refresh
+
+        lib = patch_paths["media"] / "movies" / MOVIE
+        for f in lib.iterdir():
+            _age(f, 3600)
+        _write(lib / "movie.nfo", 50, age_s=60)
+        assert plan_refresh("movies", MOVIE, settle_s=600).needed
+
+    def test_an_image_subtitle_change_refreshes(self, current_movie, patch_paths):
+        from synclet.refresh import plan_refresh
+
+        _write(patch_paths["media"] / "movies" / MOVIE / "1917.en.sup", 40)
+        copies = plan_refresh("movies", MOVIE).copies
+        assert [Path(c["dst"]).name for c in copies] == ["1917.en.sup"]
