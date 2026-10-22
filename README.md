@@ -49,13 +49,25 @@ Following is stored as intent: reading it never stats the source library, so a s
 
 Synclet does not list the library folders on a timer. On Unraid each library root is a directory merged across every array disk, and listing one on a cold cache takes tens of seconds while Plex, Jellyfin and SMB wait behind it. Instead the title list is kept in `.library-listing.json` (`SYNCLET_LIBRARY_LISTING_FILE`, persisted beside the other app data) and updated one title at a time:
 
-- **Sonarr/Radarr webhooks.** Add a Webhook connection in each arr (Settings, Connect) pointing at `http://<synclet-host>:1313/api/arr/webhook`, method POST, with On Import, On Series/Movie Add, On Series/Movie Delete, On File Delete and On Rename enabled. Each event makes Synclet check that one folder.
+- **Sonarr/Radarr webhooks.** Add a Webhook connection in each arr (Settings, Connect) pointing at `http://<synclet-host>:1313/api/arr/webhook`, method POST, with On Import, On Upgrade, On Import Complete (Sonarr only), On Series/Movie Add, On Series/Movie Delete, On File Delete and On Rename enabled. Each event makes Synclet check that one folder; the import, upgrade and rename events also refresh the title's synced copy (below).
 - **Synclet's own deletes** update their title directly.
 - **A full re-list** runs only as a backstop, one library at a time, every `SYNCLET_LIBRARY_RELIST` seconds (default 6 hours), or when you press Rescan in the top bar. The button waits for the re-list to finish before it says "Library rescanned". `GET /api/library` shows each library's title count and listing time.
 
 Sources with no arr (YouTube) get new channels at the next backstop or Rescan. New episodes inside a followed YouTube channel are picked up within one to two `SYNCLET_TITLE_RESCAN` intervals (default 1 hour): each title's limit is stretched by a stable amount so the rescans spread out instead of every followed channel being walked in the same pass.
 
 After deleting source media, Synclet asks the owning arr to rescan just that series or movie (`RescanSeries` / `RescanMovie`), so the arr does not need a periodic full-disk rescan to notice. Configure one URL and API key per library in the gitignored `.env`: `SYNCLET_SONARR_URL` / `SYNCLET_SONARR_API_KEY` (TV), `SYNCLET_SONARR_4K_*` (TV 4K), `SYNCLET_RADARR_*` (Movies) and `SYNCLET_RADARR_4K_*` (Movies 4K). A library with no URL and key skips the rescan. Point those URLs at the host's LAN IP (or the docker bridge gateway), not `host.docker.internal`: Sonarr and Radarr reject that Host header with `400 Bad Request`, so every rescan would fail. `POST /api/arr/rescan` with `{"lib", "folder"}` runs the same rescan on demand. When the delete meant "done with it" (see below), the arr is asked to unmonitor what was deleted before that rescan; `POST /api/arr/unmonitor` with `{"lib", "folder", "episodes"}` (`episodes` is a list of `[season, episode]` pairs, ignored for a movie) runs just the unmonitor half on demand. Because it changes what the arr will download, that endpoint requires the deletion password (`X-Synclet-Delete-Key`) like the delete itself; the plain rescan does not.
+
+## Keeping synced copies current
+
+A synced copy is a copy, not a link — Syncthing does not support hard links — so it keeps serving the file that was copied even after the library replaces it with a better release, a renamed file, or a Tdarr re-encode. Synclet brings the copy back in line instead. Per synced item (a movie, or one episode), it copies the library file when the synced one is missing, a different size, or older than the library file, then removes the synced files those copies supersede. A refresh never adds an episode you did not sync, and a title whose library video is gone is left alone: the offline copy is all that is left of it.
+
+Three triggers run the same plan:
+
+- **Arr webhooks**, right away for the title the event names (the connection above). On File Delete alone does not refresh — the import that follows an upgrade carries it.
+- **A background check**, on each full cache pass, starting one refresh at a time so a multi-gigabyte copy does not contend with Plex for the array. A library file must have sat unchanged for `SYNCLET_REFRESH_SETTLE` seconds (default 600) before it is copied, so a file an import or Tdarr is still writing is not published half-written; webhooks skip that wait because the arr only sends them once its import has finished. A title whose refresh failed is left alone for `SYNCLET_REFRESH_RETRY` seconds (default 3600). `GET /api/synced/stale` lists what the last check found.
+- **On demand**, `POST /api/synced/refresh` with `{"lib", "folder"}`: refreshes one title now and returns the plan, including why any synced item was left alone (no library video, a library file that now also holds episodes you did not sync, or a title present in both the HD and 4K library with no way to tell which copy is synced).
+
+Refreshes are jobs like sync and unsync (`op: "refresh"` in `/api/jobs`). Sync, unsync, refresh and source deletes on the same synced folder run one after another rather than at once, and each job re-checks the title once it is its turn. Copies land through a temporary file that is renamed into place, so an interrupted copy never leaves a partial file for Syncthing to send to your devices.
 
 ## Permanent media deletion
 
