@@ -11,15 +11,16 @@ call (e.g. a stalled FUSE walk, which no socket timeout can interrupt) made
 every request, including /api/health, hang, flipping the container unhealthy
 and presenting as "isn't loading". Handlers that touch only in-memory state
 (health, jobs registry, cache invalidation) stay on the loop; the genuinely
-async syncthing handler awaits its own coroutine. The two job-spawning
-handlers (sync/unsync) keep their asyncio.create_task call on the loop and
-offload only the blocking pre-scan.
+async syncthing handler awaits its own coroutine. The job-spawning handlers
+(sync, unsync, refresh) spawn on the loop and offload the blocking selection
+and job-item building (both stat the share).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hmac
 import time
 from pathlib import Path
@@ -39,6 +40,7 @@ from synclet import (
     maint_cache,
     media_delete,
     pending,
+    refresh,
     state,
     sync_ops,
     synced,
@@ -285,7 +287,7 @@ async def api_sync(data: SyncRequest) -> dict:
     # resolve_selection does a full title scan (FS walk); offload it. start_sync
     # stays on the event loop because it calls asyncio.create_task to spawn the
     # background job, which requires a running loop in the current thread.
-    pairs = await asyncio.to_thread(
+    resolve = functools.partial(
         sync_ops.resolve_selection,
         data.lib,
         data.folder,
@@ -294,13 +296,17 @@ async def api_sync(data: SyncRequest) -> dict:
         episodes=data.episodes,
         unwatched_only=data.unwatched_only,
     )
+    pairs = await asyncio.to_thread(resolve)
     if not pairs:
         return {"error": "no files matched", "job_id": None}
     if config.LIBRARIES.get(data.lib, {}).get("kind") in ("show", "youtube"):
         # Syncing an episode expresses ongoing interest in the series. Keep
         # that intent even after the last offline copy is later removed.
         await asyncio.to_thread(followed.set_following, data.lib, data.folder, True)
-    job = sync_ops.start_sync(pairs, title=f"{data.lib}/{data.folder}")
+    items = await asyncio.to_thread(sync_ops.sync_items, pairs)
+    job = sync_ops.start_sync(
+        items, title=sync_ops.job_title(data.lib, data.folder), resolve=resolve
+    )
     return {
         "job_id": job.id,
         "total_files": job.total_files,
@@ -315,7 +321,7 @@ async def api_unsync(data: SyncRequest) -> dict:
     # name mapping (see sync_ops.resolve_unsync_selection). A source re-encode
     # renames the file, so name-based resolution would remove 0 and orphan the
     # synced copy.
-    targets = await asyncio.to_thread(
+    resolve = functools.partial(
         sync_ops.resolve_unsync_selection,
         data.lib,
         data.folder,
@@ -323,9 +329,14 @@ async def api_unsync(data: SyncRequest) -> dict:
         season=data.season,
         episodes=data.episodes,
     )
-    if not targets:
+    items = await asyncio.to_thread(lambda: sync_ops.unsync_items(resolve()))
+    # Nothing synced yet, but a queued or running sync may be about to land
+    # some: queue behind it (the job re-selects) instead of dropping the request.
+    if not items and not sync_ops.active_jobs_on_folder(data.lib, data.folder):
         return {"error": "no files matched", "job_id": None}
-    job = sync_ops.start_unsync(targets, title=f"{data.lib}/{data.folder}")
+    job = sync_ops.start_unsync(
+        items, title=sync_ops.job_title(data.lib, data.folder), resolve=resolve
+    )
     return {
         "job_id": job.id,
         "total_files": job.total_files,
@@ -402,15 +413,18 @@ async def api_media_delete(
 ) -> dict | Response:
     _require_delete_key(request)
     try:
-        result = await asyncio.to_thread(
-            media_delete.delete_selection,
-            data.lib,
-            data.folder,
-            data.selection_type,
-            data.episodes or [],
-            data.fingerprint,
-            unmonitor=data.unmonitor,
-        )
+        # Hold the synced folder so no sync, unsync or refresh job can start
+        # between delete_selection's active-job check and its deletes.
+        async with sync_ops.folder_lock(data.lib, data.folder):
+            result = await asyncio.to_thread(
+                media_delete.delete_selection,
+                data.lib,
+                data.folder,
+                data.selection_type,
+                data.episodes or [],
+                data.fingerprint,
+                unmonitor=data.unmonitor,
+            )
         if result["error"]:
             return Response(content=result, status_code=207, media_type=MediaType.JSON)
         return result
@@ -592,10 +606,14 @@ async def api_arr_webhook(data: dict) -> dict:
     This is how new and removed titles reach the grid without Synclet listing
     the library roots (Synclet#66). The event's series or movie path names a
     library and a title folder; that folder gets one stat (library.note_title),
-    then the grid and badges rebuild in the background. Events with no usable
-    path (the arr's Test button, health events) are acknowledged and ignored so
-    the arr does not mark the connection failed. Same trust posture as
-    /api/refresh: the worst a caller can do is make Synclet stat one folder.
+    then the grid and badges rebuild in the background. When the event can have
+    changed the title's files (refresh.REFRESH_EVENTS) and the title is synced,
+    its synced copy is refreshed from the library (synclet.refresh): one scan
+    of that title, plus copies only where the library differs. Events with no
+    usable path (the arr's Test button, health events) are acknowledged and
+    ignored so the arr does not mark the connection failed. Same trust posture
+    as /api/refresh: the worst a caller can do is make Synclet re-check one
+    title and bring its synced copy in line with the library.
     """
     ref = arr.title_from_webhook(data)
     if ref is None:
@@ -605,7 +623,35 @@ async def api_arr_webhook(data: dict) -> dict:
     logger.info(
         "arr webhook %s: %s/%s present=%s", data.get("eventType"), lib, folder, present
     )
-    return {"ok": True, "lib": lib, "folder": folder, "present": present}
+    out: dict = {"ok": True, "lib": lib, "folder": folder, "present": present}
+    if present and data.get("eventType") in refresh.REFRESH_EVENTS:
+        # An import or rename can leave a synced copy behind the library file
+        # (synclet.refresh). Planning is a no-op for a title that is not synced.
+        result = await refresh.refresh_title(config.LIBRARIES[lib]["sync_sub"], folder)
+        out["refresh_job_id"] = result["job_id"]
+    return out
+
+
+@post("/api/synced/refresh")
+async def api_synced_refresh(data: TitleRef) -> dict:
+    """Bring one synced title in line with the library, now.
+
+    The same plan and job the arr webhook and the background check run
+    (synclet.refresh.refresh_title): copy library files whose synced copy is
+    missing or a different size, then remove the superseded synced files.
+    Returns the plan, including why any synced item was left alone.
+    """
+    if not library.valid_folder(data.lib, data.folder):
+        raise HTTPException(status_code=400, detail="invalid library title")
+    return await refresh.refresh_title(
+        config.LIBRARIES[data.lib]["sync_sub"], data.folder
+    )
+
+
+@get("/api/synced/stale")
+async def api_synced_stale() -> dict:
+    """Synced titles that differ from the library, as of the last background check."""
+    return {"items": await asyncio.to_thread(refresh.find_stale)}
 
 
 @post("/api/arr/rescan")
@@ -724,6 +770,8 @@ def build_route_handlers(static_dir: Path | None = None) -> list:
         api_refresh,
         api_library,
         api_arr_webhook,
+        api_synced_refresh,
+        api_synced_stale,
         api_arr_rescan,
         api_arr_unmonitor,
         api_syncthing_overview,
@@ -811,6 +859,12 @@ async def _cache_refresh_loop() -> None:
                     finished - started,
                     ", ".join(rebuilt),
                 )
+            if full:
+                refreshing = await refresh.start_due_refreshes()
+                if refreshing:
+                    logger.info(
+                        "synced copy refresh started: %s", ", ".join(refreshing)
+                    )
             if full and finished - started > config.CACHE_SLOW_PASS:
                 logger.warning(
                     "full cache pass took %.0fs (over %ss); the share or Plex is slow",
@@ -837,6 +891,7 @@ async def on_startup(app: Litestar) -> None:
     watchlist.register_builders()
     sync_ops.register_builders()
     pending.register_builders()
+    refresh.register_builders()
 
     if not config.CACHE_BACKGROUND_REFRESH:
         # Tests disable the live loop and prewarm: no timer mutates the cache

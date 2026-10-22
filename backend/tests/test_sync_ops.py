@@ -17,6 +17,8 @@ from synclet.sync_ops import (
     resolve_unsync_selection,
     start_sync,
     start_unsync,
+    sync_items,
+    unsync_items,
 )
 
 
@@ -110,7 +112,7 @@ class TestSyncJob:
         )
         assert pairs
 
-        job = start_sync(pairs, title="bcs s01e01")
+        job = start_sync(sync_items(pairs), title="bcs s01e01")
         # Wait for the async copy task to finish
         for _ in range(50):
             if job.status in ("done", "error"):
@@ -140,7 +142,7 @@ class TestSyncJob:
             episodes=[[1, 1]],
         )
         assert unsync_targets
-        ujob = start_unsync(unsync_targets, title="bcs s01e01")
+        ujob = start_unsync(unsync_items(unsync_targets), title="bcs s01e01")
         for _ in range(50):
             if ujob.status in ("done", "error"):
                 break
@@ -284,7 +286,7 @@ class TestSyncOpsSnapshotIntegration:
             episodes=[[1, 1]],
         )
         assert pairs
-        job = start_sync(pairs, title="bcs s01e01")
+        job = start_sync(sync_items(pairs), title="bcs s01e01")
         for _ in range(50):
             if job.status in ("done", "error"):
                 break
@@ -314,7 +316,7 @@ class TestSyncOpsSnapshotIntegration:
             selection_type="episodes",
             episodes=[[1, 1]],
         )
-        sjob = start_sync(pairs, title="seed")
+        sjob = start_sync(sync_items(pairs), title="seed")
         for _ in range(50):
             if sjob.status in ("done", "error"):
                 break
@@ -334,7 +336,7 @@ class TestSyncOpsSnapshotIntegration:
             selection_type="episodes",
             episodes=[[1, 1]],
         )
-        ujob = start_unsync(utargets, title="unsync")
+        ujob = start_unsync(unsync_items(utargets), title="unsync")
         for _ in range(50):
             if ujob.status in ("done", "error"):
                 break

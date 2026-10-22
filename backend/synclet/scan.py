@@ -23,6 +23,7 @@ from synclet.config import (
     SYNC_ROOT,
     VIDEO_EXTS,
 )
+from synclet.episodes import EPISODE_PAT
 from synclet.fs_helpers import iter_sync_subs
 
 # Strips the {tvdb-...}/{tmdb-...}/{imdb-tt...} suffix Sonarr/Radarr append, so
@@ -39,7 +40,6 @@ _ID_CRUFT = re.compile(r"\s*\{(?:" + "|".join(EXTERNAL_ID_SCHEMES) + r")-(?:tt)?
 _EXTERNAL_ID = re.compile(r"\{(" + "|".join(EXTERNAL_ID_SCHEMES) + r")-(tt\d+|\d+)\}")
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 _YEAR = re.compile(r"\((\d{4})\)\s*$")
-_EP_PAT = re.compile(r"[Ss](\d+)[Ee](\d+)", re.IGNORECASE)
 _EP_TITLE_FROM_FILENAME = re.compile(
     r"[Ss]\d+[Ee]\d+\s*-\s*(.+?)(?:\s*[\[\(]|\.[a-z0-9]{2,4}$)", re.IGNORECASE
 )
@@ -288,7 +288,7 @@ def _episodes_in_season(season_dir: Path) -> dict[int, list[Path]]:
     for f in season_dir.iterdir():
         if f.is_dir():
             continue
-        m = _EP_PAT.search(f.name)
+        m = EPISODE_PAT.search(f.name)
         if m:
             eps.setdefault(int(m.group(2)), []).append(f)
     return {k: sorted(v) for k, v in sorted(eps.items())}

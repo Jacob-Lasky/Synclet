@@ -11,32 +11,6 @@ from urllib.parse import quote
 
 import pytest
 from litestar import Litestar
-from litestar.testing import TestClient
-
-
-@pytest.fixture
-def client(patch_paths, patch_watchstate, tmp_path, monkeypatch):
-    """A TestClient pointed at the real Litestar app, with paths repointed
-    at the fixture tree and Plex calls mocked away."""
-    # Stub Plex API so tests don't depend on network
-    monkeypatch.setattr("synclet.plex._get_xml", lambda *a, **kw: None)
-    # Reset Plex section_index cache (lru_cache)
-    from synclet.plex import episode_rating_keys, section_index
-
-    section_index.cache_clear()
-    episode_rating_keys.cache_clear()
-
-    # Point the snapshot at a tmp file so the test does not write into
-    # /app/data on the dev machine (which may not exist or may collide with
-    # the live stack).
-    snap = tmp_path / "snapshot.json"
-    monkeypatch.setattr("synclet.config.SNAPSHOT_FILE", snap)
-    monkeypatch.setattr("synclet.pending.SNAPSHOT_FILE", snap)
-
-    from main import app
-
-    with TestClient(app=app) as c:
-        yield c
 
 
 class TestHealthRoute:
@@ -1352,6 +1326,7 @@ class TestLibraryRoutes:
             "lib": "tv",
             "folder": new.name,
             "present": True,
+            "refresh_job_id": None,  # not synced, so nothing to refresh
         }
         assert maint_cache.is_dirty("state")
         maint_cache.run_refresh_cycle(full=False)

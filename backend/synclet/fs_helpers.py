@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shutil
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import NamedTuple
@@ -31,6 +33,51 @@ class SyncedTitleStats(NamedTuple):
     size_bytes: int
     video_files: int
     mtime: float
+
+
+class SourceChangedError(OSError):
+    """The source file changed while it was being copied."""
+
+
+def copy_into_place(src: Path, dst: Path) -> None:
+    """Copy `src` to `dst` so that `dst` only ever holds a complete, current file.
+
+    Copies to a temp sibling, checks the source did not change meanwhile, then
+    renames the temp file over `dst`. DO NOT copy straight to `dst`: a copy
+    that dies midway leaves a truncated file under the final name, the sync
+    job's exists() check then skips that file on every later sync, and
+    Syncthing ships the truncated file to every device. Overwriting in place
+    would also cut a good synced copy down to a partial one for the length of
+    the copy.
+
+    The source check (size and mtime_ns before and after) is what keeps a file
+    an import or Tdarr is still writing from being published: the copy is
+    discarded and SourceChangedError raised, leaving `dst` as it was. It only
+    sees changes DURING the copy. A writer that pauses for longer than the copy
+    and resumes afterwards is not caught here; synclet.refresh's background
+    check sees the source's new size or mtime once it settles and copies again.
+
+    The temp name has Syncthing's own temporary-file shape
+    (`.syncthing.<x>.tmp`). Syncthing's scanner never syncs such a file and
+    deletes it once it is a day old, so a partial copy never reaches a device,
+    even if Synclet dies mid-copy. It is unique per call: two jobs copying to
+    the same `dst` must not write through one temp file.
+    """
+    if dst.is_dir():
+        raise IsADirectoryError(f"{dst} is a directory")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(f".syncthing.synclet-{uuid.uuid4().hex}.tmp")
+    try:
+        before = src.stat()
+        shutil.copy2(src, tmp)
+        after = src.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise SourceChangedError(f"{src.name} changed during the copy")
+        tmp.replace(dst)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
 
 
 def iter_sync_subs() -> Iterator[Path]:

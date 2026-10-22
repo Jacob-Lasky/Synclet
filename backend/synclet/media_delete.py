@@ -10,7 +10,6 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
-import re
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,7 +24,8 @@ from synclet import (
     state,
     sync_ops,
 )
-from synclet.scan import _EP_PAT, Episode, scan_title_detail
+from synclet.episodes import EPISODE_PAT, episode_numbers
+from synclet.scan import Episode, scan_title_detail
 
 # Generated trickplay trees contain image frames. An extension allowlist keeps
 # an unrelated episode's media file safe even if it lands inside a matching dir.
@@ -34,25 +34,13 @@ _SEASON_SIDECAR_EXTS = _TRICKPLAY_IMAGE_EXTS | config.SUBTITLE_EXTS | {".nfo", "
 
 
 def _episode_key(path: Path) -> tuple[int, int] | None:
-    match = _EP_PAT.search(path.name)
+    match = EPISODE_PAT.search(path.name)
     return (int(match.group(1)), int(match.group(2))) if match else None
 
 
 # Every episode a file name claims: S01E01, S01E01E02, S01E01-E02 (Sonarr's
 # repeat and scene styles). Used only to tell the arr which episodes a deleted
 # file it has no record of covered; the arr's own file links come first.
-_MULTI_EP = re.compile(r"[Ss](\d+)((?:-?[Ee]\d+)+)")
-_EP_NUM = re.compile(r"[Ee](\d+)")
-
-
-def _episode_numbers(path: Path) -> set[tuple[int, int]]:
-    match = _MULTI_EP.search(path.name)
-    if not match:
-        return set()
-    season = int(match.group(1))
-    return {(season, int(e)) for e in _EP_NUM.findall(match.group(2))}
-
-
 def _deleted_media_for_arr(
     title_root: Path, planned: tuple[Path, ...], deleted: list[Path]
 ) -> arr.DeletedMedia:
@@ -65,9 +53,9 @@ def _deleted_media_for_arr(
     """
     gone = set(deleted)
     planned_videos = [p for p in planned if p.suffix.lower() in config.VIDEO_EXTS]
-    keep = {n for p in planned_videos if p not in gone for n in _episode_numbers(p)}
+    keep = {n for p in planned_videos if p not in gone for n in episode_numbers(p.name)}
     files = {
-        p.relative_to(title_root).as_posix(): _episode_numbers(p)
+        p.relative_to(title_root).as_posix(): episode_numbers(p.name)
         for p in planned_videos
         if p in gone
     }
@@ -383,8 +371,8 @@ def _offline_files(
     # In that case the offline copy has no unambiguous owner, so leave it alone.
     owners = [
         candidate
-        for candidate, info in config.LIBRARIES.items()
-        if info["sync_sub"] == sub and (config.MEDIA_ROOT / candidate / folder).is_dir()
+        for candidate in config.libs_for_sync_sub(sub)
+        if (config.MEDIA_ROOT / candidate / folder).is_dir()
     ]
     if len(owners) > 1:
         raise ValueError("offline title belongs to multiple source libraries")
@@ -471,7 +459,7 @@ def delete_selection(
     plan = plan_selection(lib, folder, selection_type, episodes)
     if plan.fingerprint != fingerprint:
         raise ValueError("media changed since preview; preview again")
-    if sync_ops.has_active_job_for_title(f"{lib}/{folder}"):
+    if sync_ops.active_jobs_on_folder(lib, folder):
         raise ValueError("wait for the active sync job before deleting media")
     source_root = _title_root(lib, folder)
     offline_root = config.SYNC_ROOT / config.LIBRARIES[lib]["sync_sub"] / folder

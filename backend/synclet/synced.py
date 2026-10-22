@@ -24,7 +24,7 @@ maint_cache.invalidate(); no new invalidation hooks needed.
 from __future__ import annotations
 
 from synclet import followed, library, maint_cache
-from synclet.config import LIBRARIES
+from synclet.config import LIBRARIES, libs_for_sync_sub
 from synclet.fs_helpers import iter_synced_titles, synced_title_stats
 from synclet.scan import clean_name
 from synclet.sync_ops import find_source_lib
@@ -78,10 +78,14 @@ def _build_enrichment() -> dict[tuple[str, str], list[dict]]:
     """
     enrichment: dict[tuple[str, str], list[dict]] = {}
     targets = set(followed.get_followed())
-    for _sub_path, item in iter_synced_titles():
+    # synclet.refresh reads the memoized tree of every synced title in every
+    # library sharing its sync folder, movies included, so those stay too.
+    keep = set(targets)
+    for sub_path, item in iter_synced_titles():
         source_lib = find_source_lib(item.name)
         if source_lib and LIBRARIES[source_lib]["kind"] in ("show", "youtube"):
             targets.add((source_lib, item.name))
+        keep.update((lib, item.name) for lib in libs_for_sync_sub(sub_path.name))
     for source_lib, folder in targets:
         display = clean_name(folder)
         detail = library.title_detail(source_lib, folder)
@@ -101,7 +105,7 @@ def _build_enrichment() -> dict[tuple[str, str], list[dict]]:
         ]
         if new_eps:
             enrichment[source_lib, folder] = new_eps
-    library.retain_details(targets)
+    library.retain_details(targets | keep)
     return enrichment
 
 

@@ -1,8 +1,13 @@
 """Verify the dedup logic in iter_sync_subs (tv + tv-4kUHD share `tv` sub)."""
 
 import contextlib
+import shutil
+from pathlib import Path
+
+import pytest
 
 from synclet.fs_helpers import (
+    copy_into_place,
     iter_sync_subs,
     iter_synced_titles,
     synced_title_sizes,
@@ -123,3 +128,80 @@ class TestSyncedTitleStats:
         os.utime(newer, (2_000, 2_000))
         stats = synced_title_stats()
         assert stats["After Life (2019) {tvdb-2}"].mtime == 2_000
+
+
+class TestCopyIntoPlace:
+    def test_replaces_dst_whole(self, tmp_path):
+
+        src = tmp_path / "src.mkv"
+        src.write_bytes(b"new" * 10)
+        dst = tmp_path / "out" / "dst.mkv"
+        copy_into_place(src, dst)
+        dst.write_bytes(b"old")
+        copy_into_place(src, dst)
+        assert dst.read_bytes() == b"new" * 10
+        assert sorted(p.name for p in dst.parent.iterdir()) == ["dst.mkv"]
+
+    def test_failed_copy_keeps_old_dst_and_no_temp(self, tmp_path, monkeypatch):
+
+        src = tmp_path / "src.mkv"
+        src.write_bytes(b"new")
+        dst = tmp_path / "dst.mkv"
+        dst.write_bytes(b"old")
+
+        def partial(s, d):
+            Path(d).write_bytes(b"ne")
+            raise OSError("disk full")
+
+        monkeypatch.setattr(shutil, "copy2", partial)
+        with pytest.raises(OSError, match="disk full"):
+            copy_into_place(src, dst)
+        assert dst.read_bytes() == b"old"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["dst.mkv", "src.mkv"]
+
+    def test_source_changing_during_the_copy_is_not_published(
+        self, tmp_path, monkeypatch
+    ):
+        from synclet.fs_helpers import SourceChangedError
+
+        src = tmp_path / "src.mkv"
+        src.write_bytes(b"new")
+        dst = tmp_path / "dst.mkv"
+        dst.write_bytes(b"old")
+        real_copy = shutil.copy2
+
+        def copy_then_grow(s, d):
+            real_copy(s, d)
+            src.write_bytes(b"newer and longer")
+
+        monkeypatch.setattr(shutil, "copy2", copy_then_grow)
+        with pytest.raises(SourceChangedError, match="changed during the copy"):
+            copy_into_place(src, dst)
+        assert dst.read_bytes() == b"old"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["dst.mkv", "src.mkv"]
+
+    def test_directory_destination_is_refused_before_copying(
+        self, tmp_path, monkeypatch
+    ):
+        src = tmp_path / "src.mkv"
+        src.write_bytes(b"new")
+        (tmp_path / "dst.mkv").mkdir()
+        monkeypatch.setattr(shutil, "copy2", lambda s, d: pytest.fail("copied"))
+        with pytest.raises(IsADirectoryError):
+            copy_into_place(src, tmp_path / "dst.mkv")
+
+    def test_temp_names_are_unique_per_copy(self, tmp_path, monkeypatch):
+        temps: list[str] = []
+        real_copy = shutil.copy2
+
+        def record(s, d):
+            temps.append(Path(d).name)
+            real_copy(s, d)
+
+        monkeypatch.setattr(shutil, "copy2", record)
+        src = tmp_path / "src.mkv"
+        src.write_bytes(b"x")
+        copy_into_place(src, tmp_path / "dst.mkv")
+        copy_into_place(src, tmp_path / "dst.mkv")
+        assert len(set(temps)) == 2
+        assert all(t.startswith(".syncthing.") and t.endswith(".tmp") for t in temps)

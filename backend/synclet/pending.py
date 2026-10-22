@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from synclet.config import LIBRARIES, SNAPSHOT_FILE, SYNC_ROOT, VIDEO_EXTS
+from synclet.episodes import EPISODE_PAT
 from synclet.fs_helpers import iter_sync_subs
 
 if TYPE_CHECKING:
@@ -39,8 +40,6 @@ if TYPE_CHECKING:
     # in any of these strings is a Python type error AND a TS type error,
     # which is the layered guarantee we want.
     ResolveStatusType = Literal["ok", "scrobble_failed", "no_rating_key", "rejected"]
-
-_EP_PAT = re.compile(r"[Ss](\d+)[Ee](\d+)", re.IGNORECASE)
 
 
 # ── Sync-sub kind map (derived from LIBRARIES, stable per process) ──────────
@@ -121,7 +120,7 @@ def path_to_snapshot_key(path: Path) -> SnapshotKey | None:
     if kind == "movie":
         return SnapshotKey(sync_sub=sync_sub, folder=folder)
     # show / youtube: extract season+episode from the filename
-    match = _EP_PAT.search(path.name)
+    match = EPISODE_PAT.search(path.name)
     if not match:
         return None
     return SnapshotKey(

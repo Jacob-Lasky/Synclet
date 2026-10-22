@@ -86,7 +86,6 @@ export const api = {
         }),
 
     job: (id: string) => json<Job>(`/api/jobs/${id}`),
-    jobs: () => json<{ jobs: Job[] }>(`/api/jobs`),
 
     // Two-phase: `items` (the synced list + sizes) is always present; the
     // per-title new_unwatched badges are filled once the backend's background

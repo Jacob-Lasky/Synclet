@@ -1,9 +1,10 @@
 """Copy and remove operations + async job tracking.
 
-The CLI does shutil.copy2 inline. We do the same, but in a background asyncio
-task so the HTTP handler returns immediately with a job_id and the client
-polls /api/jobs/{id} for progress. Matches the CLI's file selection (subtitles
-filter, mkdir -p parents) exactly.
+The CLI does shutil.copy2 inline. We copy in a background asyncio task so the
+HTTP handler returns immediately with a job_id and the client polls
+/api/jobs/{id} for progress, and through fs_helpers.copy_into_place so a failed
+copy never leaves a truncated file under its final name. Matches the CLI's file
+selection (subtitles filter, mkdir -p parents) exactly.
 """
 
 from __future__ import annotations
@@ -11,10 +12,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
-import shutil
 import time
 import uuid
-from collections.abc import Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import Any
@@ -22,7 +22,8 @@ from typing import Any
 from synclet import pending as pending_mod
 from synclet import state as state_mod
 from synclet.config import LIBRARIES, MEDIA_ROOT, SYNC_ROOT, VIDEO_EXTS
-from synclet.fs_helpers import iter_sync_subs, iter_synced_titles
+from synclet.episodes import EPISODE_PAT
+from synclet.fs_helpers import copy_into_place, iter_sync_subs, iter_synced_titles
 from synclet.maint_cache import invalidate as _invalidate_maint_cache
 from synclet.scan import is_wanted_file, scan_title_detail
 
@@ -30,7 +31,7 @@ from synclet.scan import is_wanted_file, scan_title_detail
 @dataclass
 class Job:
     id: str
-    op: str  # "sync" | "unsync"
+    op: str  # "sync" | "unsync" | "refresh"
     status: str  # "queued" | "running" | "done" | "error"
     total_files: int = 0  # every file (videos + subs + chapters)
     total_media_files: int = 0  # video files only , what humans care about
@@ -83,6 +84,91 @@ def _spawn_background(coro: Coroutine[Any, Any, None]) -> None:
     task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
+def job_title(lib: str, folder: str) -> str:
+    """A job's title: `<lib>/<folder>`. Folder names never contain "/"."""
+    return f"{lib}/{folder}"
+
+
+def _folder_key(title: str) -> str:
+    """The synced folder a job title works on, as `<sync_sub>/<folder>`.
+
+    Libraries sharing a sync folder (tv and tv-4kUHD) map to one key; the same
+    folder name under different sync folders (movies/X, youtube/X) does not.
+    """
+    lib, _, folder = title.rpartition("/")
+    return f"{LIBRARIES.get(lib, {}).get('sync_sub', lib)}/{folder}"
+
+
+def set_items(job: Job, items: list[dict]) -> None:
+    """Give `job` its items ({dst, size, is_video, ...}) and their totals."""
+    job.items = items
+    job.total_files = len(items)
+    job.total_media_files = sum(1 for i in items if i["is_video"])
+    job.total_bytes = sum(i["size"] for i in items)
+
+
+def new_job(op: str, title: str, items: list[dict]) -> Job:
+    """A queued job over `items`, totals filled in."""
+    job = Job(id=uuid.uuid4().hex[:12], op=op, status="queued", title=title)
+    set_items(job, items)
+    return job
+
+
+# synced folder (_folder_key) -> lock held by the one operation working on it,
+# and how many operations hold or wait for it. Sync, unsync and refresh jobs and
+# source media deletes on the same synced folder run one after another: a
+# refresh removes files an unsync is about to target and copies files back that
+# an unsync or a delete just removed, so letting them overlap loses one of
+# them. A lock is dropped once nobody holds or waits for it, so the map stays
+# small and no lock outlives the event loop it was used on.
+_FOLDER_LOCKS: dict[str, asyncio.Lock] = {}
+_FOLDER_USERS: dict[str, int] = {}
+
+
+@contextlib.asynccontextmanager
+async def _held(key: str) -> AsyncIterator[None]:
+    lock = _FOLDER_LOCKS.setdefault(key, asyncio.Lock())
+    _FOLDER_USERS[key] = _FOLDER_USERS.get(key, 0) + 1
+    try:
+        async with lock:
+            yield
+    finally:
+        _FOLDER_USERS[key] -= 1
+        if not _FOLDER_USERS[key]:
+            del _FOLDER_USERS[key], _FOLDER_LOCKS[key]
+
+
+def folder_lock(lib: str, folder: str) -> contextlib.AbstractAsyncContextManager[None]:
+    """Hold the synced folder of `lib/folder` against every job (see _held)."""
+    return _held(_folder_key(job_title(lib, folder)))
+
+
+async def _run_locked(
+    job: Job, run: Callable[[Job], Coroutine[Any, Any, None]]
+) -> None:
+    try:
+        async with _held(_folder_key(job.title)):
+            await run(job)
+    except Exception as exc:
+        # The runners record their own failures; this catches one before the
+        # runner started (taking the lock), so the job never sits "queued".
+        if job.status in ("queued", "running"):
+            job.status = "error"
+            job.error = str(exc)
+            job.ended_at = time.time()
+
+
+def launch(job: Job, run: Callable[[Job], Coroutine[Any, Any, None]]) -> Job:
+    """Register `job` and run it in the background once its folder is free.
+
+    Call on the event loop. The job stays "queued" while another job holds its
+    folder (see _FOLDER_LOCKS).
+    """
+    _JOBS[job.id] = job
+    _spawn_background(_run_locked(job, run))
+    return job
+
+
 def get_job(job_id: str) -> Job | None:
     return _JOBS.get(job_id)
 
@@ -91,18 +177,25 @@ def recent_jobs(limit: int = 20) -> list[Job]:
     return sorted(_JOBS.values(), key=lambda j: j.started_at, reverse=True)[:limit]
 
 
-def has_active_job_for_title(title: str) -> bool:
-    """Guard source deletion against an in-flight copy of the same title."""
-    return any(
-        job.title == title and job.status in ("queued", "running")
-        for job in _JOBS.values()
-    )
+def active_jobs() -> list[Job]:
+    """Jobs that are queued or running."""
+    return [job for job in _JOBS.values() if job.status in ("queued", "running")]
+
+
+def active_jobs_on_folder(lib: str, folder: str) -> list[Job]:
+    """Active jobs on the synced folder of `lib/folder`, from any library sharing it.
+
+    Source deletion refuses while one is queued, unsync queues behind one
+    instead of reporting nothing to remove, and a refresh joins a queued one.
+    """
+    key = _folder_key(job_title(lib, folder))
+    return [job for job in active_jobs() if _folder_key(job.title) == key]
 
 
 # ── Selector → file pairs ─────────────────────────────────────────────────────
 
 
-def _sync_dest(src: Path, lib: str) -> Path:
+def sync_dest(src: Path, lib: str) -> Path:
     sync_sub = LIBRARIES[lib]["sync_sub"]
     rel = src.relative_to(MEDIA_ROOT / lib)
     return SYNC_ROOT / sync_sub / rel
@@ -152,7 +245,7 @@ def resolve_selection(
         files = [
             Path(f["path"]) for f in detail.files if is_wanted_file(Path(f["path"]))
         ]
-        return [(f, _sync_dest(f, lib)) for f in files]
+        return [(f, sync_dest(f, lib)) for f in files]
 
     watched_map: dict[tuple[int, int], bool] | None = None
     if unwatched_only:
@@ -172,41 +265,44 @@ def resolve_selection(
         unwatched_only=unwatched_only,
         watched_map=watched_map,
     )
-    return [(f, _sync_dest(f, lib)) for f in selected_files]
+    return [(f, sync_dest(f, lib)) for f in selected_files]
 
 
 # ── Unsync selector (identity-based, NOT source→dest name mapping) ──────────
 
-_EP_RE = re.compile(r"[Ss](\d+)[Ee](\d+)")
 
-
-def _synced_title_files(lib: str, folder: str) -> list[Path]:
+def synced_title_files(lib: str, folder: str) -> list[Path]:
     """Every real synced file under a title's synced dir.
 
     Excludes dot-prefixed paths so Syncthing internals (`.stfolder`,
     `.stversions`) and dotfiles are NEVER candidates for deletion , this is a
     load-bearing blast-radius guard, do not drop it.
+
+    Symlinks are never returned and a symlinked title dir yields nothing: unsync
+    and refresh unlink what this returns, and a link could point them at files
+    outside SYNC_ROOT. Synclet itself only ever writes regular files here.
+    rglob does not descend into symlinked subdirectories.
     """
     synced_dir = SYNC_ROOT / LIBRARIES[lib]["sync_sub"] / folder
-    if not synced_dir.is_dir():
+    if synced_dir.is_symlink() or not synced_dir.is_dir():
         return []
     out: list[Path] = []
     for f in synced_dir.rglob("*"):
         rel = f.relative_to(synced_dir)
         if any(part.startswith(".") for part in rel.parts):
             continue
-        if f.is_file():
+        if f.is_file() and not f.is_symlink():
             out.append(f)
     return out
 
 
-def _file_se(f: Path) -> tuple[int, int] | None:
-    m = _EP_RE.search(f.name)
+def file_se(f: Path) -> tuple[int, int] | None:
+    m = EPISODE_PAT.search(f.name)
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
 def _file_season(f: Path) -> int | None:
-    se = _file_se(f)
+    se = file_se(f)
     if se is not None:
         return se[0]
     m = re.search(r"\d+", f.parent.name)
@@ -233,7 +329,7 @@ def resolve_unsync_selection(
     """
     if lib not in LIBRARIES:
         return []
-    files = _synced_title_files(lib, folder)
+    files = synced_title_files(lib, folder)
     if not files:
         return []
 
@@ -245,7 +341,7 @@ def resolve_unsync_selection(
 
     if selection_type == "episodes" and episodes:
         keys = {(int(s), int(e)) for s, e in episodes}
-        return [f for f in files if _file_se(f) in keys]
+        return [f for f in files if file_se(f) in keys]
 
     # Unscoped show selection (e.g. "all" episodes): the whole title.
     return files
@@ -254,10 +350,16 @@ def resolve_unsync_selection(
 # ── Job execution ─────────────────────────────────────────────────────────────
 
 
-async def _run_sync(job: Job) -> None:
+async def _run_sync(
+    job: Job, resolve: Callable[[], list[tuple[Path, Path]]] | None
+) -> None:
     job.status = "running"
     job.started_at = time.time()
     try:
+        if resolve is not None:
+            # Re-select under the folder lock: an unsync or refresh that ran
+            # while this job was queued changed what is already synced.
+            set_items(job, await asyncio.to_thread(lambda: sync_items(resolve())))
         for item in job.items:
             src = Path(item["src"])
             dst = Path(item["dst"])
@@ -267,8 +369,7 @@ async def _run_sync(job: Job) -> None:
                 if item["is_video"]:
                     job.processed_media_files += 1
                 continue
-            await asyncio.to_thread(dst.parent.mkdir, parents=True, exist_ok=True)
-            await asyncio.to_thread(shutil.copy2, str(src), str(dst))
+            await asyncio.to_thread(copy_into_place, src, dst)
             job.processed_files += 1
             if item["is_video"]:
                 job.processed_media_files += 1
@@ -296,10 +397,14 @@ async def _run_sync(job: Job) -> None:
         _invalidate_maint_cache()
 
 
-async def _run_unsync(job: Job) -> None:
+async def _run_unsync(job: Job, resolve: Callable[[], list[Path]] | None) -> None:
     job.status = "running"
     job.started_at = time.time()
     try:
+        if resolve is not None:
+            # Re-select under the folder lock: a refresh that ran while this
+            # job was queued renamed the files it was queued with.
+            set_items(job, await asyncio.to_thread(lambda: unsync_items(resolve())))
         parents: set[Path] = set()
         for item in job.items:
             dst = Path(item["dst"])
@@ -339,8 +444,9 @@ async def _run_unsync(job: Job) -> None:
         _invalidate_maint_cache()
 
 
-def start_sync(pairs: list[tuple[Path, Path]], title: str = "") -> Job:
-    job = Job(id=uuid.uuid4().hex[:12], op="sync", status="queued", title=title)
+def sync_items(pairs: list[tuple[Path, Path]]) -> list[dict]:
+    """Job items for the (src, dst) pairs not yet synced. Reads the share, so
+    callers on the event loop run it in a thread."""
     items = []
     for src, dst in pairs:
         if dst.exists():
@@ -357,20 +463,27 @@ def start_sync(pairs: list[tuple[Path, Path]], title: str = "") -> Job:
                 "is_video": _is_video(str(src)),
             }
         )
-    job.items = items
-    job.total_files = len(items)
-    job.total_media_files = sum(1 for i in items if i["is_video"])
-    job.total_bytes = sum(i["size"] for i in items)
-    _JOBS[job.id] = job
-    _spawn_background(_run_sync(job))
-    return job
+    return items
 
 
-def start_unsync(targets: list[Path], title: str = "") -> Job:
-    """Remove the given synced files. `targets` are actual synced paths
-    (from resolve_unsync_selection), not source→dest pairs , see that
-    function for why unsync must not key off source filenames."""
-    job = Job(id=uuid.uuid4().hex[:12], op="unsync", status="queued", title=title)
+def start_sync(
+    items: list[dict],
+    title: str = "",
+    resolve: Callable[[], list[tuple[Path, Path]]] | None = None,
+) -> Job:
+    """Copy `items` (from sync_items) in the background. Call on the event loop.
+
+    `resolve` re-selects the (src, dst) pairs once the job holds its folder;
+    without it the job copies `items` as given.
+    """
+    return launch(new_job("sync", title, items), lambda j: _run_sync(j, resolve))
+
+
+def unsync_items(targets: list[Path]) -> list[dict]:
+    """Job items for the synced files in `targets` that exist. Reads the share,
+    so callers on the event loop run it in a thread. `targets` are actual
+    synced paths (from resolve_unsync_selection), not source→dest pairs , see
+    that function for why unsync must not key off source filenames."""
     items = []
     for dst in targets:
         if dst.exists():
@@ -385,13 +498,20 @@ def start_unsync(targets: list[Path], title: str = "") -> Job:
                     "is_video": _is_video(str(dst)),
                 }
             )
-    job.items = items
-    job.total_files = len(items)
-    job.total_media_files = sum(1 for i in items if i["is_video"])
-    job.total_bytes = sum(i["size"] for i in items)
-    _JOBS[job.id] = job
-    _spawn_background(_run_unsync(job))
-    return job
+    return items
+
+
+def start_unsync(
+    items: list[dict],
+    title: str = "",
+    resolve: Callable[[], list[Path]] | None = None,
+) -> Job:
+    """Remove `items` (from unsync_items) in the background. Call on the loop.
+
+    `resolve` re-selects the targets once the job holds its folder; without it
+    the job removes `items` as given.
+    """
+    return launch(new_job("unsync", title, items), lambda j: _run_unsync(j, resolve))
 
 
 # ── Maintenance: remove watched, hanging files ────────────────────────────────
@@ -412,7 +532,7 @@ def find_source_lib(folder_name: str) -> str | None:
 def _find_watched_synced_files_uncached() -> list[dict]:
     """The expensive watched-files walk; callers should use the cached wrapper."""
     from synclet.ignored import WatchedRef, ignored_watched_set
-    from synclet.scan import _EP_PAT, _season_num, clean_name
+    from synclet.scan import _season_num, clean_name
     from synclet.watchstate import movie_watch_state, show_watch_map
 
     ignored = ignored_watched_set()
@@ -446,7 +566,7 @@ def _find_watched_synced_files_uncached() -> list[dict]:
                 for f in season_dir.iterdir():
                     if f.is_dir():
                         continue
-                    m = _EP_PAT.search(f.name)
+                    m = EPISODE_PAT.search(f.name)
                     if not m:
                         continue
                     e_num = int(m.group(2))
