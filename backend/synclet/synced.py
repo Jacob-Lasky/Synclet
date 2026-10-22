@@ -78,10 +78,14 @@ def _build_enrichment() -> dict[tuple[str, str], list[dict]]:
     """
     enrichment: dict[tuple[str, str], list[dict]] = {}
     targets = set(followed.get_followed())
+    # synclet.refresh reads the memoized tree of every synced title, movies and
+    # both libraries of a shared folder included, so those stay memoized too.
+    keep = set(targets)
     for _sub_path, item in iter_synced_titles():
         source_lib = find_source_lib(item.name)
         if source_lib and LIBRARIES[source_lib]["kind"] in ("show", "youtube"):
             targets.add((source_lib, item.name))
+        keep.update((lib, item.name) for lib in library.source_libs(item.name))
     for source_lib, folder in targets:
         display = clean_name(folder)
         detail = library.title_detail(source_lib, folder)
@@ -101,7 +105,7 @@ def _build_enrichment() -> dict[tuple[str, str], list[dict]]:
         ]
         if new_eps:
             enrichment[source_lib, folder] = new_eps
-    library.retain_details(targets)
+    library.retain_details(targets | keep)
     return enrichment
 
 

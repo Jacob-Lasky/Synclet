@@ -1,9 +1,10 @@
 """Copy and remove operations + async job tracking.
 
-The CLI does shutil.copy2 inline. We do the same, but in a background asyncio
-task so the HTTP handler returns immediately with a job_id and the client
-polls /api/jobs/{id} for progress. Matches the CLI's file selection (subtitles
-filter, mkdir -p parents) exactly.
+The CLI does shutil.copy2 inline. We copy in a background asyncio task so the
+HTTP handler returns immediately with a job_id and the client polls
+/api/jobs/{id} for progress, and through fs_helpers.copy_into_place so a failed
+copy never leaves a truncated file under its final name. Matches the CLI's file
+selection (subtitles filter, mkdir -p parents) exactly.
 """
 
 from __future__ import annotations
@@ -11,10 +12,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
-import shutil
 import time
 import uuid
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import Any
@@ -22,7 +22,7 @@ from typing import Any
 from synclet import pending as pending_mod
 from synclet import state as state_mod
 from synclet.config import LIBRARIES, MEDIA_ROOT, SYNC_ROOT, VIDEO_EXTS
-from synclet.fs_helpers import iter_sync_subs, iter_synced_titles
+from synclet.fs_helpers import copy_into_place, iter_sync_subs, iter_synced_titles
 from synclet.maint_cache import invalidate as _invalidate_maint_cache
 from synclet.scan import is_wanted_file, scan_title_detail
 
@@ -30,7 +30,7 @@ from synclet.scan import is_wanted_file, scan_title_detail
 @dataclass
 class Job:
     id: str
-    op: str  # "sync" | "unsync"
+    op: str  # "sync" | "unsync" | "refresh"
     status: str  # "queued" | "running" | "done" | "error"
     total_files: int = 0  # every file (videos + subs + chapters)
     total_media_files: int = 0  # video files only , what humans care about
@@ -83,6 +83,23 @@ def _spawn_background(coro: Coroutine[Any, Any, None]) -> None:
     task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
+def new_job(op: str, title: str, items: list[dict]) -> Job:
+    """A queued job over `items` ({dst, size, is_video, ...}), totals filled in."""
+    job = Job(id=uuid.uuid4().hex[:12], op=op, status="queued", title=title)
+    job.items = items
+    job.total_files = len(items)
+    job.total_media_files = sum(1 for i in items if i["is_video"])
+    job.total_bytes = sum(i["size"] for i in items)
+    return job
+
+
+def launch(job: Job, run: Callable[[Job], Coroutine[Any, Any, None]]) -> Job:
+    """Register `job` and run it in the background. Call on the event loop."""
+    _JOBS[job.id] = job
+    _spawn_background(run(job))
+    return job
+
+
 def get_job(job_id: str) -> Job | None:
     return _JOBS.get(job_id)
 
@@ -102,7 +119,7 @@ def has_active_job_for_title(title: str) -> bool:
 # ── Selector → file pairs ─────────────────────────────────────────────────────
 
 
-def _sync_dest(src: Path, lib: str) -> Path:
+def sync_dest(src: Path, lib: str) -> Path:
     sync_sub = LIBRARIES[lib]["sync_sub"]
     rel = src.relative_to(MEDIA_ROOT / lib)
     return SYNC_ROOT / sync_sub / rel
@@ -152,7 +169,7 @@ def resolve_selection(
         files = [
             Path(f["path"]) for f in detail.files if is_wanted_file(Path(f["path"]))
         ]
-        return [(f, _sync_dest(f, lib)) for f in files]
+        return [(f, sync_dest(f, lib)) for f in files]
 
     watched_map: dict[tuple[int, int], bool] | None = None
     if unwatched_only:
@@ -172,7 +189,7 @@ def resolve_selection(
         unwatched_only=unwatched_only,
         watched_map=watched_map,
     )
-    return [(f, _sync_dest(f, lib)) for f in selected_files]
+    return [(f, sync_dest(f, lib)) for f in selected_files]
 
 
 # ── Unsync selector (identity-based, NOT source→dest name mapping) ──────────
@@ -180,7 +197,7 @@ def resolve_selection(
 _EP_RE = re.compile(r"[Ss](\d+)[Ee](\d+)")
 
 
-def _synced_title_files(lib: str, folder: str) -> list[Path]:
+def synced_title_files(lib: str, folder: str) -> list[Path]:
     """Every real synced file under a title's synced dir.
 
     Excludes dot-prefixed paths so Syncthing internals (`.stfolder`,
@@ -200,13 +217,13 @@ def _synced_title_files(lib: str, folder: str) -> list[Path]:
     return out
 
 
-def _file_se(f: Path) -> tuple[int, int] | None:
+def file_se(f: Path) -> tuple[int, int] | None:
     m = _EP_RE.search(f.name)
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
 def _file_season(f: Path) -> int | None:
-    se = _file_se(f)
+    se = file_se(f)
     if se is not None:
         return se[0]
     m = re.search(r"\d+", f.parent.name)
@@ -233,7 +250,7 @@ def resolve_unsync_selection(
     """
     if lib not in LIBRARIES:
         return []
-    files = _synced_title_files(lib, folder)
+    files = synced_title_files(lib, folder)
     if not files:
         return []
 
@@ -245,7 +262,7 @@ def resolve_unsync_selection(
 
     if selection_type == "episodes" and episodes:
         keys = {(int(s), int(e)) for s, e in episodes}
-        return [f for f in files if _file_se(f) in keys]
+        return [f for f in files if file_se(f) in keys]
 
     # Unscoped show selection (e.g. "all" episodes): the whole title.
     return files
@@ -267,8 +284,7 @@ async def _run_sync(job: Job) -> None:
                 if item["is_video"]:
                     job.processed_media_files += 1
                 continue
-            await asyncio.to_thread(dst.parent.mkdir, parents=True, exist_ok=True)
-            await asyncio.to_thread(shutil.copy2, str(src), str(dst))
+            await asyncio.to_thread(copy_into_place, src, dst)
             job.processed_files += 1
             if item["is_video"]:
                 job.processed_media_files += 1
@@ -340,7 +356,6 @@ async def _run_unsync(job: Job) -> None:
 
 
 def start_sync(pairs: list[tuple[Path, Path]], title: str = "") -> Job:
-    job = Job(id=uuid.uuid4().hex[:12], op="sync", status="queued", title=title)
     items = []
     for src, dst in pairs:
         if dst.exists():
@@ -357,20 +372,13 @@ def start_sync(pairs: list[tuple[Path, Path]], title: str = "") -> Job:
                 "is_video": _is_video(str(src)),
             }
         )
-    job.items = items
-    job.total_files = len(items)
-    job.total_media_files = sum(1 for i in items if i["is_video"])
-    job.total_bytes = sum(i["size"] for i in items)
-    _JOBS[job.id] = job
-    _spawn_background(_run_sync(job))
-    return job
+    return launch(new_job("sync", title, items), _run_sync)
 
 
 def start_unsync(targets: list[Path], title: str = "") -> Job:
     """Remove the given synced files. `targets` are actual synced paths
     (from resolve_unsync_selection), not source→dest pairs , see that
     function for why unsync must not key off source filenames."""
-    job = Job(id=uuid.uuid4().hex[:12], op="unsync", status="queued", title=title)
     items = []
     for dst in targets:
         if dst.exists():
@@ -385,13 +393,7 @@ def start_unsync(targets: list[Path], title: str = "") -> Job:
                     "is_video": _is_video(str(dst)),
                 }
             )
-    job.items = items
-    job.total_files = len(items)
-    job.total_media_files = sum(1 for i in items if i["is_video"])
-    job.total_bytes = sum(i["size"] for i in items)
-    _JOBS[job.id] = job
-    _spawn_background(_run_unsync(job))
-    return job
+    return launch(new_job("unsync", title, items), _run_unsync)
 
 
 # ── Maintenance: remove watched, hanging files ────────────────────────────────

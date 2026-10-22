@@ -21,6 +21,7 @@ from collections.abc import Generator
 from pathlib import Path
 
 import pytest
+from litestar.testing import TestClient
 
 from synclet import config as _config
 
@@ -229,11 +230,39 @@ def patch_paths(
     # tmp_path. invalidate() now only flags dirty (it preserves last-good for
     # background rebuild), so it cannot isolate tests; clear() fully resets the
     # engine. Also bust the watchstate lru caches behind the grid.
-    from synclet import maint_cache, watchstate
+    from synclet import maint_cache, refresh, sync_ops, watchstate
 
     maint_cache.clear()
     watchstate.invalidate_cache()
+    # Job registry and refresh backoff are process-wide; start each test empty.
+    sync_ops._JOBS.clear()
+    refresh._failed_at.clear()
     yield media_tree
     maint_cache.clear()
     watchstate.invalidate_cache()
     library.reset()
+
+
+@pytest.fixture
+def client(patch_paths, patch_watchstate, tmp_path, monkeypatch):
+    """A TestClient pointed at the real Litestar app, with paths repointed
+    at the fixture tree and Plex calls mocked away."""
+    # Stub Plex API so tests don't depend on network
+    monkeypatch.setattr("synclet.plex._get_xml", lambda *a, **kw: None)
+    # Reset Plex section_index cache (lru_cache)
+    from synclet.plex import episode_rating_keys, section_index
+
+    section_index.cache_clear()
+    episode_rating_keys.cache_clear()
+
+    # Point the snapshot at a tmp file so the test does not write into
+    # /app/data on the dev machine (which may not exist or may collide with
+    # the live stack).
+    snap = tmp_path / "snapshot.json"
+    monkeypatch.setattr("synclet.config.SNAPSHOT_FILE", snap)
+    monkeypatch.setattr("synclet.pending.SNAPSHOT_FILE", snap)
+
+    from main import app
+
+    with TestClient(app=app) as c:
+        yield c

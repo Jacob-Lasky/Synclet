@@ -167,7 +167,7 @@ export interface MediaDeleteResult {
 
 export interface Job {
     id: string
-    op: "sync" | "unsync"
+    op: "sync" | "unsync" | "refresh"
     status: "queued" | "running" | "done" | "error"
     total_files: number
     total_media_files: number

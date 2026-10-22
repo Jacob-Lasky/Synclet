@@ -1,8 +1,13 @@
 """Verify the dedup logic in iter_sync_subs (tv + tv-4kUHD share `tv` sub)."""
 
 import contextlib
+import shutil
+from pathlib import Path
+
+import pytest
 
 from synclet.fs_helpers import (
+    copy_into_place,
     iter_sync_subs,
     iter_synced_titles,
     synced_title_sizes,
@@ -123,3 +128,33 @@ class TestSyncedTitleStats:
         os.utime(newer, (2_000, 2_000))
         stats = synced_title_stats()
         assert stats["After Life (2019) {tvdb-2}"].mtime == 2_000
+
+
+class TestCopyIntoPlace:
+    def test_replaces_dst_whole(self, tmp_path):
+
+        src = tmp_path / "src.mkv"
+        src.write_bytes(b"new" * 10)
+        dst = tmp_path / "out" / "dst.mkv"
+        copy_into_place(src, dst)
+        dst.write_bytes(b"old")
+        copy_into_place(src, dst)
+        assert dst.read_bytes() == b"new" * 10
+        assert sorted(p.name for p in dst.parent.iterdir()) == ["dst.mkv"]
+
+    def test_failed_copy_keeps_old_dst_and_no_temp(self, tmp_path, monkeypatch):
+
+        src = tmp_path / "src.mkv"
+        src.write_bytes(b"new")
+        dst = tmp_path / "dst.mkv"
+        dst.write_bytes(b"old")
+
+        def partial(s, d):
+            Path(d).write_bytes(b"ne")
+            raise OSError("disk full")
+
+        monkeypatch.setattr(shutil, "copy2", partial)
+        with pytest.raises(OSError, match="disk full"):
+            copy_into_place(src, dst)
+        assert dst.read_bytes() == b"old"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["dst.mkv", "src.mkv"]

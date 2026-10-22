@@ -80,6 +80,9 @@ class Episode:
     title: str
     size_bytes: int
     files: list[str] = field(default_factory=list)  # absolute paths
+    # path -> (size, mtime) from the scan's own stat, so synclet.refresh can
+    # compare a synced copy to its source without statting the share again.
+    file_stats: dict[str, tuple[int, float]] = field(default_factory=dict)
     has_video: bool = False
     is_synced: bool = False
     watch_state: str = "unwatched"  # "unwatched" | "watched" | "progress"
@@ -373,7 +376,8 @@ def scan_title_detail(lib: str, folder: str) -> TitleDetail | None:
         total = 0
         synced = 0
         for f in files:
-            size = f.stat().st_size
+            st = f.stat()
+            size = st.st_size
             total += size
             is_video = _is_video(f)
             if movie_synced and is_video:
@@ -383,6 +387,7 @@ def scan_title_detail(lib: str, folder: str) -> TitleDetail | None:
                     "path": str(f),
                     "name": f.name,
                     "size_bytes": size,
+                    "mtime": st.st_mtime,
                     "is_video": is_video,
                     "is_synced": movie_synced,
                 }
@@ -414,7 +419,8 @@ def scan_title_detail(lib: str, folder: str) -> TitleDetail | None:
         for e_num, files in eps_map.items():
             wanted = [f for f in files if is_wanted_file(f)]
             videos = [f for f in wanted if _is_video(f)]
-            size = sum(f.stat().st_size for f in wanted)
+            stats = {str(f): f.stat() for f in wanted}
+            size = sum(st.st_size for st in stats.values())
             is_synced = bool(videos) and (s_num, e_num) in synced_eps
             ep = Episode(
                 season=s_num,
@@ -422,6 +428,7 @@ def scan_title_detail(lib: str, folder: str) -> TitleDetail | None:
                 title=_ep_title_from_files(wanted),
                 size_bytes=size,
                 files=[str(f) for f in wanted],
+                file_stats={p: (st.st_size, st.st_mtime) for p, st in stats.items()},
                 has_video=bool(videos),
                 is_synced=is_synced,
             )

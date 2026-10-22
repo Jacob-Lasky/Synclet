@@ -114,6 +114,15 @@ LIBRARY_STAT_TIMEOUT_S = int(os.environ.get("SYNCLET_LIBRARY_STAT_TIMEOUT", "10"
 # Arr webhooks invalidate a title at once; this bounds staleness for sources
 # without one (YouTube).
 TITLE_RESCAN_S = int(os.environ.get("SYNCLET_TITLE_RESCAN", "3600"))
+# How long a library file must sit unchanged (seconds since its mtime) before
+# the background pass refreshes a synced copy from it (synclet.refresh). Imports
+# and Tdarr write library files in place; copying one mid-write would send a
+# partial file to the devices and then a second full copy. Arr webhooks skip
+# the wait because the arr sends them once its import has finished.
+REFRESH_SETTLE_S = int(os.environ.get("SYNCLET_REFRESH_SETTLE", "600"))
+# After a failed refresh, the background pass waits this long before trying
+# that title again (see synclet.refresh._failed_at).
+REFRESH_RETRY_S = int(os.environ.get("SYNCLET_REFRESH_RETRY", "3600"))
 
 # Whether to run the background refresh loop + startup prewarm. On in
 # production. Tests set SYNCLET_CACHE_BACKGROUND_REFRESH=0 so no live timer

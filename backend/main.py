@@ -39,6 +39,7 @@ from synclet import (
     maint_cache,
     media_delete,
     pending,
+    refresh,
     state,
     sync_ops,
     synced,
@@ -605,7 +606,35 @@ async def api_arr_webhook(data: dict) -> dict:
     logger.info(
         "arr webhook %s: %s/%s present=%s", data.get("eventType"), lib, folder, present
     )
-    return {"ok": True, "lib": lib, "folder": folder, "present": present}
+    out: dict = {"ok": True, "lib": lib, "folder": folder, "present": present}
+    if present and data.get("eventType") in refresh.REFRESH_EVENTS:
+        # An import or rename can leave a synced copy behind the library file
+        # (synclet.refresh). Planning is a no-op for a title that is not synced.
+        result = await refresh.refresh_title(config.LIBRARIES[lib]["sync_sub"], folder)
+        out["refresh_job_id"] = result["job_id"]
+    return out
+
+
+@post("/api/synced/refresh")
+async def api_synced_refresh(data: TitleRef) -> dict:
+    """Bring one synced title in line with the library, now.
+
+    The same plan and job the arr webhook and the background check run
+    (synclet.refresh.refresh_title): copy library files whose synced copy is
+    missing or a different size, then remove the superseded synced files.
+    Returns the plan, including why any synced item was left alone.
+    """
+    if not library.valid_folder(data.lib, data.folder):
+        raise HTTPException(status_code=400, detail="invalid library title")
+    return await refresh.refresh_title(
+        config.LIBRARIES[data.lib]["sync_sub"], data.folder
+    )
+
+
+@get("/api/synced/stale")
+async def api_synced_stale() -> dict:
+    """Synced titles that differ from the library, as of the last background check."""
+    return {"items": await asyncio.to_thread(refresh.find_stale)}
 
 
 @post("/api/arr/rescan")
@@ -724,6 +753,8 @@ def build_route_handlers(static_dir: Path | None = None) -> list:
         api_refresh,
         api_library,
         api_arr_webhook,
+        api_synced_refresh,
+        api_synced_stale,
         api_arr_rescan,
         api_arr_unmonitor,
         api_syncthing_overview,
@@ -811,6 +842,12 @@ async def _cache_refresh_loop() -> None:
                     finished - started,
                     ", ".join(rebuilt),
                 )
+            if full:
+                refreshing = await refresh.start_due_refreshes()
+                if refreshing:
+                    logger.info(
+                        "synced copy refresh started: %s", ", ".join(refreshing)
+                    )
             if full and finished - started > config.CACHE_SLOW_PASS:
                 logger.warning(
                     "full cache pass took %.0fs (over %ss); the share or Plex is slow",
@@ -837,6 +874,7 @@ async def on_startup(app: Litestar) -> None:
     watchlist.register_builders()
     sync_ops.register_builders()
     pending.register_builders()
+    refresh.register_builders()
 
     if not config.CACHE_BACKGROUND_REFRESH:
         # Tests disable the live loop and prewarm: no timer mutates the cache

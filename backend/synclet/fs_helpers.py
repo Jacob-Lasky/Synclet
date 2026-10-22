@@ -7,7 +7,9 @@ sync_ops, state, and the api_synced route.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
+import shutil
 from collections.abc import Iterator
 from pathlib import Path
 from typing import NamedTuple
@@ -31,6 +33,34 @@ class SyncedTitleStats(NamedTuple):
     size_bytes: int
     video_files: int
     mtime: float
+
+
+def copy_into_place(src: Path, dst: Path) -> None:
+    """Copy `src` to `dst` so that `dst` only ever holds a complete file.
+
+    Copies to a temp sibling, then renames it over `dst`. DO NOT copy straight
+    to `dst`: a copy that dies midway leaves a truncated file under the final
+    name, the sync job's exists() check then skips that file on every later
+    sync, and Syncthing ships the truncated file to every device. Overwriting
+    in place would also cut a good synced copy down to a partial one for the
+    length of the copy.
+
+    The temp name has Syncthing's own temporary-file shape
+    (`.syncthing.<x>.tmp`). Syncthing's scanner never syncs such a file and
+    deletes it once it is a day old, so a partial copy never reaches a device,
+    even if Synclet dies mid-copy. The name is hashed so it stays short for long
+    release names.
+    """
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(dst.name.encode()).hexdigest()[:16]
+    tmp = dst.with_name(f".syncthing.synclet-{digest}.tmp")
+    try:
+        shutil.copy2(src, tmp)
+        tmp.replace(dst)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
 
 
 def iter_sync_subs() -> Iterator[Path]:
