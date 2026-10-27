@@ -7,6 +7,7 @@ sync_ops, state, and the api_synced route.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import shutil
 import uuid
@@ -14,7 +15,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import NamedTuple
 
-from synclet.config import LIBRARIES, SYNC_ROOT, VIDEO_EXTS
+from synclet.config import LIBRARIES, SUBTITLE_EXTS, SYNC_ROOT, VIDEO_EXTS
 
 
 class SyncedTitleStats(NamedTuple):
@@ -33,6 +34,28 @@ class SyncedTitleStats(NamedTuple):
     size_bytes: int
     video_files: int
     mtime: float
+
+
+def verify_subtitle(src: Path, dst: Path) -> None:
+    """Verify selected sidecars, including existing copies, without altering either.
+
+    Hash only subtitles, never videos. Stream the reads so bitmap subtitles do
+    not turn into an unbounded allocation. Existence alone is not completion.
+    """
+    before = src.stat()
+    if not src.is_file() or not dst.is_file() or before.st_size == 0:
+        raise OSError(f"Subtitle missing, empty or not a regular file: {src.name}")
+    if dst.stat().st_size != before.st_size:
+        raise OSError(f"Subtitle copy size mismatch: {src.name}")
+    with src.open("rb") as a, dst.open("rb") as b:
+        if (
+            hashlib.file_digest(a, "sha256").digest()
+            != hashlib.file_digest(b, "sha256").digest()
+        ):
+            raise OSError(f"Subtitle copy content mismatch: {src.name}")
+    after = src.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise OSError(f"Subtitle source changed while verifying: {src.name}")
 
 
 class SourceChangedError(OSError):
@@ -73,7 +96,11 @@ def copy_into_place(src: Path, dst: Path) -> None:
         after = src.stat()
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
             raise SourceChangedError(f"{src.name} changed during the copy")
+        if src.suffix.lower() in SUBTITLE_EXTS:
+            verify_subtitle(src, tmp)
         tmp.replace(dst)
+        if src.suffix.lower() in SUBTITLE_EXTS:
+            verify_subtitle(src, dst)
     except BaseException:
         with contextlib.suppress(OSError):
             tmp.unlink()

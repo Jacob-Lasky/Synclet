@@ -21,11 +21,21 @@ from typing import Any
 
 from synclet import pending as pending_mod
 from synclet import state as state_mod
-from synclet.config import LIBRARIES, MEDIA_ROOT, SYNC_ROOT, VIDEO_EXTS
+from synclet.config import LIBRARIES, MEDIA_ROOT, SUBTITLE_EXTS, SYNC_ROOT, VIDEO_EXTS
 from synclet.episodes import EPISODE_PAT
-from synclet.fs_helpers import copy_into_place, iter_sync_subs, iter_synced_titles
+from synclet.fs_helpers import (
+    copy_into_place,
+    iter_sync_subs,
+    iter_synced_titles,
+    verify_subtitle,
+)
 from synclet.maint_cache import invalidate as _invalidate_maint_cache
 from synclet.scan import is_wanted_file, scan_title_detail
+
+SELECTION_CONFLICT_MESSAGE = (
+    "Source files or required subtitles disappeared, changed or are unavailable. "
+    "Recheck this title and retry."
+)
 
 
 @dataclass
@@ -43,7 +53,10 @@ class Job:
     started_at: float = 0.0
     ended_at: float = 0.0
     error: str = ""
+    error_status: int | None = None
     title: str = ""  # display name for the job
+    verified_subtitles: int = 0
+    warnings: list[str] = field(default_factory=list)
     items: list[dict] = field(default_factory=list)  # [{src, dst, size, is_video}]
 
     def to_dict(self) -> dict:
@@ -61,7 +74,10 @@ class Job:
             "started_at": self.started_at,
             "ended_at": self.ended_at,
             "error": self.error,
+            "error_status": self.error_status,
             "title": self.title,
+            "warnings": self.warnings,
+            "verified_subtitles": self.verified_subtitles,
         }
 
 
@@ -351,25 +367,52 @@ def resolve_unsync_selection(
 
 
 async def _run_sync(
-    job: Job, resolve: Callable[[], list[tuple[Path, Path]]] | None
+    job: Job,
+    resolve: Callable[[], list[tuple[Path, Path]]] | None,
+    preflight: Callable[[], list[str]] | None = None,
 ) -> None:
     job.status = "running"
     job.started_at = time.time()
     try:
-        if resolve is not None:
-            # Re-select under the folder lock: an unsync or refresh that ran
-            # while this job was queued changed what is already synced.
-            set_items(job, await asyncio.to_thread(lambda: sync_items(resolve())))
+        try:
+            if preflight is not None:
+                job.warnings = await asyncio.to_thread(preflight)
+            if resolve is not None:
+                # Re-select under the folder lock: an unsync or refresh that ran
+                # while this job was queued changed what is already synced.
+                pairs = await asyncio.to_thread(resolve)
+                # A rescan must not silently forget a subtitle selected before the lock.
+                selected = {str(src) for src, _ in pairs}
+                for item in job.items:
+                    src = Path(item["src"])
+                    if src.suffix.lower() in SUBTITLE_EXTS and str(src) not in selected:
+                        raise OSError(
+                            f"Selected subtitle source disappeared: {src.name}"
+                        )
+                set_items(job, await asyncio.to_thread(lambda: sync_items(pairs)))
+        except OSError:
+            # The request may already have returned a job id while queued.
+            # Preserve the conflict as job data without changing polling HTTP.
+            job.error_status = 409
+            job.error = SELECTION_CONFLICT_MESSAGE
+            job.status = "error"
+            return
         for item in job.items:
             src = Path(item["src"])
             dst = Path(item["dst"])
             job.current_file = src.name
             if await asyncio.to_thread(dst.exists):
+                if src.suffix.lower() in SUBTITLE_EXTS:
+                    await asyncio.to_thread(verify_subtitle, src, dst)
+                    job.verified_subtitles += 1
                 job.processed_files += 1
                 if item["is_video"]:
                     job.processed_media_files += 1
                 continue
             await asyncio.to_thread(copy_into_place, src, dst)
+            if src.suffix.lower() in SUBTITLE_EXTS:
+                await asyncio.to_thread(verify_subtitle, src, dst)
+                job.verified_subtitles += 1
             job.processed_files += 1
             if item["is_video"]:
                 job.processed_media_files += 1
@@ -445,15 +488,22 @@ async def _run_unsync(job: Job, resolve: Callable[[], list[Path]] | None) -> Non
 
 
 def sync_items(pairs: list[tuple[Path, Path]]) -> list[dict]:
-    """Job items for the (src, dst) pairs not yet synced. Reads the share, so
-    callers on the event loop run it in a thread."""
+    """Missing copies plus all selected subtitles for verification.
+
+    Existing sidecars must be checked, and a vanished selected subtitle must
+    fail visibly rather than disappearing from the job. Reads the share, so
+    callers on the event loop run it in a thread.
+    """
     items = []
     for src, dst in pairs:
-        if dst.exists():
+        subtitle = src.suffix.lower() in SUBTITLE_EXTS
+        if dst.exists() and not subtitle:
             continue
         try:
             size = src.stat().st_size
-        except OSError:
+        except OSError as exc:
+            if subtitle:
+                raise OSError(f"Selected subtitle source missing: {src.name}") from exc
             continue
         items.append(
             {
@@ -470,13 +520,16 @@ def start_sync(
     items: list[dict],
     title: str = "",
     resolve: Callable[[], list[tuple[Path, Path]]] | None = None,
+    preflight: Callable[[], list[str]] | None = None,
 ) -> Job:
     """Copy `items` (from sync_items) in the background. Call on the event loop.
 
     `resolve` re-selects the (src, dst) pairs once the job holds its folder;
     without it the job copies `items` as given.
     """
-    return launch(new_job("sync", title, items), lambda j: _run_sync(j, resolve))
+    return launch(
+        new_job("sync", title, items), lambda j: _run_sync(j, resolve, preflight)
+    )
 
 
 def unsync_items(targets: list[Path]) -> list[dict]:

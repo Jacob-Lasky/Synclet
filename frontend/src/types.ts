@@ -43,7 +43,18 @@ export interface MovieFile {
     is_synced: boolean
 }
 
+export interface SubtitleCheck {
+    videos: {
+        video: string
+        status: string
+        sidecars: { name: string; source_exists: boolean; offline: string }[]
+    }[]
+    warnings: string[]
+    note: string
+}
+
 export interface TitleDetail {
+    subtitle_check?: SubtitleCheck
     id: string
     lib: string
     folder: string
@@ -166,6 +177,9 @@ export interface MediaDeleteResult {
 }
 
 export interface Job {
+    error_status?: number | null
+    verified_subtitles?: number
+    warnings?: string[]
     id: string
     op: "sync" | "unsync" | "refresh"
     status: "queued" | "running" | "done" | "error"
