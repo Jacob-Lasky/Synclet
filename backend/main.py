@@ -42,6 +42,7 @@ from synclet import (
     pending,
     refresh,
     state,
+    subtitles,
     sync_ops,
     synced,
     syncthing,
@@ -71,6 +72,8 @@ class SyncRequest(BaseModel):
     season: int | None = None
     episodes: list[list[int]] | None = None
     unwatched_only: bool = False
+    require_forced: bool = False
+    subtitles_only: bool = False
 
 
 class FollowRequest(BaseModel):
@@ -213,13 +216,17 @@ def _short_label(lib_id: str, label: str) -> str:
 
 
 @get("/api/title/{lib:str}/{folder:path}")
-async def api_title(lib: str, folder: str) -> dict:
+async def api_title(lib: str, folder: str, require_forced: bool = False) -> dict:
     folder = folder.lstrip("/")
     detail = await asyncio.to_thread(scan_title_detail, lib, folder)
     if detail is None:
         raise NotFoundException(f"{lib}/{folder} not found")
 
     out = title_detail_to_dict(detail)
+    if detail.kind == "movie":
+        out["subtitle_check"] = await asyncio.to_thread(
+            subtitles.assess, detail, require_forced=require_forced
+        )
 
     # Join watch state into episodes (TV/YouTube) or top-level (movie).
     # Passing lib/folder lets watchstate fall back to Plex directly for
@@ -287,7 +294,7 @@ async def api_sync(data: SyncRequest) -> dict:
     # resolve_selection does a full title scan (FS walk); offload it. start_sync
     # stays on the event loop because it calls asyncio.create_task to spawn the
     # background job, which requires a running loop in the current thread.
-    resolve = functools.partial(
+    selection = functools.partial(
         sync_ops.resolve_selection,
         data.lib,
         data.folder,
@@ -296,17 +303,57 @@ async def api_sync(data: SyncRequest) -> dict:
         episodes=data.episodes,
         unwatched_only=data.unwatched_only,
     )
-    pairs = await asyncio.to_thread(resolve)
+
+    def resolve() -> list[tuple[Path, Path]]:
+        pairs = selection()
+        if data.subtitles_only:
+            return [
+                (src, dst)
+                for src, dst in pairs
+                if src.suffix.lower() in config.SUBTITLE_EXTS
+            ]
+        return pairs
+
+    try:
+        pairs = await asyncio.to_thread(resolve)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=sync_ops.SELECTION_CONFLICT_MESSAGE,
+        ) from exc
     if not pairs:
         return {"error": "no files matched", "job_id": None}
     if config.LIBRARIES.get(data.lib, {}).get("kind") in ("show", "youtube"):
         # Syncing an episode expresses ongoing interest in the series. Keep
         # that intent even after the last offline copy is later removed.
         await asyncio.to_thread(followed.set_following, data.lib, data.folder, True)
-    items = await asyncio.to_thread(sync_ops.sync_items, pairs)
+
+    def check_subtitles() -> list[str]:
+        if config.LIBRARIES.get(data.lib, {}).get("kind") != "movie":
+            return []
+        detail = scan_title_detail(data.lib, data.folder)
+        if detail is None:
+            raise OSError("Source title disappeared")
+        check = subtitles.assess(detail, require_forced=data.require_forced)
+        if data.require_forced and check["warnings"]:
+            raise OSError(" ".join(check["warnings"]))
+        return check["warnings"]
+
+    try:
+        warnings = await asyncio.to_thread(check_subtitles)
+        items = await asyncio.to_thread(sync_ops.sync_items, pairs)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=sync_ops.SELECTION_CONFLICT_MESSAGE,
+        ) from exc
     job = sync_ops.start_sync(
-        items, title=sync_ops.job_title(data.lib, data.folder), resolve=resolve
+        items,
+        title=sync_ops.job_title(data.lib, data.folder),
+        resolve=resolve,
+        preflight=check_subtitles,
     )
+    job.warnings = warnings
     return {
         "job_id": job.id,
         "total_files": job.total_files,

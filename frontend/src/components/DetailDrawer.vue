@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import SubtitleCheck from "./SubtitleCheck.vue"
 import { computed, onMounted, ref, watch } from "vue"
 import { api } from "../api"
 import type {
@@ -32,6 +33,22 @@ const SYNC_REFRESH_DELAY_MS = 1500
 const UNSYNC_REFRESH_DELAY_MS = 1000
 
 const detail = ref<TitleDetail | null>(null)
+const requireForced = ref(false)
+let subtitleRequestVersion = 0
+
+// One publication order for every request that can change subtitle evidence
+// or errors. A requirement toggle away and back also invalidates older reads.
+function beginSubtitleRequest(
+    current: TitleDetail | null,
+    required: boolean
+): () => boolean {
+    const version = ++subtitleRequestVersion
+    return () =>
+        version === subtitleRequestVersion &&
+        detail.value === current &&
+        requireForced.value === required
+}
+const subtitleError = ref("")
 const loading = ref(false)
 const error = ref("")
 const selected = ref<Set<string>>(new Set()) // "S-E"
@@ -227,11 +244,16 @@ async function load(lib: string, folder: string): Promise<void> {
     loading.value = true
     error.value = ""
     detail.value = null
+    requireForced.value = false
+    subtitleError.value = ""
+    const isCurrent = beginSubtitleRequest(null, false)
     selected.value = new Set()
     lastClick.value = null
     expandedSeasons.value = new Set()
     try {
         const d = applyScrobbleOverlay(await api.title(lib, folder))
+        if (!isCurrent()) return
+        loading.value = false
         detail.value = d
         // Choose from watch and sync state after the session overlay is applied.
         if (d.kind !== "movie") {
@@ -239,9 +261,10 @@ async function load(lib: string, folder: string): Promise<void> {
             if (season !== undefined) expandedSeasons.value.add(season)
         }
     } catch (err) {
-        error.value = (err as Error).message
-    } finally {
-        loading.value = false
+        if (isCurrent()) {
+            error.value = (err as Error).message
+            loading.value = false
+        }
     }
 }
 
@@ -257,25 +280,23 @@ async function refreshInPlace(lib: string, folder: string): Promise<void> {
     ) {
         return
     }
+    const current = detail.value
+    const required = requireForced.value
+    const isCurrent = beginSubtitleRequest(current, required)
     try {
-        const d = applyScrobbleOverlay(await api.title(lib, folder))
-        if (
-            !detail.value ||
-            detail.value.lib !== lib ||
-            detail.value.folder !== folder
-        ) {
-            return // user navigated during the fetch
-        }
+        const d = applyScrobbleOverlay(await api.title(lib, folder, required))
+        if (!isCurrent()) return
+        subtitleError.value = ""
         // Merge in-place: only mutate fields that can change as a result of sync ops.
-        detail.value.total_bytes = d.total_bytes
-        detail.value.synced_bytes = d.synced_bytes
-        detail.value.followed = d.followed
-        detail.value.files = d.files
+        current.total_bytes = d.total_bytes
+        current.synced_bytes = d.synced_bytes
+        current.followed = d.followed
+        current.files = d.files
         if (d.kind !== "movie") {
             // Build a lookup by season number for quick patching
             const next: Record<number, (typeof d.seasons)[number]> = {}
             for (const s of d.seasons) next[s.season] = s
-            for (const s of detail.value.seasons) {
+            for (const s of current.seasons) {
                 const fresh = next[s.season]
                 if (!fresh) continue
                 s.synced_episodes = fresh.synced_episodes
@@ -292,10 +313,11 @@ async function refreshInPlace(lib: string, folder: string): Promise<void> {
                 }
             }
         } else {
-            detail.value.watched = d.watched
+            current.subtitle_check = d.subtitle_check
+            current.watched = d.watched
         }
-    } catch {
-        // Silent — user's in-flight interaction takes priority.
+    } catch (err) {
+        if (isCurrent()) subtitleError.value = (err as Error).message
     }
 }
 
@@ -307,6 +329,16 @@ watch(
     () => store.detail,
     (v) => {
         if (v) load(v.lib, v.folder)
+    }
+)
+
+// trackJob advances this only after a successful terminal job response.
+// A long repair must refresh evidence when it finishes, not just on a timer.
+watch(
+    () => store.syncedVersion,
+    () => {
+        const current = detail.value
+        if (current) void refreshInPlace(current.lib, current.folder)
     }
 )
 
@@ -458,25 +490,51 @@ async function doUnsync(): Promise<void> {
     }
 }
 
-async function syncMovie(): Promise<void> {
-    if (!detail.value) return
+async function checkForced(value: boolean): Promise<void> {
+    requireForced.value = value
+    const current = detail.value
+    if (!current) return
+    const isCurrent = beginSubtitleRequest(current, value)
+    try {
+        const checked = await api.title(current.lib, current.folder, value)
+        if (isCurrent()) {
+            current.subtitle_check = checked.subtitle_check
+            subtitleError.value = ""
+        }
+    } catch (err) {
+        if (isCurrent()) subtitleError.value = (err as Error).message
+    }
+}
+
+async function syncMovie(subtitlesOnly = false): Promise<void> {
+    const current = detail.value
+    if (!current) return
+    const required = requireForced.value
+    const isCurrent = beginSubtitleRequest(current, required)
+    subtitleError.value = ""
     submitting.value = true
     try {
         const r = await api.sync({
-            lib: detail.value.lib,
-            folder: detail.value.folder,
+            lib: current.lib,
+            folder: current.folder,
             selection_type: "movie",
+            require_forced: required,
+            subtitles_only: subtitlesOnly,
         })
         if (r.job_id) {
-            const lib = detail.value.lib
-            const folder = detail.value.folder
+            const lib = current.lib
+            const folder = current.folder
             trackJob(r.job_id, {
                 action: "Sync",
-                name: detail.value.name,
+                name: current.name,
                 totalMediaFiles: r.total_media_files,
             })
             setTimeout(() => refreshInPlace(lib, folder), SYNC_REFRESH_DELAY_MS)
+        } else if (subtitlesOnly && isCurrent()) {
+            subtitleError.value = "No subtitle files available to copy."
         }
+    } catch (err) {
+        if (isCurrent()) subtitleError.value = (err as Error).message
     } finally {
         submitting.value = false
     }
@@ -669,6 +727,15 @@ const movieSynced = computed(
                 <!-- Movie -->
                 <template v-if="detail.kind === 'movie'">
                     <div class="movie-pane">
+                        <SubtitleCheck
+                            v-if="detail.subtitle_check"
+                            :check="detail.subtitle_check"
+                            :required="requireForced"
+                            @required="checkForced"
+                        />
+                        <p v-if="subtitleError" role="alert">
+                            {{ subtitleError }}
+                        </p>
                         <div class="movie-files">
                             <div
                                 v-for="f in detail.files"
@@ -687,10 +754,18 @@ const movieSynced = computed(
                         </div>
                         <div class="movie-actions">
                             <button
+                                v-if="movieSynced"
+                                class="ghost"
+                                :disabled="submitting"
+                                @click="syncMovie(true)"
+                            >
+                                Verify / copy subtitles
+                            </button>
+                            <button
                                 v-if="!movieSynced"
                                 class="primary"
                                 :disabled="submitting"
-                                @click="syncMovie"
+                                @click="syncMovie()"
                             >
                                 Sync ({{ humanSize(detail.total_bytes) }})
                             </button>

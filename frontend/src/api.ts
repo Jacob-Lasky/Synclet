@@ -47,9 +47,9 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
     state: (refresh = false) =>
         json<StateBundle>(`/api/state${refresh ? "?refresh=true" : ""}`),
-    title: (lib: string, folder: string) =>
+    title: (lib: string, folder: string, requireForced = false) =>
         json<TitleDetail>(
-            `/api/title/${encodeURIComponent(lib)}/${encodeURI(folder)}`
+            `/api/title/${encodeURIComponent(lib)}/${encodeURI(folder)}${requireForced ? "?require_forced=true" : ""}`
         ),
     thumbUrl: (lib: string, folder: string) =>
         `/api/plex/thumb/${encodeURIComponent(lib)}/${encodeURI(folder)}`,
@@ -165,6 +165,8 @@ export interface ScrobbleBody {
 }
 
 export interface SyncBody {
+    require_forced?: boolean
+    subtitles_only?: boolean
     lib: string
     folder: string
     selection_type: "all" | "season" | "episodes" | "movie"

@@ -37,6 +37,7 @@ function jobWidth(t: Toast): number {
                     <span v-else-if="t.kind === 'success'" class="ico success"
                         >✓</span
                     >
+                    <span v-else-if="t.kind === 'warning'" class="ico">!</span>
                     <span v-else-if="t.kind === 'error'" class="ico error"
                         >!</span
                     >
@@ -91,6 +92,9 @@ function jobWidth(t: Toast): number {
 }
 .toast.success {
     border-color: var(--accent-watched);
+}
+.toast.warning {
+    border-color: #d6a84b;
 }
 .toast.error {
     border-color: var(--danger);

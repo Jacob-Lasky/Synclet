@@ -317,6 +317,26 @@ def _section_id_index(section_id: int) -> dict[tuple[str, str], dict]:
     return out
 
 
+# Hints already resolved by ordinary poster/watch-state reads. Subtitle checks
+# may consume these, but MUST NOT warm section_index or read the section file.
+_KNOWN_TITLE_KEYS: dict[tuple[str, str], str] = {}
+
+
+def _remember_title_key(lib: str, folder: str, meta: dict) -> dict:
+    key = str(meta.get("ratingKey") or "")
+    if key.isdecimal():
+        # A disposable hint, not another library index. A miss stays unknown.
+        if len(_KNOWN_TITLE_KEYS) >= 256:
+            _KNOWN_TITLE_KEYS.clear()
+        _KNOWN_TITLE_KEYS[lib, folder] = key
+    return meta
+
+
+def cached_rating_key(lib: str, folder: str) -> str | None:
+    """Return only an already resolved identity, without disk or network IO."""
+    return _KNOWN_TITLE_KEYS.get((lib, folder))
+
+
 def find_in_library(lib: str, folder: str) -> dict | None:
     """Resolve a synced folder to its Plex item, robust to title drift.
 
@@ -338,19 +358,19 @@ def find_in_library(lib: str, folder: str) -> dict | None:
 
     hit = idx.get(watchstate_key(folder))
     if hit is not None:
-        return hit
+        return _remember_title_key(lib, folder, hit)
 
     id_idx = _section_id_index(section)
     for scheme, val in folder_external_ids(folder).items():
         meta = id_idx.get((scheme, val))
         if meta is not None:
-            return meta
+            return _remember_title_key(lib, folder, meta)
 
     nkey = normalized_key(folder)
     if nkey:
         for meta in idx.values():
             if normalized_key(meta.get("title", "")) == nkey:
-                return meta
+                return _remember_title_key(lib, folder, meta)
     return None
 
 
@@ -482,6 +502,7 @@ def expire_stale_watch_caches() -> None:
     if time.monotonic() - _lru_since < PLEX_CACHE_TTL_S:
         return
     section_index.cache_clear()
+    _KNOWN_TITLE_KEYS.clear()
     _section_id_index.cache_clear()
     episode_watch_map.cache_clear()
     _lru_since = time.monotonic()
@@ -502,6 +523,7 @@ def invalidate_watch_caches() -> None:
     """
     global _lru_since
     section_index.cache_clear()
+    _KNOWN_TITLE_KEYS.clear()
     _section_id_index.cache_clear()
     episode_watch_map.cache_clear()
     _lru_since = time.monotonic()

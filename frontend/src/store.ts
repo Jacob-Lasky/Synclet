@@ -47,7 +47,7 @@ interface State {
 
 export interface Toast {
     id: string
-    kind: "info" | "success" | "error"
+    kind: "info" | "success" | "error" | "warning"
     text: string
     jobId?: string
 }
@@ -324,9 +324,15 @@ export function trackJob(jobId: string, label: JobLabel): void {
                         label.action === "Sync"
                             ? ` (${humanSize(job.processed_bytes)})`
                             : ""
+                    const subtitles = job.verified_subtitles
+                        ? `; ${job.verified_subtitles} subtitle file(s) verified`
+                        : ""
+                    const warnings = job.warnings?.length
+                        ? `; ${job.warnings.join(" ")}`
+                        : ""
                     updateToast(toastId, {
-                        kind: "success",
-                        text: `${past} ${label.name} — ${items(n)}${tail}`,
+                        kind: warnings ? "warning" : "success",
+                        text: `${past} ${label.name} — ${items(n)}${tail}${subtitles}${warnings}`,
                     })
                     await loadState(true)
                     break

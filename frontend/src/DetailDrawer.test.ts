@@ -1,14 +1,32 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { nextTick } from "vue"
-import { mount } from "@vue/test-utils"
+import { mount, flushPromises, type VueWrapper } from "@vue/test-utils"
 import DetailDrawer from "./components/DetailDrawer.vue"
 import { store } from "./store"
 import type { TitleDetail } from "./types"
+
+// Every test owns its drawer's subscriptions, even if it fails before cleanup.
+const mountedDrawers: VueWrapper[] = []
+function mountDrawer() {
+    const wrapper = mount(DetailDrawer)
+    mountedDrawers.push(wrapper)
+    return wrapper
+}
+afterEach(() => {
+    for (const wrapper of mountedDrawers.splice(0)) {
+        if (wrapper.exists()) wrapper.unmount()
+    }
+    store.detail = null
+})
 
 vi.mock("./api", () => ({
     api: {
         artUrl: () => "",
         title: vi.fn(),
+        job: vi.fn(),
+        state: vi
+            .fn()
+            .mockResolvedValue({ titles: [], libraries: [], disk: {} }),
         mediaDeletePreview: vi.fn().mockResolvedValue({
             source_files: 2,
             offline_files: 0,
@@ -112,7 +130,7 @@ describe("DetailDrawer initial season focus", () => {
         })
         ;(api.title as ReturnType<typeof vi.fn>).mockResolvedValue(show)
         store.detail = { lib: "tv", folder: "Test Show" }
-        const wrapper = mount(DetailDrawer)
+        const wrapper = mountDrawer()
         await new Promise((r) => setTimeout(r, 50))
         await nextTick()
 
@@ -132,7 +150,7 @@ describe("DetailDrawer follow control", () => {
             followed: false,
         })
         store.detail = { lib: "tv", folder: "Test Show" }
-        const wrapper = mount(DetailDrawer)
+        const wrapper = mountDrawer()
         await new Promise((r) => setTimeout(r, 50))
         await nextTick()
         await wrapper.get('[data-testid="follow-series"]').trigger("click")
@@ -198,7 +216,7 @@ describe("DetailDrawer series deletion", () => {
         })
         ;(api.title as ReturnType<typeof vi.fn>).mockResolvedValue(show)
         store.detail = { lib: "tv", folder: show.folder }
-        const wrapper = mount(DetailDrawer)
+        const wrapper = mountDrawer()
         await new Promise((r) => setTimeout(r, 50))
         await nextTick()
 
@@ -236,7 +254,7 @@ describe("DetailDrawer series deletion", () => {
         show.seasons[0]!.episodes[1]!.files = ["leftover.en.srt"]
         ;(api.title as ReturnType<typeof vi.fn>).mockResolvedValue(show)
         store.detail = { lib: "tv", folder: show.folder }
-        const wrapper = mount(DetailDrawer)
+        const wrapper = mountDrawer()
         await new Promise((r) => setTimeout(r, 50))
         await nextTick()
 
@@ -273,7 +291,7 @@ describe("DetailDrawer series deletion", () => {
                 watched,
             })
             store.detail = { lib: "movies", folder: "M" }
-            const wrapper = mount(DetailDrawer)
+            const wrapper = mountDrawer()
             await new Promise((r) => setTimeout(r, 50))
             await nextTick()
 
@@ -307,7 +325,7 @@ describe("DetailDrawer mark-watched affordances", () => {
         ;(api.title as ReturnType<typeof vi.fn>).mockResolvedValue(SHOW_FIXTURE)
         store.detail = { lib: "tv", folder: "Test Show" }
 
-        const wrapper = mount(DetailDrawer)
+        const wrapper = mountDrawer()
         // wait for onMounted + load + render
         await new Promise((r) => setTimeout(r, 50))
         await nextTick()
@@ -333,7 +351,7 @@ describe("DetailDrawer mark-watched affordances", () => {
         )
         store.detail = { lib: "movies", folder: "M" }
 
-        const wrapper = mount(DetailDrawer)
+        const wrapper = mountDrawer()
         await new Promise((r) => setTimeout(r, 50))
         await nextTick()
         await nextTick()
@@ -371,7 +389,7 @@ describe("DetailDrawer mark-watched affordances", () => {
         })
 
         store.detail = { lib: "tv", folder: "Test Show" }
-        const wrapper = mount(DetailDrawer)
+        const wrapper = mountDrawer()
         await new Promise((r) => setTimeout(r, 50))
         await nextTick()
 
@@ -429,7 +447,7 @@ describe("DetailDrawer mark-watched affordances", () => {
 
         // First mount: open drawer, scrobble episode 1.
         store.detail = { lib: "tv", folder: "Test Show" }
-        const w1 = mount(DetailDrawer)
+        const w1 = mountDrawer()
         await new Promise((r) => setTimeout(r, 50))
         await nextTick()
         // Use the season-level button (always rendered when the season header is
@@ -444,7 +462,7 @@ describe("DetailDrawer mark-watched affordances", () => {
 
         // Second mount: same lib/folder, api still returns stale.
         store.detail = { lib: "tv", folder: "Test Show" }
-        const w2 = mount(DetailDrawer)
+        const w2 = mountDrawer()
         await new Promise((r) => setTimeout(r, 50))
         await nextTick()
 
@@ -464,7 +482,7 @@ describe("DetailDrawer mark-watched affordances", () => {
         })
         store.detail = { lib: "movies", folder: "M" }
 
-        const wrapper = mount(DetailDrawer)
+        const wrapper = mountDrawer()
         await new Promise((r) => setTimeout(r, 50))
         await nextTick()
         await nextTick()
@@ -508,7 +526,7 @@ describe("DetailDrawer mark-unwatched affordances", () => {
         })
         store.detail = { lib: "tv", folder: "Watched Show" }
 
-        const wrapper = mount(DetailDrawer)
+        const wrapper = mountDrawer()
         await new Promise((r) => setTimeout(r, 50))
         await nextTick()
         await nextTick()
@@ -531,7 +549,7 @@ describe("DetailDrawer mark-unwatched affordances", () => {
         })
         store.detail = { lib: "movies", folder: "Watched Movie" }
 
-        const wrapper = mount(DetailDrawer)
+        const wrapper = mountDrawer()
         await new Promise((r) => setTimeout(r, 50))
         await nextTick()
         await nextTick()
@@ -552,7 +570,7 @@ describe("DetailDrawer mark-unwatched affordances", () => {
         })
         store.detail = { lib: "tv", folder: "Click Show" }
 
-        const wrapper = mount(DetailDrawer)
+        const wrapper = mountDrawer()
         await new Promise((r) => setTimeout(r, 50))
         await nextTick()
         await nextTick()
@@ -633,7 +651,7 @@ describe("DetailDrawer mark-unwatched affordances", () => {
         window.confirm = () => true
 
         store.detail = { lib: "tv", folder: "Sticky Unwatch Show" }
-        const wrapper = mount(DetailDrawer)
+        const wrapper = mountDrawer()
         await new Promise((r) => setTimeout(r, 50))
         await nextTick()
 
@@ -663,4 +681,497 @@ describe("DetailDrawer mark-unwatched affordances", () => {
 
         store.detail = null
     })
+})
+
+describe("movie subtitle repair", () => {
+    it("requests only subtitles for an already synced movie", async () => {
+        const { api } = await import("./api")
+        vi.mocked(api.title).mockResolvedValue({
+            ...MOVIE_FIXTURE,
+            synced_bytes: 100,
+            files: [
+                {
+                    name: "movie.mkv",
+                    path: "/movie.mkv",
+                    size_bytes: 100,
+                    is_video: true,
+                    is_synced: true,
+                },
+            ],
+            subtitle_check: {
+                videos: [
+                    {
+                        video: "movie.mkv",
+                        status: "tracks_unknown",
+                        sidecars: [],
+                    },
+                ],
+                warnings: [],
+                note: "unknown",
+            },
+        })
+        vi.mocked(api.sync).mockResolvedValue({
+            job_id: null,
+            total_files: 0,
+            total_media_files: 0,
+            total_bytes: 0,
+        })
+        store.detail = { lib: "movies", folder: "M" }
+        const wrapper = mountDrawer()
+        await new Promise((resolve) => setTimeout(resolve, 15))
+        const button = wrapper
+            .findAll("button")
+            .find((b) => b.text() === "Verify / copy subtitles")!
+        await button.trigger("click")
+        expect(api.sync).toHaveBeenCalledWith({
+            lib: "movies",
+            folder: "M",
+            selection_type: "movie",
+            require_forced: false,
+            subtitles_only: true,
+        })
+        await nextTick()
+        expect(wrapper.text()).toContain("No subtitle files available to copy")
+        wrapper.unmount()
+        store.detail = null
+    })
+})
+
+it("refreshes subtitle evidence on actual repair completion with the active requirement", async () => {
+    const { api } = await import("./api")
+    vi.useFakeTimers()
+    let repaired = false
+    let complete!: (job: import("./types").Job) => void
+    const wire = () => ({
+        ...MOVIE_FIXTURE,
+        synced_bytes: 100,
+        files: [
+            {
+                name: "movie.mkv",
+                path: "/movie.mkv",
+                size_bytes: 100,
+                is_video: true,
+                is_synced: true,
+            },
+        ],
+        subtitle_check: {
+            videos: [
+                {
+                    video: "movie.mkv",
+                    status: repaired
+                        ? "forced_sidecar_available"
+                        : "required_forced_missing",
+                    sidecars: [
+                        {
+                            name: "movie.en.forced.srt",
+                            source_exists: true,
+                            offline: repaired ? "verified" : "not_verified",
+                        },
+                    ],
+                },
+            ],
+            warnings: [],
+            note: "unknown",
+        },
+    })
+    vi.mocked(api.title).mockImplementation(async () => wire())
+    vi.mocked(api.sync).mockResolvedValue({
+        job_id: "subtitle-repair",
+        total_files: 1,
+        total_media_files: 0,
+        total_bytes: 8,
+    })
+    vi.mocked(api.job).mockImplementation(
+        () =>
+            new Promise((resolve) => {
+                complete = resolve
+            })
+    )
+    store.detail = { lib: "movies", folder: "M" }
+    const wrapper = mountDrawer()
+    try {
+        await flushPromises()
+        await wrapper.get('input[type="checkbox"]').setValue(true)
+        await flushPromises()
+        expect(wrapper.text()).toContain("offline copy not verified")
+        const button = wrapper
+            .findAll("button")
+            .find((b) => b.text() === "Verify / copy subtitles")!
+        await button.trigger("click")
+        await flushPromises()
+        repaired = true
+        complete({
+            id: "subtitle-repair",
+            op: "sync",
+            status: "done",
+            total_files: 1,
+            total_media_files: 0,
+            processed_files: 1,
+            processed_media_files: 0,
+            processed_bytes: 8,
+            total_bytes: 8,
+            current_file: "",
+            title: "Movie M",
+            started_at: 0,
+            ended_at: 1,
+            error: "",
+            verified_subtitles: 1,
+        })
+        await flushPromises()
+        expect(api.title).toHaveBeenLastCalledWith("movies", "M", true)
+        expect(wrapper.text()).toContain("offline copy verified")
+        expect(wrapper.text()).not.toContain("offline copy not verified")
+        expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+        expect(
+            (wrapper.get('input[type="checkbox"]').element as HTMLInputElement)
+                .checked
+        ).toBe(true)
+    } finally {
+        wrapper.unmount()
+        store.detail = null
+        store.toasts = []
+        vi.clearAllTimers()
+        vi.useRealTimers()
+    }
+})
+
+it("ignores a completion refresh made before a requirement toggle", async () => {
+    const { api } = await import("./api")
+    const movie = (status: string) => ({
+        ...MOVIE_FIXTURE,
+        subtitle_check: {
+            videos: [{ video: "movie.mkv", status, sidecars: [] }],
+            warnings: [],
+            note: "unknown",
+        },
+    })
+    let stale!: (detail: TitleDetail) => void
+    vi.mocked(api.title).mockResolvedValue(movie("tracks_unknown"))
+    store.detail = { lib: "movies", folder: "M" }
+    const wrapper = mountDrawer()
+    try {
+        await flushPromises()
+        vi.mocked(api.title).mockImplementationOnce(
+            () =>
+                new Promise((resolve) => {
+                    stale = resolve
+                })
+        )
+        store.syncedVersion++
+        await flushPromises()
+        vi.mocked(api.title).mockResolvedValue(movie("required_forced_missing"))
+        await wrapper.get('input[type="checkbox"]').setValue(true)
+        await flushPromises()
+        expect(wrapper.text()).toContain("expected but missing")
+        stale(movie("forced_sidecar_available"))
+        await flushPromises()
+        expect(wrapper.text()).toContain("expected but missing")
+        expect(wrapper.text()).not.toContain(
+            "English forced subtitle file found"
+        )
+        expect(
+            (wrapper.get('input[type="checkbox"]').element as HTMLInputElement)
+                .checked
+        ).toBe(true)
+    } finally {
+        wrapper.unmount()
+        store.detail = null
+    }
+})
+
+it("ignores a completion refresh after navigation to another movie", async () => {
+    const { api } = await import("./api")
+    const movie = (name: string) => ({
+        ...MOVIE_FIXTURE,
+        name,
+        subtitle_check: {
+            videos: [
+                { video: "movie.mkv", status: "tracks_unknown", sidecars: [] },
+            ],
+            warnings: [],
+            note: "unknown",
+        },
+    })
+    let stale!: (detail: TitleDetail) => void
+    vi.mocked(api.title).mockResolvedValue(movie("Movie M"))
+    store.detail = { lib: "movies", folder: "M" }
+    const wrapper = mountDrawer()
+    try {
+        await flushPromises()
+        vi.mocked(api.title).mockImplementationOnce(
+            () =>
+                new Promise((resolve) => {
+                    stale = resolve
+                })
+        )
+        store.syncedVersion++
+        await flushPromises()
+        vi.mocked(api.title).mockResolvedValue({
+            ...movie("Movie N"),
+            folder: "N",
+            id: "movies/N",
+        })
+        store.detail = { lib: "movies", folder: "N" }
+        await flushPromises()
+        stale({
+            ...movie("Movie M"),
+            subtitle_check: {
+                videos: [
+                    {
+                        video: "movie.mkv",
+                        status: "required_forced_missing",
+                        sidecars: [],
+                    },
+                ],
+                warnings: [],
+                note: "unknown",
+            },
+        })
+        await flushPromises()
+        expect(wrapper.text()).toContain("Movie N")
+        expect(wrapper.text()).not.toContain("expected but missing")
+    } finally {
+        wrapper.unmount()
+        store.detail = null
+    }
+})
+
+it("keeps newer completion evidence when an earlier same-requirement read returns late", async () => {
+    const { api } = await import("./api")
+    const movie = (status: string) => ({
+        ...MOVIE_FIXTURE,
+        subtitle_check: {
+            videos: [{ video: "movie.mkv", status, sidecars: [] }],
+            warnings: [],
+            note: "unknown",
+        },
+    })
+    let stale!: (detail: TitleDetail) => void
+    vi.mocked(api.title).mockResolvedValue(movie("tracks_unknown"))
+    store.detail = { lib: "movies", folder: "M" }
+    const wrapper = mountDrawer()
+    try {
+        await flushPromises()
+        vi.mocked(api.title).mockImplementationOnce(
+            () =>
+                new Promise((resolve) => {
+                    stale = resolve
+                })
+        )
+        store.syncedVersion++
+        await flushPromises()
+        vi.mocked(api.title).mockResolvedValue(
+            movie("forced_sidecar_available")
+        )
+        store.syncedVersion++
+        await flushPromises()
+        expect(wrapper.text()).toContain("English forced subtitle file found")
+        stale(movie("required_forced_missing"))
+        await flushPromises()
+        expect(wrapper.text()).toContain("English forced subtitle file found")
+        expect(wrapper.text()).not.toContain("expected but missing")
+    } finally {
+        wrapper.unmount()
+        store.detail = null
+    }
+})
+
+it.each(["success", "failure"])(
+    "keeps verified terminal evidence when an older toggle finishes with %s",
+    async (outcome) => {
+        const { api } = await import("./api")
+        vi.useFakeTimers()
+        const movie = (verified: boolean) => ({
+            ...MOVIE_FIXTURE,
+            synced_bytes: 100,
+            files: [
+                {
+                    name: "movie.mkv",
+                    path: "/movie.mkv",
+                    size_bytes: 100,
+                    is_video: true,
+                    is_synced: true,
+                },
+            ],
+            subtitle_check: {
+                videos: [
+                    {
+                        video: "movie.mkv",
+                        status: verified
+                            ? "forced_sidecar_available"
+                            : "required_forced_missing",
+                        sidecars: [
+                            {
+                                name: "movie.en.forced.srt",
+                                source_exists: true,
+                                offline: verified ? "verified" : "not_verified",
+                            },
+                        ],
+                    },
+                ],
+                warnings: [],
+                note: "unknown",
+            },
+        })
+        let oldSuccess!: (value: TitleDetail) => void
+        let oldFailure!: (error: Error) => void
+        let complete!: (job: import("./types").Job) => void
+        vi.mocked(api.title).mockReset()
+        vi.mocked(api.title).mockResolvedValue(movie(true))
+        vi.mocked(api.title).mockResolvedValueOnce(movie(false))
+        vi.mocked(api.title).mockImplementationOnce(
+            () =>
+                new Promise((resolve, reject) => {
+                    oldSuccess = resolve
+                    oldFailure = reject
+                })
+        )
+        vi.mocked(api.sync).mockResolvedValue({
+            job_id: "ordered-repair",
+            total_files: 1,
+            total_media_files: 0,
+            total_bytes: 8,
+        })
+        vi.mocked(api.job).mockImplementation(
+            () =>
+                new Promise((resolve) => {
+                    complete = resolve
+                })
+        )
+        store.detail = { lib: "movies", folder: "M" }
+        const wrapper = mountDrawer()
+        try {
+            await flushPromises()
+            await wrapper.get('input[type="checkbox"]').setValue(true)
+            await flushPromises()
+            const repair = wrapper
+                .findAll("button")
+                .find((button) => button.text() === "Verify / copy subtitles")!
+            await repair.trigger("click")
+            await flushPromises()
+            complete({
+                id: "ordered-repair",
+                op: "sync",
+                status: "done",
+                total_files: 1,
+                total_media_files: 0,
+                processed_files: 1,
+                processed_media_files: 0,
+                processed_bytes: 8,
+                total_bytes: 8,
+                current_file: "",
+                title: "Movie M",
+                started_at: 0,
+                ended_at: 1,
+                error: "",
+                verified_subtitles: 1,
+            })
+            await flushPromises()
+            expect(api.title).toHaveBeenLastCalledWith("movies", "M", true)
+            expect(vi.mocked(api.title).mock.calls.length).toBe(3)
+            expect(wrapper.text()).toContain("offline copy verified")
+            if (outcome === "success") oldSuccess(movie(false))
+            else oldFailure(new Error("stale toggle failure"))
+            await flushPromises()
+            expect(wrapper.text()).toContain("offline copy verified")
+            expect(wrapper.text()).not.toContain("offline copy not verified")
+            expect(wrapper.text()).not.toContain("stale toggle failure")
+            expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+            expect(
+                (
+                    wrapper.get('input[type="checkbox"]')
+                        .element as HTMLInputElement
+                ).checked
+            ).toBe(true)
+        } finally {
+            wrapper.unmount()
+            store.detail = null
+            store.toasts = []
+            vi.clearAllTimers()
+            vi.useRealTimers()
+        }
+    }
+)
+
+it("clears a current subtitle error when a newer completion read succeeds", async () => {
+    const { api } = await import("./api")
+    const movie = {
+        ...MOVIE_FIXTURE,
+        subtitle_check: {
+            videos: [
+                {
+                    video: "movie.mkv",
+                    status: "forced_sidecar_available",
+                    sidecars: [
+                        {
+                            name: "movie.en.forced.srt",
+                            source_exists: true,
+                            offline: "verified",
+                        },
+                    ],
+                },
+            ],
+            warnings: [],
+            note: "unknown",
+        },
+    }
+    vi.mocked(api.title).mockResolvedValue(movie)
+    store.detail = { lib: "movies", folder: "M" }
+    const wrapper = mountDrawer()
+    try {
+        await flushPromises()
+        vi.mocked(api.title).mockRejectedValueOnce(
+            new Error("current toggle error")
+        )
+        await wrapper.get('input[type="checkbox"]').setValue(true)
+        await flushPromises()
+        expect(wrapper.text()).toContain("current toggle error")
+        store.syncedVersion++
+        await flushPromises()
+        expect(api.title).toHaveBeenLastCalledWith("movies", "M", true)
+        expect(wrapper.text()).toContain("offline copy verified")
+        expect(wrapper.text()).not.toContain("current toggle error")
+        expect(
+            (wrapper.get('input[type="checkbox"]').element as HTMLInputElement)
+                .checked
+        ).toBe(true)
+    } finally {
+        wrapper.unmount()
+        store.detail = null
+    }
+})
+
+it("shows a genuine current completion read error and keeps the requirement", async () => {
+    const { api } = await import("./api")
+    const movie = {
+        ...MOVIE_FIXTURE,
+        subtitle_check: {
+            videos: [
+                { video: "movie.mkv", status: "tracks_unknown", sidecars: [] },
+            ],
+            warnings: [],
+            note: "unknown",
+        },
+    }
+    vi.mocked(api.title).mockResolvedValue(movie)
+    store.detail = { lib: "movies", folder: "M" }
+    const wrapper = mountDrawer()
+    try {
+        await flushPromises()
+        await wrapper.get('input[type="checkbox"]').setValue(true)
+        await flushPromises()
+        vi.mocked(api.title).mockRejectedValueOnce(
+            new Error("current completion read error")
+        )
+        store.syncedVersion++
+        await flushPromises()
+        expect(wrapper.text()).toContain("current completion read error")
+        expect(
+            (wrapper.get('input[type="checkbox"]').element as HTMLInputElement)
+                .checked
+        ).toBe(true)
+    } finally {
+        wrapper.unmount()
+        store.detail = null
+    }
 })

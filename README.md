@@ -69,6 +69,16 @@ Three triggers run the same plan:
 
 Refreshes are jobs like sync and unsync (`op: "refresh"` in `/api/jobs`). Sync, unsync, refresh and source deletes on the same synced folder run one after another rather than at once, and each job re-checks the title once it is its turn. Copies land through a temporary file that is renamed into place, so an interrupted copy never leaves a partial file for Syncthing to send to your devices.
 
+## Subtitle checks
+
+The movie drawer checks actual subtitle sidecar files and, when an exact cached title hint is available, reads that title's Plex track metadata. A cold hint stays unknown rather than fetching a whole Plex library section. Track metadata may be stale; an absent forced track does not prove that translated dialogue is missing, and subtitles may already be burned into the video.
+
+Select **Require English forced subtitles for this sync** when you know they are needed. Sync is blocked if that explicit requirement has neither a usable English forced sidecar nor a reported embedded English forced track. A reported external forced track with no usable file produces a warning. Other films do not automatically require forced subtitles.
+
+For a movie already synced, **Verify / copy subtitles** checks or copies only selected subtitle files, without copying the movie. Existing subtitle copies are checked against their source by size and content; a missing selected source or failed verification is reported rather than counted as success. An unavailable or unverified offline subtitle is shown honestly in the drawer. Source conflicts return HTTP409 before a job starts; a conflict found after a queued job gets its turn is reported as a failed job with `error_status:409`, while job polling itself remains HTTP200. Successful job completion refreshes the open drawer without clearing its active forced-subtitle requirement.
+
+These checks do not download subtitles or analyze the movie, and verified local copying does not establish completion on a remote Syncthing device.
+
 ## Permanent media deletion
 
 The production compose mounts the source library writable so Synclet can delete selected movies or episodes. From a show's drawer you can delete the episodes you have selected, or use "Delete watched (N)" to sweep every watched episode across all seasons at once. Each deletion shows a file preview, requires the exact title, and requires a separate deletion password. Set `SYNCLET_DELETE_KEY` to a long random value in the gitignored `.env` beside the compose file. Without it, the delete endpoint is disabled. The development compose keeps source media read-only.

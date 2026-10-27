@@ -141,3 +141,21 @@ describe("JobToasts progress bar", () => {
         expect(bar.attributes("style")).toContain("width: 0%")
     })
 })
+
+it("shows a completed subtitle warning without a running spinner", () => {
+    store.jobs = {}
+    store.toasts = [
+        {
+            id: "subtitle-warning",
+            kind: "warning",
+            text: "English forced subtitle expected but missing",
+        },
+    ]
+    const wrapper = mount(JobToasts)
+    expect(wrapper.get(".toast.warning").text()).toContain(
+        "expected but missing"
+    )
+    expect(wrapper.find(".spinner").exists()).toBe(false)
+    wrapper.unmount()
+    store.toasts = []
+})
