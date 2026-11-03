@@ -93,7 +93,29 @@ VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".m4v", ".webm"}
 # synclet.refresh treats a change to one as a media change.
 SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".sub", ".idx", ".sup", ".vtt"}
 ENGLISH_CODES = {"en", "eng"}
-SUBTITLE_QUALIFIERS = {"forced", "sdh", "hi", "cc", "default", "full"}
+# Filename tokens beside the language code that tag the track's kind, not its
+# language ("Movie.en.forced.srt", "Movie.en.sdh.srt"). Includes every tag
+# Sonarr and Radarr write and parse (forced, foreign, default, cc, psdh, sdh;
+# their LanguageParser.SubtitleLanguageRegex) plus Bazarr's hi and full. A tag
+# missing here stops the language search at it, so the sub reads as having no
+# language and is synced whatever its language.
+SUBTITLE_QUALIFIERS = {
+    "forced",
+    "foreign",
+    "default",
+    "cc",
+    "psdh",
+    "sdh",
+    "hi",
+    "full",
+}
+# Qualifiers that are ALSO ISO 639 language codes. "hi" is hearing impaired in
+# "Movie.en.hi.srt" but Hindi (ISO 639-1) in "Movie.hi.srt". DO NOT read one as
+# a qualifier unless a language code comes before it: a lone ".hi.srt" read as
+# hearing impaired had no language, so Hindi subtitles were synced to every
+# device as if English (Black Hawk Down, 2026-11-03). The others in
+# SUBTITLE_QUALIFIERS are not ISO 639-1 or 639-2 codes.
+LANGUAGE_CODE_QUALIFIERS = {"hi"}
 
 # Background cache refresh cadence (seconds). Reads never build (see
 # synclet.maint_cache); the background loop in main.cache_refresh_loop owns all

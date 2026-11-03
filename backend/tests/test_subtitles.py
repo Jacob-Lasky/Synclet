@@ -343,3 +343,37 @@ def test_warm_subtitle_identity_uses_only_one_target_metadata_read(monkeypatch):
     monkeypatch.setattr(plex, "_get_xml", get_xml)
     assert subtitles.reported_tracks("movies", "Movie") == {"/exact/movie.mkv": []}
     assert calls == ["/library/metadata/42"]
+
+
+def test_forced_sidecar_language_inside_the_video_name(patch_paths, monkeypatch):
+    """A video named `X.en.mkv` has sidecar `X.en.forced.srt`: still English."""
+    from synclet import subtitles
+    from synclet.scan import TitleDetail
+
+    monkeypatch.setattr(subtitles, "reported_tracks", lambda *args: {})
+    folder = patch_paths["media"] / "movies" / "Movie"
+    folder.mkdir()
+    video = folder / "Movie.en.mkv"
+    forced = folder / "Movie.en.forced.srt"
+    french = folder / "Movie.fr-FR.forced.srt"
+    for f in (video, forced, french):
+        f.write_bytes(b"x")
+
+    def assess(*subs):
+        detail = TitleDetail(
+            id="movies/Movie",
+            lib="movies",
+            folder="Movie",
+            name="Movie",
+            kind="movie",
+            year=None,
+            files=[{"path": str(video), "is_video": True}]
+            + [{"path": str(s), "is_video": False} for s in subs],
+        )
+        return subtitles.assess(detail, require_forced=True)["videos"][0]["status"]
+
+    assert assess(forced) == "forced_sidecar_available"
+    foreign = folder / "Movie.en.foreign.forced.srt"
+    foreign.write_bytes(b"x")
+    assert assess(foreign) == "forced_sidecar_available"
+    assert assess(french) == "required_forced_missing"

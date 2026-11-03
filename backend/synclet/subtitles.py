@@ -7,7 +7,7 @@ from pathlib import Path
 from synclet import plex
 from synclet.config import ENGLISH_CODES, SUBTITLE_EXTS
 from synclet.fs_helpers import verify_subtitle
-from synclet.scan import TitleDetail
+from synclet.scan import TitleDetail, subtitle_language
 
 
 def reported_tracks(lib: str, folder: str) -> dict[str, list[dict]]:
@@ -60,10 +60,7 @@ def assess(detail: TitleDetail, *, require_forced: bool = False) -> dict:
             f
             for f in sidecars
             if "forced" in f.stem[len(video.stem) :].lower().split(".")
-            and any(
-                lang in f.stem[len(video.stem) :].lower().split(".")
-                for lang in ENGLISH_CODES
-            )
+            and subtitle_language(f) in ENGLISH_CODES
             and f.is_file()
             and f.stat().st_size > 0
         ]
