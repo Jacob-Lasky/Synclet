@@ -71,9 +71,10 @@ jobs:
                       echo "${image}:${channel}"
                       echo "${image}:${short_sha}"
                       echo "EOF"
+                      echo "channel=$channel"
+                      echo "short_sha=$short_sha"
+                      echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
                   } >> "$GITHUB_OUTPUT"
-                  echo "channel=$channel" >> "$GITHUB_OUTPUT"
-                  echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
 
             - name: Build and push
               uses: docker/build-push-action@v6
@@ -82,6 +83,18 @@ jobs:
                   file: Dockerfile
                   push: true
                   tags: ${{ steps.tags.outputs.tags }}
+                  # DO NOT drop these. The runtime stage is FROM the uv image,
+                  # so without them the image inherits uv's OCI labels: title
+                  # "uv" and uv's own commit as the revision, which reads as
+                  # the wrong Synclet commit when checking what is deployed.
+                  labels: |
+                      org.opencontainers.image.title=Synclet
+                      org.opencontainers.image.description=Plex + Syncthing offline-media sync
+                      org.opencontainers.image.url=https://github.com/Jacob-Lasky/Synclet
+                      org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}
+                      org.opencontainers.image.version=${{ steps.tags.outputs.short_sha }}
+                      org.opencontainers.image.created=${{ steps.tags.outputs.created }}
+                      org.opencontainers.image.licenses=Apache-2.0
                   # GHA cache for buildx: it speeds up subsequent builds when
                   # only source changes, not deps.
                   cache-from: type=gha
@@ -92,8 +105,10 @@ jobs:
 
             - name: Summary
               run: |
-                  echo "## Published" >> "$GITHUB_STEP_SUMMARY"
-                  echo "" >> "$GITHUB_STEP_SUMMARY"
-                  echo "- channel: \`${{ steps.tags.outputs.channel }}\`" >> "$GITHUB_STEP_SUMMARY"
-                  echo "- sha tag: \`${{ steps.tags.outputs.short_sha }}\`" >> "$GITHUB_STEP_SUMMARY"
-                  echo "- pull: \`docker pull ghcr.io/jacob-lasky/synclet:${{ steps.tags.outputs.channel }}\`" >> "$GITHUB_STEP_SUMMARY"
+                  {
+                      echo "## Published"
+                      echo ""
+                      echo "- channel: \`${{ steps.tags.outputs.channel }}\`"
+                      echo "- sha tag: \`${{ steps.tags.outputs.short_sha }}\`"
+                      echo "- pull: \`docker pull ghcr.io/jacob-lasky/synclet:${{ steps.tags.outputs.channel }}\`"
+                  } >> "$GITHUB_STEP_SUMMARY"
