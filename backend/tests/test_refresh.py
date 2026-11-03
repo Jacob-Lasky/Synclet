@@ -733,3 +733,15 @@ class TestSidecars:
         _write(patch_paths["media"] / "movies" / MOVIE / "1917.en.sup", 40)
         copies = plan_refresh("movies", MOVIE).copies
         assert [Path(c["dst"]).name for c in copies] == ["1917.en.sup"]
+
+
+class TestUnwantedSyncedFiles:
+    def test_synced_hindi_subtitle_is_removed(self, current_movie, patch_paths):
+        """A lone .hi.srt is Hindi; one synced before that was known goes."""
+        from synclet.refresh import plan_refresh
+
+        _write(patch_paths["media"] / "movies" / MOVIE / "1917.hi.srt", 30)
+        _write(current_movie / "1917.hi.srt", 30)
+        plan = plan_refresh("movies", MOVIE)
+        assert plan.copies == []
+        assert [Path(r["path"]).name for r in plan.removals] == ["1917.hi.srt"]

@@ -118,14 +118,74 @@ class TestIsWantedFile:
         assert not is_wanted_file(Path("Show.S01E01.fr.srt"))
         assert not is_wanted_file(Path("Show.S01E01.de.srt"))
 
-    def test_forced_sub_kept(self):
-        # "forced" qualifier means it shows during non-English audio , always wanted
-        # The lang code is the last 2-3 letter token NOT in SUBTITLE_QUALIFIERS
+    def test_forced_sub_follows_its_language(self):
+        # "forced" tags the track kind; the language decides, as for any sub.
+        assert is_wanted_file(Path("Show.S01E01.en.forced.srt"))
         assert is_wanted_file(Path("Show.S01E01.forced.en.srt"))
+        assert not is_wanted_file(Path("Show.S01E01.fr.forced.srt"))
 
     def test_sub_with_no_lang_kept(self):
         # Bare "Show.srt" with no detectable lang code → keep
         assert is_wanted_file(Path("Show.srt"))
+
+    def test_lone_hi_is_hindi_and_dropped(self):
+        # "hi" is ISO 639-1 Hindi. With no language code before it, it names
+        # the subtitle's language, not a hearing-impaired English track.
+        assert not is_wanted_file(Path("Show.S01E01.hi.srt"))
+        assert not is_wanted_file(
+            Path(
+                "Black Hawk Down (2001) {tmdb-855} - [WEBDL-1080p][EAC3 5.1]"
+                "[h265]-NINJACENTRAL.hi.srt"
+            )
+        )
+
+    def test_hi_after_a_language_is_hearing_impaired(self):
+        assert is_wanted_file(Path("Show.S01E01.en.hi.srt"))
+        assert is_wanted_file(Path("Show.S01E01.eng.hi.srt"))
+        assert is_wanted_file(Path("Show.S01E01.en.forced.hi.srt"))
+        assert is_wanted_file(Path("Show.S01E01.en.hi.forced.srt"))
+        assert not is_wanted_file(Path("Show.S01E01.fr.hi.srt"))
+
+    def test_region_tagged_languages(self):
+        assert is_wanted_file(Path("Movie.en-US.srt"))
+        assert is_wanted_file(Path("Movie.en-US.hi.srt"))
+        assert not is_wanted_file(Path("Movie.fr-FR.srt"))
+        assert not is_wanted_file(Path("Movie.pt-BR.forced.srt"))
+        assert not is_wanted_file(Path("Movie.zh-Hant-TW.srt"))
+        assert not is_wanted_file(Path("Movie.en.fr-FR.forced.srt"))
+
+    def test_copy_number_is_not_a_language(self):
+        # Sonarr/Radarr number duplicate subs before the language code.
+        assert is_wanted_file(Path("Show.S01E01.1.en.srt"))
+        assert not is_wanted_file(Path("Show.S01E01.2.fr.srt"))
+        assert not is_wanted_file(Path("Show.S01E01.fr.2.srt"))
+        assert is_wanted_file(Path("Show.S01E01.2.srt"))
+
+    def test_release_tokens_are_not_languages(self):
+        assert is_wanted_file(Path("Movie.2024.WEB-DL.srt"))
+        assert is_wanted_file(Path("Movie.2024.1080p.BluRay.x264-GRP.srt"))
+
+    def test_video_name_is_never_read_as_a_language(self):
+        # Only the token after the video name carries the language; a short
+        # word inside the name is not one.
+        assert is_wanted_file(Path("Mr.Robot.S01E01.srt"))
+        assert is_wanted_file(Path("Ted.srt"))
+        assert is_wanted_file(Path("Ted.forced.srt"))
+        assert not is_wanted_file(Path("Ted.hi.srt"))
+
+    def test_hindi_kept_when_hindi_is_wanted(self, monkeypatch):
+        from synclet import scan
+
+        monkeypatch.setattr(scan, "ENGLISH_CODES", {"en", "eng", "hi"})
+        assert is_wanted_file(Path("Show.S01E01.hi.srt"))
+
+    def test_unambiguous_qualifiers_alone_carry_no_language(self):
+        # Every qualifier but hi is not an ISO 639-1/639-2 code. foreign and
+        # psdh are Sonarr/Radarr tags: a French sub tagged with one is French.
+        for q in ("sdh", "cc", "forced", "foreign", "psdh", "default", "full"):
+            assert is_wanted_file(Path(f"Show.S01E01.{q}.srt")), q
+            assert is_wanted_file(Path(f"Show.S01E01.en.{q}.srt")), q
+            assert not is_wanted_file(Path(f"Show.S01E01.fr.{q}.srt")), q
 
 
 class TestScanTitles:

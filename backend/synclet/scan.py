@@ -16,6 +16,7 @@ from pathlib import Path
 from synclet.config import (
     ENGLISH_CODES,
     EXTERNAL_ID_SCHEMES,
+    LANGUAGE_CODE_QUALIFIERS,
     LIBRARIES,
     MEDIA_ROOT,
     SUBTITLE_EXTS,
@@ -39,6 +40,11 @@ _ID_CRUFT = re.compile(r"\s*\{(?:" + "|".join(EXTERNAL_ID_SCHEMES) + r")-(?:tt)?
 # Guid). Same config-sourced schemes as _ID_CRUFT and plex.py's Guid parser.
 _EXTERNAL_ID = re.compile(r"\{(" + "|".join(EXTERNAL_ID_SCHEMES) + r")-(tt\d+|\d+)\}")
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
+# A language tag in a subtitle name: an ISO 639 code ("en", "eng"), or a
+# two-letter one with a script and/or region subtag ("pt-br", "zh-hant-tw").
+# Group 1 or 2 is the code. DO NOT allow subtags on three-letter codes: release
+# tokens like "web-dl" would read as language "web".
+_LANG_TAG = re.compile(r"([a-z]{3})|([a-z]{2})(?:-[a-z]{4})?(?:-(?:[a-z]{2}|\d{3}))?")
 _YEAR = re.compile(r"\((\d{4})\)\s*$")
 _EP_TITLE_FROM_FILENAME = re.compile(
     r"[Ss]\d+[Ee]\d+\s*-\s*(.+?)(?:\s*[\[\(]|\.[a-z0-9]{2,4}$)", re.IGNORECASE
@@ -153,27 +159,63 @@ def parse_year(folder: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def is_wanted_file(f: Path) -> bool:
-    """Keep videos and English subs; drop foreign-language non-forced subs.
+def _language_of(token: str) -> str | None:
+    """The primary language code of a language tag token ("pt-br" is "pt")."""
+    m = _LANG_TAG.fullmatch(token)
+    return (m.group(1) or m.group(2)) if m else None
 
-    Matches the CLI's behavior so the file set on disk matches what the CLI
-    would have copied.
+
+def _is_tag(token: str) -> bool:
+    """A qualifier, or a copy number ("Movie.1.en.srt"); neither is a language."""
+    return token in SUBTITLE_QUALIFIERS or token.isdigit()
+
+
+def _qualifier_follows_language(tokens: list[str]) -> bool:
+    """True when the nearest token in `tokens` (those before a qualifier, the
+    video's base name excluded), past any other tags, is a language."""
+    for token in reversed(tokens):
+        if not _is_tag(token):
+            return _language_of(token) is not None
+    return False
+
+
+def subtitle_language(f: Path) -> str | None:
+    """The primary language code in a subtitle's name, or None when it has none.
+
+    Sonarr, Radarr and Bazarr name a subtitle `<video>[.<copy>].<lang>[.<tag>...]`
+    (Sonarr and Radarr also parse tags before the code), so the language is the
+    last token that is not a tag (_is_tag): "Show.S01E01.1.en-US.forced.srt" is
+    "en". DO NOT look further back than that token: past it is the video's own
+    name, where "Mr.Robot.S01E01.srt" would read as Marathi ("mr") and be
+    dropped. The first token is always the video's name, never a language
+    ("Ted.srt" has none). A qualifier that is also a language code
+    (config.LANGUAGE_CODE_QUALIFIERS) is the language unless a language comes
+    before it: "Movie.hi.srt" is Hindi, "Movie.en.hi.srt" is English hearing
+    impaired.
     """
-    suffix = f.suffix.lower()
-    if suffix not in SUBTITLE_EXTS:
+    tokens = f.stem.lower().split(".")
+    for i in range(len(tokens) - 1, 0, -1):
+        token = tokens[i]
+        if _is_tag(token) and (
+            token not in LANGUAGE_CODE_QUALIFIERS
+            or _qualifier_follows_language(tokens[1:i])
+        ):
+            continue
+        return _language_of(token)
+    return None
+
+
+def is_wanted_file(f: Path) -> bool:
+    """Keep videos, non-subtitle files, and subtitles in a wanted language.
+
+    A subtitle in any other language is dropped, forced ones included (a forced
+    French track translates for a French viewer). A subtitle whose name carries
+    no language code is kept.
+    """
+    if f.suffix.lower() not in SUBTITLE_EXTS:
         return True
-    qualifiers = f.stem.lower().split(".")
-    lang = next(
-        (
-            q
-            for q in reversed(qualifiers)
-            if re.fullmatch(r"[a-z]{2,3}", q) and q not in SUBTITLE_QUALIFIERS
-        ),
-        None,
-    )
-    if lang is None:
-        return True
-    return lang in ENGLISH_CODES
+    lang = subtitle_language(f)
+    return lang is None or lang in ENGLISH_CODES
 
 
 def _season_num(p: Path) -> int:
