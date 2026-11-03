@@ -71,6 +71,8 @@ Refreshes are jobs like sync and unsync (`op: "refresh"` in `/api/jobs`). Sync, 
 
 ## Subtitle checks
 
+Only English subtitles are synced. The language is read from the subtitle's filename: the last token that is neither a track tag (`forced`, `foreign`, `default`, `cc`, `psdh`, `sdh`, `hi`, `full`, the tags Sonarr, Radarr and Bazarr write) nor a copy number, with a script or region subtag allowed (`Movie.en-US.srt`). Any other language is dropped, forced tracks included, since a forced French track translates for a French viewer. A subtitle whose name carries no language code (`Movie.srt`) is kept. `hi` reads two ways: `Movie.en.hi.srt` is English hearing impaired, while a lone `Movie.hi.srt` is Hindi (ISO 639-1) and is dropped. A foreign subtitle that was synced before Synclet read its name this way is removed by the title's next refresh.
+
 The movie drawer checks actual subtitle sidecar files and, when an exact cached title hint is available, reads that title's Plex track metadata. A cold hint stays unknown rather than fetching a whole Plex library section. Track metadata may be stale; an absent forced track does not prove that translated dialogue is missing, and subtitles may already be burned into the video.
 
 Select **Require English forced subtitles for this sync** when you know they are needed. Sync is blocked if that explicit requirement has neither a usable English forced sidecar nor a reported embedded English forced track. A reported external forced track with no usable file produces a warning. Other films do not automatically require forced subtitles.
